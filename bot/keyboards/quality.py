@@ -20,35 +20,39 @@ ALL_QUALITIES = [144, 240, 360, 480, 720, 1080, 1440, 2160]
 FREE_LIMIT = 720
 
 
-def build_quality_keyboard(url_id: str, available: list[int]) -> InlineKeyboardMarkup:
+def build_quality_keyboard(url_id: str, available: list[int], is_premium: bool = False) -> InlineKeyboardMarkup:
     """
-    Бесплатная кнопка — 720p (или максимум видео, если оно ниже 720p).
-    Качества выше 720p — с замком (премиум, в разработке).
+    Premium — все доступные качества кнопками.
+    Бесплатно — лучшее качество до 720p, выше = замок (предложение купить Premium).
     """
     builder = InlineKeyboardBuilder()
     if not available:
         return builder.as_markup()
 
+    if is_premium:
+        for q in sorted(available):
+            builder.button(
+                text=QUALITY_LABELS.get(q, f"{q}p"),
+                callback_data=f"quality:{q}:{url_id}"
+            )
+        builder.adjust(4)
+        return builder.as_markup()
+
     # Бесплатное качество: лучшее из доступного, но не выше 720p.
     free_candidates = [q for q in available if q <= FREE_LIMIT]
-    if free_candidates:
-        free_q = max(free_candidates)
-    else:
-        # У видео нет качеств 720p и ниже — отдаём самое низкое доступное.
-        free_q = min(available)
+    free_q = max(free_candidates) if free_candidates else min(available)
 
-    # Бесплатная кнопка
     builder.button(
         text=QUALITY_LABELS.get(free_q, f"{free_q}p"),
         callback_data=f"quality:{free_q}:{url_id}"
     )
 
-    # Премиум-кнопки: только реально существующие у видео качества выше бесплатного
+    # Замки: реально существующие качества выше бесплатного → предложение купить Premium
     for q in ALL_QUALITIES:
         if q > free_q and q in available:
             builder.button(
                 text=f"🔒 {QUALITY_LABELS.get(q, f'{q}p')}",
-                callback_data="stub:premium_quality"
+                callback_data="buy_premium"
             )
 
     builder.adjust(4)

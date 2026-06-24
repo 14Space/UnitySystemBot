@@ -16,3 +16,13 @@ SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 # Telegram ID администратора — кому доступна команда /stats и дневной отчёт.
 # Узнать свой ID можно у бота @userinfobot. 0 = выключено.
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+# Сколько загрузок может идти одновременно на всех (тюнить под мощность сервера)
+MAX_PARALLEL_DOWNLOADS = int(os.getenv("MAX_PARALLEL_DOWNLOADS", "5"))
+
+# Цена Premium в Telegram Stars (разовый платёж). ~250⭐ ≈ 5$
+PREMIUM_PRICE_STARS = int(os.getenv("PREMIUM_PRICE_STARS", "250"))
+
+# Прокси для обхода гео-блокировок YouTube/YT Music (http:// или socks5://).
+# Пусто = без прокси. Пример: socks5://127.0.0.1:1080
+PROXY_URL = os.getenv("PROXY_URL", "")

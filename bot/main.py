@@ -7,7 +7,8 @@ from bot.config import BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats
 from bot.middlewares.register_user import RegisterUserMiddleware
-from bot.handlers import start, link, admin
+from bot.middlewares.throttle import ThrottleMiddleware
+from bot.handlers import start, link, admin, payment
 from bot.handlers.admin import format_stats
 from worker.maintenance import clean_downloads, update_ytdlp
 
@@ -41,12 +42,14 @@ async def main():
 
     dp = Dispatcher()
 
-    # Подключаем middleware (авторегистрация пользователей)
+    # Middleware: сначала анти-флуд, затем авторегистрация пользователей
+    dp.message.middleware(ThrottleMiddleware())
     dp.message.middleware(RegisterUserMiddleware())
 
     # Подключаем хэндлеры
     dp.include_router(start.router)
     dp.include_router(admin.router)
+    dp.include_router(payment.router)
     dp.include_router(link.router)
 
     # Создаём таблицы в БД

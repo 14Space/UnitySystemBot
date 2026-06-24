@@ -17,6 +17,21 @@ async def get_or_create_user(
     return user
 
 
+async def is_premium(session: AsyncSession, user_id: int) -> bool:
+    """Есть ли у пользователя Premium"""
+    result = await session.execute(select(User.is_premium).where(User.user_id == user_id))
+    return bool(result.scalar_one_or_none())
+
+
+async def set_premium(session: AsyncSession, user_id: int, value: bool = True) -> None:
+    """Включает/выключает Premium у пользователя"""
+    result = await session.execute(select(User).where(User.user_id == user_id))
+    user = result.scalar_one_or_none()
+    if user:
+        user.is_premium = value
+        await session.commit()
+
+
 async def increment_download(session: AsyncSession, platform: str) -> None:
     """Увеличивает счётчик запросов для платформы"""
     row = await session.execute(

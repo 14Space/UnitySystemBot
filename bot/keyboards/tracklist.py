@@ -3,18 +3,20 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 PAGE_SIZE = 10
 
 
-def build_tracklist_keyboard(coll_id: str, tracks: list, page: int) -> InlineKeyboardMarkup:
+def build_tracklist_keyboard(coll_id: str, tracks: list, page: int, is_premium: bool = False) -> InlineKeyboardMarkup:
     """
     Клавиатура списка треков альбома/плейлиста: по 10 на страницу.
-    coll_id — короткий id коллекции в памяти (SPOTIFY_STORE).
+    «Скачать всё» — только для Premium (иначе замок → предложение купить).
     """
     total_pages = (len(tracks) + PAGE_SIZE - 1) // PAGE_SIZE
     start = page * PAGE_SIZE
     chunk = tracks[start:start + PAGE_SIZE]
 
     rows = []
-    # «Скачать всё» — закрытая опция (задел под монетизацию)
-    rows.append([InlineKeyboardButton(text="🔒 Скачать всё", callback_data="stub:download_all")])
+    if is_premium:
+        rows.append([InlineKeyboardButton(text="⬇️ Скачать всё", callback_data=f"dlall:{coll_id}")])
+    else:
+        rows.append([InlineKeyboardButton(text="🔒 Скачать всё", callback_data="buy_premium")])
 
     for i, track in enumerate(chunk, start=start):
         label = f"{i + 1}. {track['title']}"

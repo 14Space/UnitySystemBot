@@ -32,6 +32,16 @@ BASE_OPTS = {
 if FFMPEG_DIR:
     BASE_OPTS["ffmpeg_location"] = FFMPEG_DIR
 
+# Прокси (из .env → PROXY_URL) применяем ТОЛЬКО к YT Music — она чаще всего под гео-блоком.
+# Остальные загрузки идут напрямую, через обычную сеть.
+_PROXY = os.getenv("PROXY_URL", "")
+
+
+def _proxy_opts(url: str) -> dict:
+    if _PROXY and "music.youtube.com" in (url or ""):
+        return {"proxy": _PROXY}
+    return {}
+
 
 def get_video_info(url: str, allow_drm: bool = False) -> dict:
     """Получает информацию о видео без скачивания.
@@ -40,6 +50,7 @@ def get_video_info(url: str, allow_drm: bool = False) -> dict:
     opts = dict(BASE_OPTS)
     if allow_drm:
         opts["ignore_no_formats_error"] = True
+    opts.update(_proxy_opts(url))  # прокси только для YT Music
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -170,6 +181,18 @@ def search_audio(query: str, target_duration: int = None, count: int = 5) -> str
     return best.get("webpage_url") or f"https://www.youtube.com/watch?v={best['id']}"
 
 
+def search_audio_candidates(query: str, target_duration: int = None, count: int = 5) -> list[str]:
+    """Несколько лучших совпадений (отсортированы по близости длительности).
+    Нужно, чтобы при недоступности первого результата попробовать следующий."""
+    opts = {**BASE_OPTS, "noplaylist": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        res = ydl.extract_info(f"ytsearch{count}:{query}", download=False)
+    entries = [e for e in (res.get("entries") or []) if e]
+    if target_duration:
+        entries.sort(key=lambda e: abs((e.get("duration") or 0) - target_duration))
+    return [e.get("webpage_url") or f"https://www.youtube.com/watch?v={e['id']}" for e in entries]
+
+
 def get_soundcloud_set(url: str) -> dict:
     """Читает альбом/плейлист (set) SoundCloud: название и список треков с реальными именами.
     Полное чтение (не flat) — иначе у части треков вместо названия числовой id.
@@ -246,6 +269,7 @@ def download_audio(
         "progress_hooks": [progress_hook],
         "writethumbnail": embed_thumbnail,  # обложку источника качаем только если вшиваем
         "postprocessors": postprocessors,
+        **_proxy_opts(url),  # прокси только для YT Music
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

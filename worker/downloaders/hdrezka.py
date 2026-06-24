@@ -21,42 +21,45 @@ def open_media(url: str) -> HdRezkaApi:
     return HdRezkaApi(url)
 
 
-def get_info(r: HdRezkaApi, url: str) -> dict:
-    """Название, тип (фильм/сериал), список озвучек, сезон/серия (для сериала)."""
-    is_series = "series" in str(r.type)
-    season, episode = parse_season_episode(url)
-    if is_series:
-        season = season or 1
-        episode = episode or 1
-    # Убираем «(+субтитры)» из названия — в Telegram мягкие субтитры не видны,
-    # чтобы не сбивать с толку. Сами субтитры всё равно вшиваем в файл.
-    def _clean(n: str) -> str:
-        return n.replace(" (+субтитры)", "").replace(" (+subtitles)", "").strip()
+def _clean_name(n: str) -> str:
+    """Убираем «(+субтитры)» — в Telegram мягкие субтитры не видны, не путаем людей."""
+    return n.replace(" (+субтитры)", "").replace(" (+subtitles)", "").strip()
 
-    # Премиум-озвучки (только по подписке HDRezka) не показываем.
-    # У сериала озвучки зависят от конкретной серии — берём её набор, а не общий.
-    if is_series:
-        eps = next((s["episodes"] for s in r.episodesInfo if s["season"] == season), [])
-        ep = next((e for e in eps if e["episode"] == episode), None)
-        raw = ep["translations"] if ep else []
-        translators = [
-            (t["translator_id"], _clean(t["translator_name"]))
-            for t in raw if not t.get("premium")
-        ]
-    else:
-        translators = [
-            (tid, _clean(info["name"]))
-            for tid, info in r.translators.items()
-            if not info.get("premium")
-        ]
-    return {
+
+def get_info(r: HdRezkaApi, url: str) -> dict:
+    """Базовая инфа. Для фильма — сразу озвучки; для сериала — список сезонов."""
+    is_series = "series" in str(r.type)
+    info = {
         "name": r.name,
         "is_series": is_series,
-        "translators": translators,
-        "season": season,
-        "episode": episode,
         "thumbnail": getattr(r, "thumbnailHQ", None) or getattr(r, "thumbnail", None),
     }
+    if is_series:
+        info["seasons"] = [s["season"] for s in r.episodesInfo]
+    else:
+        info["translators"] = [
+            (tid, _clean_name(details["name"]))
+            for tid, details in r.translators.items()
+            if not details.get("premium")
+        ]
+    return info
+
+
+def get_episodes(r: HdRezkaApi, season: int) -> list[int]:
+    """Список серий в сезоне."""
+    eps = next((s["episodes"] for s in r.episodesInfo if s["season"] == season), [])
+    return [e["episode"] for e in eps]
+
+
+def get_translators(r: HdRezkaApi, season: int, episode: int) -> list:
+    """Озвучки конкретной серии (без премиум)."""
+    eps = next((s["episodes"] for s in r.episodesInfo if s["season"] == season), [])
+    ep = next((e for e in eps if e["episode"] == episode), None)
+    raw = ep["translations"] if ep else []
+    return [
+        (t["translator_id"], _clean_name(t["translator_name"]))
+        for t in raw if not t.get("premium")
+    ]
 
 
 def get_stream(r: HdRezkaApi, translation: int, season=None, episode=None):
@@ -69,13 +72,23 @@ def stream_qualities(stream) -> list[str]:
     return list(stream.videos.keys())
 
 
-def _download_file(url: str, path: str):
+def _download_file(url: str, path: str, total: int = 0, progress_callback=None):
+    downloaded = 0
+    last = -1
     with requests.get(url, stream=True, timeout=180) as resp:
         resp.raise_for_status()
+        total = total or int(resp.headers.get("Content-Length", 0))
         with open(path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=1 << 16):
-                if chunk:
-                    f.write(chunk)
+                if not chunk:
+                    continue
+                f.write(chunk)
+                if progress_callback and total:
+                    downloaded += len(chunk)
+                    percent = round(downloaded / total * 100)
+                    if percent >= last + 5:  # шаг 5%, чтобы не спамить
+                        last = percent
+                        progress_callback(percent)
 
 
 def _safe_rm(path: str):
@@ -102,11 +115,24 @@ def _mux_subtitles(video: str, subs: list, out_path: str) -> bool:
     return res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
 
 
-def download_stream(stream, quality: str, name="video", season=None, episode=None) -> str:
+MAX_FILE_BYTES = 1_950_000_000  # лимит локального Telegram Bot API (~2 ГБ)
+
+
+def download_stream(stream, quality: str, name="video", season=None, episode=None,
+                    progress_callback=None) -> str:
     """Качает видео из уже полученного потока (без повторного запроса).
     Если у потока есть субтитры — тихо вшиваем их мягкими дорожками."""
     value = stream.videos[quality]
     video_url = value[0] if isinstance(value, (list, tuple)) else value
+
+    # Заранее узнаём размер — чтобы не качать 80% и не упереться в лимит в конце
+    try:
+        head = requests.head(video_url, timeout=30, allow_redirects=True)
+        size = int(head.headers.get("Content-Length", 0))
+    except Exception:
+        size = 0
+    if size and size > MAX_FILE_BYTES:
+        raise ValueError("file too large")
 
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     safe = re.sub(r"[^\w]+", "_", name)[:40] or "video"
@@ -115,7 +141,7 @@ def download_stream(stream, quality: str, name="video", season=None, episode=Non
     raw = base + "_raw.mp4"
     final = base + ".mp4"
 
-    _download_file(video_url, raw)
+    _download_file(video_url, raw, total=size, progress_callback=progress_callback)
 
     # Вшиваем все доступные субтитры (мягкими дорожками)
     subs = []
