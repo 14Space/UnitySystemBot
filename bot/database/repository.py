@@ -1,0 +1,70 @@
+import hashlib
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+from bot.database.models import User, CachedFile, DownloadStat
+
+
+async def get_or_create_user(
+    session: AsyncSession, user_id: int, username: str, language: str = "ru"
+) -> User:
+    """Возвращает пользователя из БД, или создаёт нового"""
+    result = await session.execute(select(User).where(User.user_id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        user = User(user_id=user_id, username=username, language=language)
+        session.add(user)
+        await session.commit()
+    return user
+
+
+async def increment_download(session: AsyncSession, platform: str) -> None:
+    """Увеличивает счётчик запросов для платформы"""
+    row = await session.execute(
+        select(DownloadStat).where(DownloadStat.platform == platform)
+    )
+    stat = row.scalar_one_or_none()
+    if stat:
+        stat.count += 1
+    else:
+        session.add(DownloadStat(platform=platform, count=1))
+    await session.commit()
+
+
+async def get_stats(session: AsyncSession) -> dict:
+    """Сводка для админа: скачивания по платформам, число юзеров, языки"""
+    rows = (await session.execute(select(DownloadStat))).scalars().all()
+    downloads = {r.platform: r.count for r in rows}
+
+    users = (await session.execute(select(func.count(User.id)))).scalar() or 0
+
+    lang_rows = (await session.execute(
+        select(User.language, func.count(User.id)).group_by(User.language)
+    )).all()
+    languages = {(lang or "?"): cnt for lang, cnt in lang_rows}
+
+    return {
+        "downloads": downloads,
+        "total_downloads": sum(downloads.values()),
+        "users": users,
+        "languages": languages,
+    }
+
+
+async def get_cached_file_id(session: AsyncSession, url: str, quality: str = None) -> str | None:
+    """Возвращает Telegram file_id для пары URL+качество, если он уже в кэше"""
+    url_hash = hashlib.md5(f"{url}:{quality}".encode()).hexdigest()
+    result = await session.execute(select(CachedFile).where(CachedFile.url_hash == url_hash))
+    cached = result.scalar_one_or_none()
+    return cached.file_id if cached else None
+
+
+async def save_cached_file_id(session: AsyncSession, url: str, file_id: str, quality: str = None) -> None:
+    """Сохраняет file_id в кэш (или обновляет, если запись уже есть)"""
+    url_hash = hashlib.md5(f"{url}:{quality}".encode()).hexdigest()
+    existing = await session.execute(select(CachedFile).where(CachedFile.url_hash == url_hash))
+    row = existing.scalar_one_or_none()
+    if row:
+        row.file_id = file_id
+    else:
+        session.add(CachedFile(url_hash=url_hash, original_url=url, file_id=file_id, quality=quality))
+    await session.commit()

@@ -1,0 +1,26 @@
+# Телеграм-бот
+aiogram==3.20.0
+
+# Скачивание (YouTube, Pinterest, PornHub и др.)
+yt-dlp>=2025.6.9           # держи свежим: pip install -U yt-dlp (сайты часто меняются)
+requests==2.34.2
+
+# База данных (кэш file_id, пользователи)
+SQLAlchemy==2.0.41
+aiosqlite==0.21.0
+
+# Конфиг
+python-dotenv==1.1.1
+
+# Аудио: теги и обложки mp3, ресайз миниатюр
+mutagen==1.48.0
+Pillow==12.2.0
+spotipy==2.26.0            # метаданные Spotify
+
+# Instagram (фото/видео/карусели)
+instaloader==4.15.1
+
+# HDRezka (фильмы/сериалы)
+HdRezkaApi==11.2.3
+beautifulsoup4==4.15.0
+lxml==6.1.1

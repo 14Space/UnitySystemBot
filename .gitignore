@@ -1,0 +1,20 @@
+# Секреты и окружение
+.env
+
+# Кэш токенов (spotipy сохраняет сюда токен Spotify)
+.cache
+
+# База данных
+*.db
+
+# Скачанные файлы
+data/downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Логи
+*.log
