@@ -13,13 +13,15 @@ from bot.keyboards.quality import build_quality_keyboard, FREE_LIMIT
 from bot.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar
 from bot.utils import limits
+from bot.utils.i18n import t, lang_of, t_kind
 from bot.database import SessionLocal
 from bot.database.repository import (
     get_cached_file_id, save_cached_file_id, increment_download, is_premium,
 )
 from worker.downloaders.ytdlp_wrapper import (
     get_video_info, get_available_qualities, download_video, download_shorts,
-    download_audio, search_audio, search_audio_candidates, get_soundcloud_set, download_media
+    download_audio, search_audio, search_audio_candidates, get_soundcloud_set,
+    download_media, convert_gif_to_mp4,
 )
 from worker.downloaders.spotify import get_track_info, get_collection_info
 from worker.downloaders.instagram import download_reel, download_post, is_image
@@ -59,18 +61,32 @@ def _remember(store: dict, key: str, value: dict):
 # Пользователи с активной (идущей прямо сейчас) загрузкой — у каждого не больше одной
 ACTIVE_DOWNLOADS: set[int] = set()
 
+# Короткий id -> ссылка, для inline-перехода в личку (deep link короче 64 символов)
+INLINE_LINKS: dict[str, str] = {}
+
+
+def stash_inline_link(url: str) -> str:
+    """Сохраняет ссылку под коротким id (для кнопки-перехода из inline в личку)."""
+    sid = uuid.uuid4().hex[:8]
+    _remember(INLINE_LINKS, sid, url)
+    return sid
+
 
 @router.message(F.text)
 async def handle_link(message: Message):
-    url = message.text.strip()
+    await process_link(message, message.text.strip())
 
+
+async def process_link(message: Message, url: str):
+    """Обработка одной ссылки. Вызывается из текстовых сообщений и из inline-перехода."""
     if not url.startswith("http"):
         return
 
+    lang = lang_of(message.from_user)
     platform = detect_platform(url)
 
     if platform == Platform.UNKNOWN:
-        await message.answer("Эта ссылка пока не поддерживается.")
+        await message.answer(t("unsupported_link", lang))
         return
 
     # Статистика популярности платформ
@@ -79,7 +95,7 @@ async def handle_link(message: Message):
 
     # Shorts — скачиваем сразу без лишних сообщений
     if platform == Platform.YOUTUBE_SHORTS:
-        await _handle_simple_video(message, url, download_shorts, "shorts")
+        await _handle_simple_video(message, url, download_shorts, "shorts", lang)
         return
 
     # Аудио (SoundCloud, YT Music) — качаем сразу в mp3 с тегами.
@@ -96,32 +112,32 @@ async def handle_link(message: Message):
 
     # Spotify-альбом/плейлист — показываем список треков с выбором
     if platform == Platform.SPOTIFY_COLLECTION:
-        await _handle_spotify_collection(message, url)
+        await _handle_spotify_collection(message, url, lang)
         return
 
     # SoundCloud-сет (альбом/плейлист) — тоже список треков
     if platform == Platform.SOUNDCLOUD_SET:
-        await _handle_soundcloud_set(message, url)
+        await _handle_soundcloud_set(message, url, lang)
         return
 
     # Instagram Reel — короткое видео, качаем сразу (как Shorts)
     if platform == Platform.INSTAGRAM_REEL:
-        await _handle_simple_video(message, url, download_reel, "reel")
+        await _handle_simple_video(message, url, download_reel, "reel", lang)
         return
 
     # Instagram пост — фото, видео или карусель (отдаём альбомом)
     if platform == Platform.INSTAGRAM_POST:
-        await _handle_files(message, url, download_post, "Не удалось скачать пост, возможно, он приватный.")
+        await _handle_files(message, url, download_post, "ig_post_failed", lang)
         return
 
     # TikTok — видео без водяного знака или слайдшоу (через tikwm API)
     if platform == Platform.TIKTOK:
-        await _handle_files(message, url, download_tiktok, "Не удалось скачать, проверь ссылку или попробуй позже.")
+        await _handle_files(message, url, download_tiktok, "generic_dl_failed", lang)
         return
 
     # Pinterest — одно медиа (фото или видео) через yt-dlp
     if platform == Platform.PINTEREST:
-        await _handle_media(message, url, "pinterest")
+        await _handle_media(message, url, "pinterest", lang)
         return
 
     # PornHub shorties — это обычное видео с другим URL. Переписываем в стандартный
@@ -129,23 +145,23 @@ async def handle_link(message: Message):
     if platform == Platform.PORNHUB_SHORT:
         video_id = urlparse(url).path.rstrip("/").split("/")[-1]
         std_url = f"https://www.pornhub.com/view_video.php?viewkey={video_id}"
-        await _handle_simple_video(message, std_url, download_shorts, "ph_short")
+        await _handle_simple_video(message, std_url, download_shorts, "ph_short", lang)
         return
 
     # YouTube-видео и PornHub — выбор качества кнопками
     if platform in (Platform.YOUTUBE_VIDEO, Platform.PORNHUB):
-        await _handle_quality_video(message, url)
+        await _handle_quality_video(message, url, lang)
         return
 
     # HDRezka — фильм/сериал: выбор озвучки, затем качества
     if platform == Platform.HDREZKA:
-        await _handle_hdrezka(message, url)
+        await _handle_hdrezka(message, url, lang)
         return
 
 
-async def _handle_quality_video(message: Message, url: str):
+async def _handle_quality_video(message: Message, url: str, lang: str):
     """Получает метаданные и показывает выбор качества (YouTube, PornHub)."""
-    status = await message.reply("⏳ Ищу видосик...")
+    status = await message.reply(t("searching_video", lang))
     try:
         info = await asyncio.to_thread(get_video_info, url)
         available = await asyncio.to_thread(get_available_qualities, info)
@@ -166,7 +182,7 @@ async def _handle_quality_video(message: Message, url: str):
             "premium": premium,
         })
 
-        caption = f"{title}\n\nВыбери качество:"
+        caption = t("choose_quality", lang, title=title)
 
         keyboard = build_quality_keyboard(url_id, available, premium)
 
@@ -177,21 +193,18 @@ async def _handle_quality_video(message: Message, url: str):
 
     except Exception:
         logger.exception("Failed to get video info")
-        await _safe_edit(
-            status,
-            "Не удалось получить информацию о видео.\nПроверь ссылку или попробуй ещё раз."
-        )
+        await _safe_edit(status, t("video_info_failed", lang))
 
 
-async def _handle_hdrezka(message: Message, url: str):
+async def _handle_hdrezka(message: Message, url: str, lang: str):
     """HDRezka: фильм → озвучки; сериал → сначала сезон и серия."""
-    status = await message.reply("⏳ Ищу фильм/сериал...")
+    status = await message.reply(t("searching_movie", lang))
     try:
         api = await asyncio.to_thread(hdrezka.open_media, url)
         info = hdrezka.get_info(api, url)
     except Exception:
         logger.exception("HDRezka info failed")
-        await _safe_edit(status, "Не удалось открыть страницу HDRezka, проверь ссылку.")
+        await _safe_edit(status, t("hdrezka_open_failed", lang))
         return
 
     async with SessionLocal() as session:
@@ -216,11 +229,11 @@ async def _handle_hdrezka(message: Message, url: str):
     await status.delete()
 
     if info["is_series"]:
-        caption = f"Сериал: {info['name']}\n\nВыбери сезон:"
-        keyboard = build_season_keyboard(sid, info["seasons"])
+        caption = f"{t('word_series', lang)}: {info['name']}\n\n{t('label_choose_season', lang)}"
+        keyboard = build_season_keyboard(sid, info["seasons"], lang)
     else:
-        caption = f"Фильм: {info['name']}\n\nВыбери озвучку:"
-        keyboard = build_translator_keyboard(sid, info["translators"], 0)
+        caption = f"{t('word_movie', lang)}: {info['name']}\n\n{t('label_choose_translation', lang)}"
+        keyboard = build_translator_keyboard(sid, info["translators"], 0, lang)
 
     if entry["thumbnail"]:
         await message.answer_photo(entry["thumbnail"], caption=caption, reply_markup=keyboard)
@@ -231,26 +244,29 @@ async def _handle_hdrezka(message: Message, url: str):
 @router.callback_query(F.data.startswith("hrss:"))
 async def handle_hdrezka_season(callback: CallbackQuery):
     """Сезон выбран — показываем серии"""
+    lang = lang_of(callback.from_user)
     _, sid, season = callback.data.split(":")
     entry = HDREZKA_STORE.get(sid)
     if not entry:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
     season = int(season)
     entry["season"] = season
     await callback.answer()
     episodes = await asyncio.to_thread(hdrezka.get_episodes, entry["api"], season)
-    text = f"Сериал: {entry['name']}\nСезон {season}\n\nВыбери серию:"
-    await _edit_or_caption(callback.message, text, build_episode_keyboard(sid, season, episodes))
+    text = (f"{t('word_series', lang)}: {entry['name']}\n{t('word_season', lang)} {season}"
+            f"\n\n{t('label_choose_episode', lang)}")
+    await _edit_or_caption(callback.message, text, build_episode_keyboard(sid, season, episodes, lang))
 
 
 @router.callback_query(F.data.startswith("hrep:"))
 async def handle_hdrezka_episode(callback: CallbackQuery):
     """Серия выбрана — показываем озвучки этой серии"""
+    lang = lang_of(callback.from_user)
     _, sid, season, episode = callback.data.split(":")
     entry = HDREZKA_STORE.get(sid)
     if not entry:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
     entry["season"] = int(season)
     entry["episode"] = int(episode)
@@ -260,42 +276,44 @@ async def handle_hdrezka_episode(callback: CallbackQuery):
         hdrezka.get_translators, entry["api"], entry["season"], entry["episode"]
     )
     entry["translators"] = translators
-    text = f"{_hdrezka_head(entry)}\n\nВыбери озвучку:"
-    await _edit_or_caption(callback.message, text, build_translator_keyboard(sid, translators, 0))
+    text = f"{_hdrezka_head(entry, lang)}\n\n{t('label_choose_translation', lang)}"
+    await _edit_or_caption(callback.message, text, build_translator_keyboard(sid, translators, 0, lang))
 
 
 @router.callback_query(F.data.startswith("hrback:"))
 async def handle_hdrezka_back(callback: CallbackQuery):
     """Назад к выбору сезона"""
+    lang = lang_of(callback.from_user)
     _, sid = callback.data.split(":")
     entry = HDREZKA_STORE.get(sid)
     if not entry:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
     await callback.answer()
-    text = f"Сериал: {entry['name']}\n\nВыбери сезон:"
-    await _edit_or_caption(callback.message, text, build_season_keyboard(sid, entry["seasons"]))
+    text = f"{t('word_series', lang)}: {entry['name']}\n\n{t('label_choose_season', lang)}"
+    await _edit_or_caption(callback.message, text, build_season_keyboard(sid, entry["seasons"], lang))
 
 
 @router.callback_query(F.data.startswith("hrp:"))
 async def handle_hdrezka_page(callback: CallbackQuery):
     """Пагинация списка озвучек"""
+    lang = lang_of(callback.from_user)
     _, sid, page = callback.data.split(":")
     entry = HDREZKA_STORE.get(sid)
     if not entry:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
-    keyboard = build_translator_keyboard(sid, entry["translators"], int(page))
+    keyboard = build_translator_keyboard(sid, entry["translators"], int(page), lang)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
     await callback.answer()
 
 
-def _hdrezka_head(entry: dict) -> str:
+def _hdrezka_head(entry: dict, lang: str) -> str:
     """Шапка сообщения: «Фильм/Сериал: Название (+ сезон/серия)»."""
-    kind = "Сериал" if entry["is_series"] else "Фильм"
+    kind = t("word_series", lang) if entry["is_series"] else t("word_movie", lang)
     head = f"{kind}: {entry['name']}"
     if entry["is_series"]:
-        head += f"\nСезон {entry['season']}, серия {entry['episode']}"
+        head += f"\n{t('word_season', lang)} {entry['season']}, {t('word_episode', lang)} {entry['episode']}"
     return head
 
 
@@ -310,22 +328,24 @@ async def _edit_or_caption(message, text: str, keyboard):
             pass
 
 
-async def _show_hdrezka_quality(message, entry, sid, tid):
+async def _show_hdrezka_quality(message, entry, sid, tid, lang):
     """Показывает кнопки качества для выбранной озвучки."""
     tname = dict(entry["translators"]).get(tid, "")
     qualities = hdrezka.stream_qualities(entry["streams"][tid])
     keyboard = build_hdrezka_quality_keyboard(sid, tid, qualities, entry.get("premium", False))
-    text = f"{_hdrezka_head(entry)}\nОзвучка: {tname}\n\nВыбери качество:"
+    text = (f"{_hdrezka_head(entry, lang)}\n{t('label_translation', lang, name=tname)}"
+            f"\n\n{t('label_choose_quality', lang)}")
     await _edit_or_caption(message, text, keyboard)
 
 
 @router.callback_query(F.data.startswith("hrt:"))
 async def handle_hdrezka_translator(callback: CallbackQuery):
     """Озвучка выбрана — получаем поток (один запрос) и показываем качества"""
+    lang = lang_of(callback.from_user)
     _, sid, tid = callback.data.split(":")
     entry = HDREZKA_STORE.get(sid)
     if not entry:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     tid = int(tid)
@@ -333,7 +353,9 @@ async def handle_hdrezka_translator(callback: CallbackQuery):
     tname = dict(entry["translators"]).get(tid, "")
     # Сразу показываем «идёт загрузка», чтобы не выглядело зависшим
     await _edit_or_caption(
-        callback.message, f"{_hdrezka_head(entry)}\nОзвучка: {tname}\n\n⏳ Получаю качества...", None
+        callback.message,
+        f"{_hdrezka_head(entry, lang)}\n{t('label_translation', lang, name=tname)}\n\n{t('getting_qualities', lang)}",
+        None,
     )
     try:
         stream = await asyncio.to_thread(
@@ -341,27 +363,28 @@ async def handle_hdrezka_translator(callback: CallbackQuery):
         )
     except Exception:
         logger.exception("HDRezka stream failed")
-        await _edit_or_caption(callback.message, "Не удалось получить данные этой озвучки.", None)
+        await _edit_or_caption(callback.message, t("translation_failed", lang), None)
         return
 
     entry["streams"][tid] = stream
-    await _show_hdrezka_quality(callback.message, entry, sid, tid)
+    await _show_hdrezka_quality(callback.message, entry, sid, tid, lang)
 
 
 @router.callback_query(F.data.startswith("hrq:"))
 async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
     """Качество выбрано — качаем и отправляем"""
+    lang = lang_of(callback.from_user)
     _, sid, tid, qidx = callback.data.split(":")
     entry = HDREZKA_STORE.get(sid)
     if not entry:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     tid = int(tid)
     stream = entry["streams"].get(tid)
     qualities = hdrezka.stream_qualities(stream) if stream else []
     if not stream or int(qidx) >= len(qualities):
-        await callback.answer("Выбери озвучку заново", show_alert=True)
+        await callback.answer(t("reselect_translation", lang), show_alert=True)
         return
     quality = qualities[int(qidx)]
     user_id = callback.from_user.id
@@ -369,17 +392,17 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
     # Защита: качество выше 720p — только для Premium
     height = 9999 if "K" in quality.upper() else int("".join(filter(str.isdigit, quality)) or 0)
     if height > FREE_LIMIT and not entry.get("premium"):
-        await callback.answer("Premium ✨", show_alert=True)
+        await callback.answer(t("premium_alert", lang), show_alert=True)
         return
 
     if user_id in ACTIVE_DOWNLOADS:
-        await callback.answer("⏳ Сначала дождись текущей загрузки.", show_alert=True)
+        await callback.answer(t("wait_current", lang), show_alert=True)
         return
 
     await callback.answer()
     await callback.message.delete()
     ACTIVE_DOWNLOADS.add(user_id)
-    await limits.acquire_download()
+    await limits.acquire(limits.HEAVY)
     chat_id = entry["chat_id"]
     status = await bot.send_message(chat_id, make_progress_bar(0), reply_to_message_id=entry["user_msg_id"])
 
@@ -398,7 +421,7 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
             hdrezka.download_stream, stream, quality,
             entry["name"], entry["season"], entry["episode"], on_progress,
         )
-        await _safe_edit(status, "📤 Отправляю...")
+        await _safe_edit(status, t("uploading", lang))
         await bot.send_video(
             chat_id, FSInputFile(file_path),
             supports_streaming=True, reply_to_message_id=entry["user_msg_id"],
@@ -407,13 +430,13 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         _cleanup(file_path)
     except Exception as e:
         logger.exception("HDRezka download failed")
-        await _safe_edit(status, limits.friendly_error(e))
+        await _safe_edit(status, limits.friendly_error(e, lang))
     finally:
-        limits.release_download()
+        await limits.release(limits.HEAVY)
         ACTIVE_DOWNLOADS.discard(user_id)
 
 
-async def _handle_simple_video(message: Message, url: str, download_fn, cache_key: str):
+async def _handle_simple_video(message: Message, url: str, download_fn, cache_key: str, lang: str):
     """Качает короткое видео сразу (Shorts, Instagram Reel): кэш, лимит, отправка."""
     async with SessionLocal() as session:
         cached_id = await get_cached_file_id(session, url, cache_key)
@@ -422,12 +445,12 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
         return
 
     if message.from_user.id in ACTIVE_DOWNLOADS:
-        await message.reply("⏳ Сначала дождись текущей загрузки.")
+        await message.reply(t("wait_current", lang))
         return
 
     ACTIVE_DOWNLOADS.add(message.from_user.id)
-    await limits.acquire_download()
-    status = await message.reply("⏳ Скачиваю...")
+    await limits.acquire(limits.LIGHT)
+    status = await message.reply(t("downloading", lang))
     try:
         file_path = await asyncio.to_thread(download_fn, url)
         sent = await message.reply_video(FSInputFile(file_path), supports_streaming=True)
@@ -438,34 +461,43 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
         _cleanup(file_path)
     except Exception as e:
         logger.exception("%s download failed", cache_key)
-        await _safe_edit(status, limits.friendly_error(e))
+        await _safe_edit(status, limits.friendly_error(e, lang))
     finally:
-        limits.release_download()
+        await limits.release(limits.LIGHT)
         ACTIVE_DOWNLOADS.discard(message.from_user.id)
 
 
-async def _handle_media(message: Message, url: str, cache_key: str):
-    """Качает одно медиа (TikTok, Pinterest) и шлёт как фото или видео — по типу файла."""
-    # Кэш: в file_id храним префикс типа — "P:" фото, "V:" видео
+async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
+    """Качает одно медиа (TikTok, Pinterest) и шлёт как фото/гиф/видео — по типу файла."""
+    # Кэш: в file_id храним префикс типа — "P:" фото, "A:" гиф, "V:" видео
     async with SessionLocal() as session:
         cached = await get_cached_file_id(session, url, cache_key)
     if cached:
         if cached.startswith("P:"):
             await message.reply_photo(cached[2:])
+        elif cached.startswith("A:"):
+            await message.reply_animation(cached[2:])
         else:
             await message.reply_video(cached[2:], supports_streaming=True)
         return
 
     if message.from_user.id in ACTIVE_DOWNLOADS:
-        await message.reply("⏳ Сначала дождись текущей загрузки.")
+        await message.reply(t("wait_current", lang))
         return
 
     ACTIVE_DOWNLOADS.add(message.from_user.id)
-    await limits.acquire_download()
-    status = await message.reply("⏳ Скачиваю...")
+    await limits.acquire(limits.LIGHT)
+    status = await message.reply(t("downloading", lang))
     try:
         file_path = await asyncio.to_thread(download_media, url)
-        if is_image(file_path):
+        if file_path.lower().endswith(".gif"):
+            # GIF → чистый mp4 (без грубой авто-конвертации Telegram), шлём анимацией
+            mp4 = await asyncio.to_thread(convert_gif_to_mp4, file_path)
+            sent = await message.reply_animation(FSInputFile(mp4))
+            fid = "A:" + sent.animation.file_id if sent.animation else None
+            if mp4 != file_path:
+                _cleanup(mp4)
+        elif is_image(file_path):
             sent = await message.reply_photo(FSInputFile(file_path))
             fid = "P:" + sent.photo[-1].file_id if sent.photo else None
         else:
@@ -478,25 +510,25 @@ async def _handle_media(message: Message, url: str, cache_key: str):
         _cleanup(file_path)
     except Exception as e:
         logger.exception("%s download failed", cache_key)
-        await _safe_edit(status, limits.friendly_error(e))
+        await _safe_edit(status, limits.friendly_error(e, lang))
     finally:
-        limits.release_download()
+        await limits.release(limits.LIGHT)
         ACTIVE_DOWNLOADS.discard(message.from_user.id)
 
 
-async def _handle_files(message: Message, url: str, download_fn, error_text: str):
+async def _handle_files(message: Message, url: str, download_fn, error_key: str, lang: str):
     """Качает набор файлов (Instagram пост, TikTok) и отдаёт фото/видео или альбомом."""
     if message.from_user.id in ACTIVE_DOWNLOADS:
-        await message.reply("⏳ Сначала дождись текущей загрузки.")
+        await message.reply(t("wait_current", lang))
         return
 
     ACTIVE_DOWNLOADS.add(message.from_user.id)
-    await limits.acquire_download()
-    status = await message.reply("⏳ Скачиваю...")
+    await limits.acquire(limits.LIGHT)
+    status = await message.reply(t("downloading", lang))
     try:
         files = await asyncio.to_thread(download_fn, url)
         if not files:
-            await _safe_edit(status, "Тут нет медиа для скачивания.")
+            await _safe_edit(status, t("no_media", lang))
             return
 
         # Один файл — отправляем напрямую (фото или видео)
@@ -522,13 +554,13 @@ async def _handle_files(message: Message, url: str, download_fn, error_text: str
             _cleanup(f)
     except Exception as e:
         logger.exception("%s download failed", url)
-        msg = limits.friendly_error(e)
+        msg = limits.friendly_error(e, lang)
         # ошибка не распознана — даём платформенную подсказку (напр. про приватность)
-        if msg.startswith("Не удалось скачать, проверь"):
-            msg = error_text
+        if msg == t("generic_dl_failed", lang):
+            msg = t(error_key, lang)
         await _safe_edit(status, msg)
     finally:
-        limits.release_download()
+        await limits.release(limits.LIGHT)
         ACTIVE_DOWNLOADS.discard(message.from_user.id)
 
 
@@ -552,7 +584,7 @@ async def _handle_spotify(message: Message, url: str):
         track = await asyncio.to_thread(get_track_info, url)
     except Exception:
         logger.exception("Spotify metadata failed")
-        await message.reply("Не удалось прочитать трек, проверь ссылку или попробуй позже.")
+        await message.reply(t("track_read_failed", lang_of(message.from_user)))
         return
 
     # Источник скачивания — поиск на YouTube по «Исполнитель Название».
@@ -567,7 +599,7 @@ async def _handle_spotify(message: Message, url: str):
     await _handle_audio(message, url, source=source, meta=meta)
 
 
-async def _handle_spotify_collection(message: Message, url: str):
+async def _handle_spotify_collection(message: Message, url: str, lang: str):
     """Читает альбом/плейлист Spotify и показывает список треков с выбором"""
     try:
         coll = await asyncio.to_thread(get_collection_info, url)
@@ -575,13 +607,13 @@ async def _handle_spotify_collection(message: Message, url: str):
         logger.exception("Spotify collection failed")
         # Spotify с конца 2024 не отдаёт редакционные/алгоритмические плейлисты (id вида 37i9...)
         if "404" in str(e) or "Not Found" in str(e):
-            await message.reply("Spotify не отдаёт этот плейлист...")
+            await message.reply(t("spotify_no_playlist", lang))
         else:
-            await message.reply("Не удалось прочитать альбом/плейлист, проверь ссылку или попробуй позже.")
+            await message.reply(t("collection_read_failed", lang))
         return
 
     if not coll["tracks"]:
-        await message.reply("В этом альбоме нет треков для скачивания.")
+        await message.reply(t("empty_album", lang))
         return
 
     # Приводим к общему формату коллекции: у каждого трека параметры скачивания
@@ -598,22 +630,22 @@ async def _handle_spotify_collection(message: Message, url: str):
 
     total_min = coll["total_duration"] // 60
     await _show_collection(
-        message, coll["kind"], coll["title"], tracks,
-        cover=coll.get("cover"), extra=f", ~{total_min} мин",
+        message, coll["kind"], coll["title"], tracks, lang,
+        cover=coll.get("cover"), extra=t("minutes_suffix", lang, min=total_min),
     )
 
 
-async def _handle_soundcloud_set(message: Message, url: str):
+async def _handle_soundcloud_set(message: Message, url: str, lang: str):
     """Читает сет (альбом/плейлист) SoundCloud и показывает список треков"""
     try:
         data = await asyncio.to_thread(get_soundcloud_set, url)
     except Exception:
         logger.exception("SoundCloud set failed")
-        await message.reply("Не удалось прочитать альбом/плейлист SoundCloud. Проверь ссылку.")
+        await message.reply(t("soundcloud_set_failed", lang))
         return
 
     if not data["tracks"]:
-        await message.reply("В этом альбоме нет треков для скачивания.")
+        await message.reply(t("empty_album", lang))
         return
 
     # У треков SoundCloud прямые ссылки — качаем напрямую, с фолбэком на поиск при DRM
@@ -625,12 +657,12 @@ async def _handle_soundcloud_set(message: Message, url: str):
         "fallback_query": _soundcloud_query(t["url"]),
     } for t in data["tracks"]]
 
-    total_min = sum(t["duration"] for t in data["tracks"]) // 60
-    extra = f", ~{total_min} мин" if total_min else ""
-    await _show_collection(message, "Сет", data["title"], tracks, cover=data.get("cover"), extra=extra)
+    total_min = sum(tr["duration"] for tr in data["tracks"]) // 60
+    extra = t("minutes_suffix", lang, min=total_min) if total_min else ""
+    await _show_collection(message, "Сет", data["title"], tracks, lang, cover=data.get("cover"), extra=extra)
 
 
-async def _show_collection(message: Message, kind: str, title: str, tracks: list,
+async def _show_collection(message: Message, kind: str, title: str, tracks: list, lang: str,
                            cover: str = None, extra: str = ""):
     """Сохраняет коллекцию и показывает список треков с пагинацией"""
     async with SessionLocal() as session:
@@ -642,12 +674,12 @@ async def _show_collection(message: Message, kind: str, title: str, tracks: list
         "premium": premium, "chat_id": message.chat.id, "user_msg_id": message.message_id,
     })
 
-    caption = (
-        f"{kind}: {title}\n"
-        f"{len(tracks)} треков{extra}\n\n"
-        f"Выбери трек:"
+    caption = t(
+        "collection_caption", lang,
+        kind=t_kind(kind, lang), title=title,
+        count=len(tracks), tracks_word=t("tracks_word", lang), extra=extra,
     )
-    keyboard = build_tracklist_keyboard(coll_id, tracks, 0, premium)
+    keyboard = build_tracklist_keyboard(coll_id, tracks, 0, premium, lang)
     if cover:
         await message.answer_photo(cover, caption=caption, reply_markup=keyboard)
     else:
@@ -663,28 +695,28 @@ async def _handle_audio(
         source = cache_url
     await _download_and_send_audio(
         message.bot, message.chat.id, message.from_user.id, message.message_id,
-        cache_url, source, meta=meta, fallback_query=fallback_query,
+        cache_url, source, lang_of(message.from_user), meta=meta, fallback_query=fallback_query,
     )
 
 
 async def _download_and_send_audio(
     bot: Bot, chat_id: int, user_id: int, reply_to: int,
-    cache_url: str, source: str, meta: dict = None, fallback_query: str = None,
+    cache_url: str, source: str, lang: str, meta: dict = None, fallback_query: str = None,
 ):
     """Скачивание одного трека с лимитом «1 загрузка на пользователя»."""
     if user_id in ACTIVE_DOWNLOADS:
-        await bot.send_message(chat_id, "⏳ Сначала дождись текущей загрузки.", reply_to_message_id=reply_to)
+        await bot.send_message(chat_id, t("wait_current", lang), reply_to_message_id=reply_to)
         return
     ACTIVE_DOWNLOADS.add(user_id)
     try:
-        await _do_download_audio(bot, chat_id, reply_to, cache_url, source, meta, fallback_query)
+        await _do_download_audio(bot, chat_id, reply_to, cache_url, source, lang, meta, fallback_query)
     finally:
         ACTIVE_DOWNLOADS.discard(user_id)
 
 
 async def _do_download_audio(
     bot: Bot, chat_id: int, reply_to: int,
-    cache_url: str, source: str, meta: dict = None, fallback_query: str = None,
+    cache_url: str, source: str, lang: str, meta: dict = None, fallback_query: str = None,
 ):
     """
     Ядро скачивания одного трека (кэш + глобальный слот). БЕЗ проверки «1 на юзера» —
@@ -699,7 +731,7 @@ async def _do_download_audio(
 
     # Одиночный трек качается МОЛЧА (без прогресс-бара). Общий прогресс показывает
     # только «Скачать всё» (там статус «N / total»).
-    await limits.acquire_download()
+    await limits.acquire(limits.LIGHT)
 
     try:
         # cover_url — правильная обложка из оригинала (если есть), заменит обложку с YouTube
@@ -793,19 +825,20 @@ async def _do_download_audio(
         _cleanup(file_path)
     except Exception as e:
         logger.exception("Audio download failed")
-        await bot.send_message(chat_id, limits.friendly_error(e), reply_to_message_id=reply_to)
+        await bot.send_message(chat_id, limits.friendly_error(e, lang), reply_to_message_id=reply_to)
     finally:
-        limits.release_download()
+        await limits.release(limits.LIGHT)
 
 
 @router.callback_query(F.data.startswith("quality:"))
 async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
+    lang = lang_of(callback.from_user)
     _, quality_str, url_id = callback.data.split(":", 2)
     quality = int(quality_str)
 
     entry = URL_STORE.get(url_id)
     if not entry:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     chat_id = entry["chat_id"]
@@ -816,7 +849,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
 
     # Защита: качество выше 720p — только для Premium
     if quality > FREE_LIMIT and not entry.get("premium"):
-        await callback.answer("Premium ✨", show_alert=True)
+        await callback.answer(t("premium_alert", lang), show_alert=True)
         return
 
     # Кэш: если это качество уже качали — отдаём мгновенно (блокировку не применяем)
@@ -834,13 +867,13 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
 
     # Один пользователь — одна активная загрузка. Меню не удаляем, чтобы можно было повторить.
     if user_id in ACTIVE_DOWNLOADS:
-        await callback.answer("⏳ Сначала дождись текущей загрузки.", show_alert=True)
+        await callback.answer(t("wait_current", lang), show_alert=True)
         return
 
     await callback.answer()
     await callback.message.delete()
     ACTIVE_DOWNLOADS.add(user_id)
-    await limits.acquire_download()
+    await limits.acquire(limits.HEAVY)
 
     progress_msg = await bot.send_message(
         chat_id,
@@ -862,7 +895,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     def on_postprocess():
         # ffmpeg начал склейку — показываем отдельный статус
         asyncio.run_coroutine_threadsafe(
-            _safe_edit(progress_msg, "⚙️ Обрабатываю..."),
+            _safe_edit(progress_msg, t("processing", lang)),
             loop
         )
 
@@ -873,7 +906,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
             download_video, url, quality, on_progress, on_postprocess
         )
         # Не удаляем статус, а показываем «Отправляю» — заливка тоже занимает время
-        await _safe_edit(progress_msg, "📤 Отправляю...")
+        await _safe_edit(progress_msg, t("uploading", lang))
         sent = await bot.send_video(
             chat_id,
             FSInputFile(file_path),
@@ -889,13 +922,13 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
         _cleanup(file_path)
     except Exception as e:
         logger.exception("Download failed")
-        text = limits.friendly_error(e)
+        text = limits.friendly_error(e, lang)
         try:
             await progress_msg.edit_text(text)
         except Exception:
             await bot.send_message(chat_id, text)
     finally:
-        limits.release_download()
+        await limits.release(limits.HEAVY)
         ACTIVE_DOWNLOADS.discard(user_id)
 
 
@@ -925,12 +958,13 @@ def _cleanup(file_path: str):
 @router.callback_query(F.data.startswith("sppage:"))
 async def handle_collection_page(callback: CallbackQuery):
     """Переключение страниц списка треков"""
+    lang = lang_of(callback.from_user)
     _, coll_id, page_str = callback.data.split(":")
     coll = COLLECTION_STORE.get(coll_id)
     if not coll:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
-    keyboard = build_tracklist_keyboard(coll_id, coll["tracks"], int(page_str), coll.get("premium", False))
+    keyboard = build_tracklist_keyboard(coll_id, coll["tracks"], int(page_str), coll.get("premium", False), lang)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
     await callback.answer()
 
@@ -938,10 +972,11 @@ async def handle_collection_page(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("sptrk:"))
 async def handle_collection_track(callback: CallbackQuery, bot: Bot):
     """Скачивание одного трека из альбома/плейлиста/сета"""
+    lang = lang_of(callback.from_user)
     _, coll_id, idx_str = callback.data.split(":")
     coll = COLLECTION_STORE.get(coll_id)
     if not coll:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     track = coll["tracks"][int(idx_str)]
@@ -949,7 +984,7 @@ async def handle_collection_track(callback: CallbackQuery, bot: Bot):
 
     await _download_and_send_audio(
         bot, callback.message.chat.id, callback.from_user.id, callback.message.message_id,
-        track["cache_url"], track["source"],
+        track["cache_url"], track["source"], lang,
         meta=track["meta"], fallback_query=track["fallback_query"],
     )
 
@@ -957,20 +992,21 @@ async def handle_collection_track(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data.startswith("dlall:"))
 async def handle_download_all(callback: CallbackQuery, bot: Bot):
     """Premium: скачивание всех треков альбома/плейлиста по очереди"""
+    lang = lang_of(callback.from_user)
     _, coll_id = callback.data.split(":")
     coll = COLLECTION_STORE.get(coll_id)
     if not coll:
-        await callback.answer("Ссылка устарела, отправь её ещё раз", show_alert=True)
+        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     user_id = callback.from_user.id
     async with SessionLocal() as session:
         if not await is_premium(session, user_id):
-            await callback.answer("Premium ✨", show_alert=True)
+            await callback.answer(t("premium_alert", lang), show_alert=True)
             return
 
     if user_id in ACTIVE_DOWNLOADS:
-        await callback.answer("⏳ Сначала дождись текущей загрузки.", show_alert=True)
+        await callback.answer(t("wait_current", lang), show_alert=True)
         return
 
     await callback.answer()
@@ -980,14 +1016,16 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
     total = len(tracks)
 
     ACTIVE_DOWNLOADS.add(user_id)
-    status = await bot.send_message(chat_id, f"⬇️ Скачиваю весь список: 0 / {total}", reply_to_message_id=reply_to)
+    status = await bot.send_message(
+        chat_id, t("downloading_all", lang, i=0, total=total), reply_to_message_id=reply_to
+    )
     try:
         for i, track in enumerate(tracks, 1):
-            await _safe_edit(status, f"⬇️ Скачиваю весь список: {i} / {total}\n{track['title']}")
+            await _safe_edit(status, f"{t('downloading_all', lang, i=i, total=total)}\n{track['title']}")
             try:
                 await _do_download_audio(
                     bot, chat_id, reply_to,
-                    track["cache_url"], track["source"],
+                    track["cache_url"], track["source"], lang,
                     meta=track["meta"], fallback_query=track["fallback_query"],
                 )
             except Exception:
@@ -1000,6 +1038,6 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data.startswith("stub:"))
 async def handle_stub(callback: CallbackQuery):
     await callback.answer(
-        "Эта функция в разработке, скоро будет доступна 🚀",
+        t("feature_wip", lang_of(callback.from_user)),
         show_alert=True
     )

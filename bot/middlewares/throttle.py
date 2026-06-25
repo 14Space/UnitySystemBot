@@ -2,6 +2,7 @@ import time
 from typing import Callable, Any
 from aiogram import BaseMiddleware
 from aiogram.types import Message
+from bot.utils.i18n import t, lang_of
 
 # Не больше LIMIT сообщений за WINDOW секунд от одного пользователя.
 WINDOW = 10.0
@@ -26,7 +27,7 @@ class ThrottleMiddleware(BaseMiddleware):
                 self._hits[uid] = hits
                 if uid not in self._warned:
                     self._warned.add(uid)
-                    await event.answer("⏳ Слишком много запросов, подожди немного.")
+                    await event.answer(t("too_many_requests", lang_of(event.from_user)))
                 return  # сообщение не обрабатываем
 
             hits.append(now)

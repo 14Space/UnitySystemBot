@@ -2,6 +2,7 @@ import os
 import time
 import shutil
 import glob
+import subprocess
 import requests
 import yt_dlp
 
@@ -318,16 +319,37 @@ def download_media(url: str) -> str:
                 filename = filename.rsplit(".", 1)[0] + ".mp4"
             return filename
 
-        # Видео нет (фото-пин) — качаем картинку напрямую
+        # Видео нет (фото-пин) — качаем картинку напрямую, СОХРАНЯЯ реальное расширение
+        # (важно для .gif — иначе анимация теряется и шлётся как статичное фото)
         image_url = _best_image_url(info)
         if image_url:
-            path = os.path.join(DOWNLOADS_DIR, f"{info.get('id', 'media')}_viaSaver.jpg")
+            ext = os.path.splitext(image_url.split("?")[0])[1].lower()
+            if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+                ext = ".jpg"
+            path = os.path.join(DOWNLOADS_DIR, f"{info.get('id', 'media')}_viaSaver{ext}")
             content = requests.get(image_url, timeout=60).content
             with open(path, "wb") as f:
                 f.write(content)
             return path
 
         raise ValueError("В этом пине нет медиа")
+
+
+def convert_gif_to_mp4(gif_path: str) -> str:
+    """Конвертирует GIF в чистый mp4 (H.264) — чтобы Telegram не пере-сжимал грубо.
+    Если не вышло — возвращает исходный gif."""
+    mp4 = gif_path.rsplit(".", 1)[0] + "_anim.mp4"
+    ffmpeg = os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
+    cmd = [
+        ffmpeg, "-y", "-i", gif_path,
+        "-movflags", "faststart", "-pix_fmt", "yuv420p",
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-crf", "18",
+        mp4,
+    ]
+    subprocess.run(cmd, capture_output=True)
+    if os.path.exists(mp4) and os.path.getsize(mp4) > 0:
+        return mp4
+    return gif_path
 
 
 def _best_image_url(info: dict) -> str | None:

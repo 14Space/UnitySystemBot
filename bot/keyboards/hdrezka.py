@@ -1,15 +1,17 @@
 import re
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+from bot.utils.i18n import t
+
 PAGE_SIZE = 8
 FREE_LIMIT = 720  # выше — премиум-заглушка
 
 
-def build_season_keyboard(sid: str, seasons: list) -> InlineKeyboardMarkup:
+def build_season_keyboard(sid: str, seasons: list, lang: str = "ru") -> InlineKeyboardMarkup:
     """Сезоны кнопками (по 3 в ряд)."""
     rows, row = [], []
     for s in seasons:
-        row.append(InlineKeyboardButton(text=f"Сезон {s}", callback_data=f"hrss:{sid}:{s}"))
+        row.append(InlineKeyboardButton(text=t("btn_season", lang, n=s), callback_data=f"hrss:{sid}:{s}"))
         if len(row) == 3:
             rows.append(row); row = []
     if row:
@@ -17,7 +19,7 @@ def build_season_keyboard(sid: str, seasons: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_episode_keyboard(sid: str, season: int, episodes: list) -> InlineKeyboardMarkup:
+def build_episode_keyboard(sid: str, season: int, episodes: list, lang: str = "ru") -> InlineKeyboardMarkup:
     """Серии кнопками (по 5 в ряд) + кнопка назад к сезонам."""
     rows, row = [], []
     for e in episodes:
@@ -26,11 +28,11 @@ def build_episode_keyboard(sid: str, season: int, episodes: list) -> InlineKeybo
             rows.append(row); row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="← К сезонам", callback_data=f"hrback:{sid}")])
+    rows.append([InlineKeyboardButton(text=t("btn_back_to_seasons", lang), callback_data=f"hrback:{sid}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_translator_keyboard(sid: str, translators: list, page: int) -> InlineKeyboardMarkup:
+def build_translator_keyboard(sid: str, translators: list, page: int, lang: str = "ru") -> InlineKeyboardMarkup:
     """Список озвучек кнопками, по 8 на страницу."""
     total_pages = (len(translators) + PAGE_SIZE - 1) // PAGE_SIZE
     start = page * PAGE_SIZE
@@ -43,9 +45,9 @@ def build_translator_keyboard(sid: str, translators: list, page: int) -> InlineK
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="← Назад", callback_data=f"hrp:{sid}:{page - 1}"))
+        nav.append(InlineKeyboardButton(text=t("nav_back", lang), callback_data=f"hrp:{sid}:{page - 1}"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton(text="Вперёд →", callback_data=f"hrp:{sid}:{page + 1}"))
+        nav.append(InlineKeyboardButton(text=t("nav_forward", lang), callback_data=f"hrp:{sid}:{page + 1}"))
     if nav:
         rows.append(nav)
 

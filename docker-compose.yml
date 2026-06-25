@@ -26,5 +26,8 @@ services:
     volumes:
       - ./data/downloads:/app/data/downloads
       - ./bot.db:/app/bot.db
+      # Файлы, принятые локальным Bot API (ГС/кружки для расшифровки) – тем же путём,
+      # что и внутри telegram-bot-api, чтобы бот читал их напрямую с диска.
+      - ./data/telegram-api:/var/lib/telegram-bot-api:ro
     depends_on:
       - telegram-bot-api

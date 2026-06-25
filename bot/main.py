@@ -3,12 +3,12 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from bot.config import BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID
+from bot.config import BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats
 from bot.middlewares.register_user import RegisterUserMiddleware
 from bot.middlewares.throttle import ThrottleMiddleware
-from bot.handlers import start, link, admin, payment
+from bot.handlers import start, link, admin, payment, inline, transcribe
 from bot.handlers.admin import format_stats
 from worker.maintenance import clean_downloads, update_ytdlp
 
@@ -50,6 +50,8 @@ async def main():
     dp.include_router(start.router)
     dp.include_router(admin.router)
     dp.include_router(payment.router)
+    dp.include_router(inline.router)
+    dp.include_router(transcribe.router)
     dp.include_router(link.router)
 
     # Создаём таблицы в БД
@@ -60,6 +62,12 @@ async def main():
 
     # Фоновая дневная задача (обновление yt-dlp + отчёт)
     asyncio.create_task(_daily_tasks(bot))
+
+    # Прогрев модели расшифровки: грузим в видеопамять заранее, в фоне, чтобы
+    # не задерживать старт бота и чтобы первое голосовое не тормозило.
+    if WHISPER_PREWARM:
+        from worker.transcriber import warmup
+        asyncio.create_task(asyncio.to_thread(warmup))
 
     print("Бот запущен!")
     await dp.start_polling(bot)

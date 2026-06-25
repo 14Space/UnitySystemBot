@@ -90,6 +90,17 @@ def download_tiktok(url: str) -> list[str]:
     item_id = str(data.get("id", "tiktok"))
     files = []
 
+    # Live Photo: у каждого «живого фото» есть короткое видео — отдаём альбомом видео
+    live_images = data.get("live_images")
+    if live_images:
+        for i, vid_url in enumerate(live_images, 1):
+            content = requests.get(_abs(vid_url), headers=HEADERS, timeout=120).content
+            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.mp4")
+            with open(path, "wb") as f:
+                f.write(content)
+            files.append(path)
+        return files
+
     images = data.get("images")
     if images:  # слайдшоу — набор фото
         for i, img_url in enumerate(images, 1):

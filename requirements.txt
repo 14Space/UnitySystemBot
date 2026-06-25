@@ -20,6 +20,12 @@ spotipy==2.26.0            # метаданные Spotify
 # Instagram (фото/видео/карусели)
 instaloader==4.15.1
 
+# Расшифровка голосовых/кружков (Whisper локально, без API-ключей)
+faster-whisper==1.1.1
+# CUDA-библиотеки для работы Whisper на видеокарте NVIDIA (можно убрать на CPU-серверах)
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+
 # HDRezka (фильмы/сериалы)
 HdRezkaApi==11.2.3
 beautifulsoup4==4.15.0

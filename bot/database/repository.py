@@ -1,5 +1,6 @@
 import hashlib
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import User, CachedFile, DownloadStat
 
@@ -13,7 +14,13 @@ async def get_or_create_user(
     if not user:
         user = User(user_id=user_id, username=username, language=language)
         session.add(user)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            # Гонка: пользователя уже создал параллельный запрос — берём его
+            await session.rollback()
+            result = await session.execute(select(User).where(User.user_id == user_id))
+            user = result.scalar_one()
     return user
 
 
@@ -71,6 +78,17 @@ async def get_cached_file_id(session: AsyncSession, url: str, quality: str = Non
     result = await session.execute(select(CachedFile).where(CachedFile.url_hash == url_hash))
     cached = result.scalar_one_or_none()
     return cached.file_id if cached else None
+
+
+async def get_any_cached_file(session: AsyncSession, url: str) -> dict | None:
+    """Любой готовый файл для этой ссылки (для inline-режима). Возвращает file_id и тип."""
+    result = await session.execute(
+        select(CachedFile).where(CachedFile.original_url == url).limit(1)
+    )
+    row = result.scalars().first()
+    if not row:
+        return None
+    return {"file_id": row.file_id, "quality": row.quality or ""}
 
 
 async def save_cached_file_id(session: AsyncSession, url: str, file_id: str, quality: str = None) -> None:
