@@ -32,7 +32,7 @@ services:
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
     volumes:
       - ./data/downloads:/app/data/downloads
-      - ./bot.db:/app/bot.db
+      - ./viasaverbot.db:/app/viasaverbot.db
       # Тот же том с принятыми файлами (ГС/кружки) — бот в Docker читает их напрямую.
       - tg-api-data:/var/lib/telegram-bot-api:ro
       # Кэш модели Whisper (~3 ГБ): скачивается один раз, переживает пересборку.

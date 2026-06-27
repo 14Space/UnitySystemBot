@@ -37,7 +37,8 @@ async def _setup_commands(bot: Bot):
     """Меню-кнопки команд в Telegram (синяя кнопка «Меню» / список команд).
     Обычным пользователям — общие команды; админу в его чате — ещё и админские."""
     common = [
-        BotCommand(command="start", description="Перезапустить бота"),
+        # /start намеренно не в меню: он нужен один раз при первом запуске,
+        # а сама команда продолжает работать (просто не висит в списке).
         BotCommand(command="help", description="Справка по командам"),
         BotCommand(command="premium", description="Купить Premium ✨"),
     ]

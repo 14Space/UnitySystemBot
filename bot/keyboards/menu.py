@@ -12,8 +12,8 @@ from bot.config import ADMIN_ID
 
 def main_menu_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup:
     """
-    Плитки-кнопки команд снизу. Список совпадает с синим «Меню» (set_my_commands):
-    всем — /start, /help, /premium; админу — ещё /statistics и /cleancache.
+    Плитки-кнопки команд снизу. Обычным пользователям — только /help; админу — ещё
+    /statistics и /cleancache. (Синее «Меню» шире: всем /start, /help, /premium.)
 
     is_persistent=True держит клавиатуру доступной по квадратной кнопке у поля ввода,
     даже когда пользователь её свернул. Прикрепляем её ТОЛЬКО к /start и больше нигде
@@ -21,7 +21,7 @@ def main_menu_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup:
     скрыты и появляются лишь по нажатию на квадратик.
     """
     rows = [
-        [KeyboardButton(text="/start"), KeyboardButton(text="/help"), KeyboardButton(text="/premium")],
+        [KeyboardButton(text="/help")],
     ]
     if ADMIN_ID and user_id == ADMIN_ID:
         rows.append([KeyboardButton(text="/statistics"), KeyboardButton(text="/cleancache")])
