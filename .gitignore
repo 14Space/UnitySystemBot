@@ -21,3 +21,7 @@ venv/
 
 # Файлы локального Telegram Bot API (содержат токен и принятые медиа)
 data/telegram-api/
+
+# Куки Instagram (полный доступ к аккаунту — НЕ коммитить)
+*cookies*.txt
+data/instagram_cookies.txt

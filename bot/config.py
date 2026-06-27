@@ -33,6 +33,12 @@ MAX_PARALLEL_DOWNLOADS = int(os.getenv("MAX_PARALLEL_DOWNLOADS", "5"))
 # Цена Premium в Telegram Stars (разовый платёж). ~250⭐ ≈ 5$
 PREMIUM_PRICE_STARS = int(os.getenv("PREMIUM_PRICE_STARS", "250"))
 
+# Куки залогиненного Instagram-аккаунта (формат Netscape, cookies.txt). Нужны, чтобы
+# скачивать Reels/посты с пометкой «доступ не для всех» (видны только вошедшим в аккаунт).
+# Экспортировать можно расширением «Get cookies.txt» из браузера, где выполнен вход в IG.
+# Пусто/файла нет = ходим анонимно (только публичный контент).
+INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "data/instagram_cookies.txt")
+
 # Прокси для обхода гео-блокировок YouTube/YT Music (http:// или socks5://).
 # Пусто = без прокси. Пример: socks5://127.0.0.1:1080
 PROXY_URL = os.getenv("PROXY_URL", "")

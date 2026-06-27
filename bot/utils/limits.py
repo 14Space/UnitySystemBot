@@ -91,7 +91,12 @@ def friendly_error(exc: Exception, lang: str = "ru") -> str:
         return t("err_too_large", lang)
     if "drm" in text:
         return t("err_drm", lang)
-    if "available to everyone" in text or "certain audiences" in text or "audiences" in text:
+    # Instagram: «доступ не для всех / certain audiences» — контент только для вошедших
+    # в аккаунт (не 18+). Лечится свежими куками; пользователю — мягкое сообщение.
+    if "available to everyone" in text or "certain audiences" in text or "audiences" in text \
+            or "login required" in text or "requires login" in text:
+        return t("err_login_required", lang)
+    if "restricted" in text or "age-restricted" in text:
         return t("err_restricted", lang)
     if "login" in text or "private" in text or "приватн" in text or "not available for guest" in text:
         return t("err_private", lang)

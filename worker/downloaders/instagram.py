@@ -1,3 +1,5 @@
+import http.cookiejar
+import logging
 import os
 import re
 import requests
@@ -6,11 +8,24 @@ import instaloader
 from urllib.parse import urlparse
 from worker.downloaders.ytdlp_wrapper import BASE_OPTS, DOWNLOADS_DIR
 
+try:
+    from bot.config import INSTAGRAM_COOKIES
+except Exception:  # worker может запускаться отдельно от бота
+    INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "data/instagram_cookies.txt")
+
+logger = logging.getLogger(__name__)
+
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 VIDEO_EXTS = (".mp4", ".mov", ".webm")
 
-# Один загрузчик на процесс. Анонимно (без логина) — для публичных постов.
+# Один загрузчик на процесс. Если есть cookies.txt залогиненного аккаунта — подгружаем
+# их (доступ к контенту «не для всех»), иначе ходим анонимно (только публичное).
 _loader = None
+
+
+def _cookies_path() -> str | None:
+    """Путь к файлу кук, если он задан и существует."""
+    return INSTAGRAM_COOKIES if INSTAGRAM_COOKIES and os.path.exists(INSTAGRAM_COOKIES) else None
 
 
 def _get_loader():
@@ -19,6 +34,16 @@ def _get_loader():
         _loader = instaloader.Instaloader(
             download_comments=False, save_metadata=False, quiet=True
         )
+        path = _cookies_path()
+        if path:
+            try:
+                # instaloader работает через requests.Session — вливаем в неё куки из файла
+                jar = http.cookiejar.MozillaCookieJar(path)
+                jar.load(ignore_discard=True, ignore_expires=True)
+                _loader.context._session.cookies.update(jar)
+                logger.info("Instagram: куки залогиненного аккаунта загружены")
+            except Exception:
+                logger.warning("Instagram: не удалось загрузить cookies.txt", exc_info=True)
     return _loader
 
 
@@ -41,13 +66,28 @@ def download_reel(url: str) -> str:
         "outtmpl": output_path,
         "merge_output_format": "mp4",
     }
+    # Куки залогиненного аккаунта — чтобы качать Reels с пометкой «доступ не для всех»
+    cookies = _cookies_path()
+    if cookies:
+        ydl_opts["cookiefile"] = cookies
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        extracted = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(extracted)
-        if not os.path.exists(filename):
-            filename = filename.rsplit(".", 1)[0] + ".mp4"
-        return filename
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            extracted = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(extracted)
+            if not os.path.exists(filename):
+                filename = filename.rsplit(".", 1)[0] + ".mp4"
+            return filename
+    except Exception as e:
+        # «Доступ не для всех» — почти всегда вопрос кук. Подсказываем в лог, что делать.
+        if "audiences" in str(e).lower() or "available to everyone" in str(e).lower():
+            if not cookies:
+                logger.warning("Instagram: контент только для вошедших, а cookies.txt нет — "
+                               "добавь файл кук (INSTAGRAM_COOKIES), см. data/instagram_cookies.txt")
+            else:
+                logger.warning("Instagram: контент только для вошедших, но даже с куками отказ — "
+                               "скорее всего сессия протухла, перевыгрузи cookies.txt")
+        raise
 
 
 def download_post(url: str) -> list[str]:
