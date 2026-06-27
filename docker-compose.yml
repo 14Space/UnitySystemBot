@@ -20,8 +20,13 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Все настройки (WHISPER_*, ADMIN_ID, PROXY_URL, ключи и т.д.) берём из .env —
+    # как при запуске на хосте. То, что ниже в environment, имеет приоритет.
+    env_file:
+      - .env
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
+      # Внутри Docker-сети до локального Bot API идём по имени сервиса, не localhost.
       TELEGRAM_LOCAL_API_URL: http://telegram-bot-api:8081
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
@@ -30,8 +35,19 @@ services:
       - ./bot.db:/app/bot.db
       # Тот же том с принятыми файлами (ГС/кружки) — бот в Docker читает их напрямую.
       - tg-api-data:/var/lib/telegram-bot-api:ro
+      # Кэш модели Whisper (~3 ГБ): скачивается один раз, переживает пересборку.
+      - whisper-cache:/cache
     depends_on:
       - telegram-bot-api
+    # Проброс видеокарты NVIDIA внутрь контейнера — нужен для расшифровки голосовых.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 volumes:
   tg-api-data:
+  whisper-cache:

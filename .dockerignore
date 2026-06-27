@@ -1,0 +1,21 @@
+# Секреты и окружение — НЕ должны попадать в образ
+.env
+.cache
+*cookies*.txt
+data/instagram_cookies.txt
+
+# База и скачанные файлы — монтируются томами, в образ не нужны
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# Локальные файлы разработки
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.log
+.git/
+.gitignore
+.claude/
