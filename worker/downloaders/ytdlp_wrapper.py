@@ -110,8 +110,15 @@ def download_video(
     # Запас 25%: ловим чуть завышенные высоты (816 при выборе 720),
     # но не перепрыгиваем на следующее стандартное качество
     cap = int(quality * 1.25)
+    # iPhone/Telegram на iOS аппаратно декодирует только H.264 (avc1). YouTube же по
+    # умолчанию отдаёт «лучшее» видео в VP9/AV1 — оно склеивается в mp4 без
+    # перекодирования, и на айфоне получается чёрный экран при живом звуке. Поэтому
+    # СНАЧАЛА просим H.264 (avc1) + AAC (mp4a), затем любой mp4, и лишь в крайнем
+    # случае — что есть (перекодируем ниже, если кодек оказался несовместимым).
     fmt = (
-        f"bestvideo[height<={cap}]+bestaudio"
+        f"bestvideo[height<={cap}][vcodec^=avc1]+bestaudio[acodec^=mp4a]"
+        f"/bestvideo[height<={cap}][ext=mp4]+bestaudio[ext=m4a]"
+        f"/bestvideo[height<={cap}]+bestaudio"
         f"/best[height<={cap}]"
     )
 
@@ -132,7 +139,9 @@ def download_video(
             filename = ydl.prepare_filename(extracted)
             if not os.path.exists(filename):
                 filename = filename.rsplit(".", 1)[0] + ".mp4"
-            return filename
+            # Страховка: если H.264 не нашлось (часто на 1440p/2160p — там только
+            # VP9/AV1), перекодируем в H.264, иначе на iPhone будет чёрный экран.
+            return _ensure_h264(filename, postprocess_callback)
     except Exception as e:
         # На Windows антивирус иногда держит .temp.mp4 в момент переименования
         # после склейки ffmpeg. Файл уже готов — переименовываем сами с повторами.
@@ -141,6 +150,56 @@ def download_video(
             if recovered:
                 return recovered
         raise
+
+
+# Кодеки, которые iPhone/Telegram на iOS играют аппаратно. Остальное (vp9, av01) —
+# чёрный экран при живом звуке, поэтому перекодируем в h264.
+_IOS_OK_CODECS = ("h264", "avc1", "hevc", "h265")
+
+
+def _video_codec(path: str) -> str:
+    """Имя видеокодека файла через ffprobe (пустая строка, если не удалось)."""
+    ffprobe = os.path.join(FFMPEG_DIR, "ffprobe") if FFMPEG_DIR else "ffprobe"
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", path],
+            capture_output=True, text=True,
+        )
+        return (out.stdout or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _ensure_h264(path: str, postprocess_callback=None) -> str:
+    """
+    Гарантирует совместимый с iOS видеокодек. Если файл уже H.264/HEVC — отдаём как есть.
+    Иначе (VP9/AV1) перекодируем в H.264 + yuv420p с faststart. При ошибке возвращаем оригинал.
+    """
+    codec = _video_codec(path)
+    if not codec or codec.startswith(_IOS_OK_CODECS):
+        return path
+
+    if postprocess_callback:
+        postprocess_callback()  # покажем пользователю «обработка» — перекодирование не мгновенно
+
+    ffmpeg = os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
+    out_path = path.rsplit(".", 1)[0] + "_h264.mp4"
+    cmd = [
+        ffmpeg, "-y", "-i", path,
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-preset", "veryfast",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    res = subprocess.run(cmd, capture_output=True)
+    if res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return out_path
+    return path  # перекодировать не вышло — отдаём оригинал, чтобы хоть что-то ушло
 
 
 def _rename_temp_file() -> str | None:

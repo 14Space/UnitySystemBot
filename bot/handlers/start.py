@@ -1,11 +1,23 @@
 from aiogram import Router
-from aiogram.filters import CommandStart, CommandObject
+from aiogram.filters import CommandStart, CommandObject, Command
 from aiogram.types import Message
 
+from bot.config import ADMIN_ID
 from bot.handlers.link import INLINE_LINKS, process_link
+from bot.keyboards.menu import main_menu_keyboard
 from bot.utils.i18n import t, lang_of
 
 router = Router()
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    lang = lang_of(message.from_user)
+    text = t("help", lang)
+    # Админу дописываем его команды (обычным пользователям их не показываем)
+    if ADMIN_ID and message.from_user.id == ADMIN_ID:
+        text += t("help_admin_extra", lang)
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(CommandStart())
@@ -18,4 +30,7 @@ async def cmd_start(message: Message, command: CommandObject):
             await process_link(message, url)
             return
 
-    await message.answer(t("welcome", lang_of(message.from_user)))
+    await message.answer(
+        t("welcome", lang_of(message.from_user)),
+        reply_markup=main_menu_keyboard(message.from_user.id),
+    )

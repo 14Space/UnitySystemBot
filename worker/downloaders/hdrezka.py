@@ -110,7 +110,8 @@ def _mux_subtitles(video: str, subs: list, out_path: str) -> bool:
     cmd += ["-c", "copy", "-c:s", "mov_text"]
     for idx, (code, _) in enumerate(subs):
         cmd += [f"-metadata:s:s:{idx}", f"language={_LANG.get(code, code)}"]
-    cmd += [out_path]
+    # faststart — moov-атом в начало файла, иначе на iOS видео стримится чёрным экраном
+    cmd += ["-movflags", "+faststart", out_path]
     res = subprocess.run(cmd, capture_output=True)
     return res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
 
@@ -165,8 +166,21 @@ def download_stream(stream, quality: str, name="video", season=None, episode=Non
             _safe_rm(sp)
         return final
 
-    # Субтитров нет или вшить не удалось — отдаём видео как есть
+    # Субтитров нет или вшить не удалось — переносим moov-атом в начало (faststart),
+    # чтобы на iOS видео не показывалось чёрным экраном при стриминге. Без
+    # перекодирования (-c copy), поэтому быстро. Если ffmpeg не справился — отдаём как есть.
     for _, sp in subs:
         _safe_rm(sp)
+    if _faststart(raw, final):
+        _safe_rm(raw)
+        return final
     os.replace(raw, final)
     return final
+
+
+def _faststart(src: str, dst: str) -> bool:
+    """Ремукс mp4 с moov-атомом в начале (-c copy, без перекодирования)."""
+    ffmpeg = os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
+    cmd = [ffmpeg, "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", dst]
+    res = subprocess.run(cmd, capture_output=True)
+    return res.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0

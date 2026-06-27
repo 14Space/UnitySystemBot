@@ -32,6 +32,7 @@ from bot.keyboards.hdrezka import (
     build_season_keyboard, build_episode_keyboard,
 )
 from worker.downloaders.audio_meta import set_metadata, get_soundcloud_cover, make_thumbnail
+from worker.downloaders.video_meta import probe_video, make_video_thumbnail
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -424,7 +425,8 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         await _safe_edit(status, t("uploading", lang))
         await bot.send_video(
             chat_id, FSInputFile(file_path),
-            supports_streaming=True, reply_to_message_id=entry["user_msg_id"],
+            reply_to_message_id=entry["user_msg_id"],
+            **await _video_kwargs(file_path),
         )
         await status.delete()
         _cleanup(file_path)
@@ -453,7 +455,7 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
     status = await message.reply(t("downloading", lang))
     try:
         file_path = await asyncio.to_thread(download_fn, url)
-        sent = await message.reply_video(FSInputFile(file_path), supports_streaming=True)
+        sent = await message.reply_video(FSInputFile(file_path), **await _video_kwargs(file_path))
         if sent.video:
             async with SessionLocal() as session:
                 await save_cached_file_id(session, url, sent.video.file_id, cache_key)
@@ -501,7 +503,7 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
             sent = await message.reply_photo(FSInputFile(file_path))
             fid = "P:" + sent.photo[-1].file_id if sent.photo else None
         else:
-            sent = await message.reply_video(FSInputFile(file_path), supports_streaming=True)
+            sent = await message.reply_video(FSInputFile(file_path), **await _video_kwargs(file_path))
             fid = "V:" + sent.video.file_id if sent.video else None
         if fid:
             async with SessionLocal() as session:
@@ -537,7 +539,7 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
             if is_image(f):
                 await message.reply_photo(FSInputFile(f))
             else:
-                await message.reply_video(FSInputFile(f), supports_streaming=True)
+                await message.reply_video(FSInputFile(f), **await _video_kwargs(f))
         else:
             # Карусель/слайдшоу — альбомами по 10 (лимит Telegram на media group)
             for chunk in _chunked(files, 10):
@@ -546,7 +548,7 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
                     if is_image(f):
                         media.append(InputMediaPhoto(media=FSInputFile(f)))
                     else:
-                        media.append(InputMediaVideo(media=FSInputFile(f)))
+                        media.append(InputMediaVideo(media=FSInputFile(f), **await _video_kwargs(f)))
                 await message.reply_media_group(media)
 
         await _safe_delete(status)
@@ -910,9 +912,8 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
         sent = await bot.send_video(
             chat_id,
             FSInputFile(file_path),
-            duration=duration,
-            supports_streaming=True,  # видео можно смотреть на лету, не дожидаясь полной загрузки
-            reply_to_message_id=user_msg_id
+            reply_to_message_id=user_msg_id,
+            **await _video_kwargs(file_path, duration),
         )
         await progress_msg.delete()
         # Сохраняем file_id в кэш и убираем локальный файл
@@ -930,6 +931,27 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     finally:
         await limits.release(limits.HEAVY)
         ACTIVE_DOWNLOADS.discard(user_id)
+
+
+async def _video_kwargs(file_path: str, duration: int = 0) -> dict:
+    """
+    Собирает width/height/duration/thumbnail для send_video/reply_video.
+
+    Без этих параметров Telegram (особенно на iOS) не знает соотношение сторон:
+    рисует «сплюснутое» превью, на котором плеер виснет до полной докачки. Поэтому
+    зондируем файл ffprobe'ом и прикладываем постер-кадр — видео сразу корректно
+    показывается и стримится на лету.
+    """
+    meta = await asyncio.to_thread(probe_video, file_path)
+    thumb_bytes = await asyncio.to_thread(make_video_thumbnail, file_path)
+    thumbnail = BufferedInputFile(thumb_bytes, filename="thumb.jpg") if thumb_bytes else None
+    return dict(
+        duration=duration or meta["duration"],
+        width=meta["width"] or None,
+        height=meta["height"] or None,
+        thumbnail=thumbnail,
+        supports_streaming=True,  # видео можно смотреть на лету, не дожидаясь полной загрузки
+    )
 
 
 async def _safe_edit(msg, text: str):

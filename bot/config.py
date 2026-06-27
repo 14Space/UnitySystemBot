@@ -8,12 +8,15 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TELEGRAM_LOCAL_API_URL = os.getenv("TELEGRAM_LOCAL_API_URL", "http://localhost:8081")
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "data/downloads")
 
-# Локальный Bot API сервер кладёт принятые файлы на диск и в getFile возвращает
-# путь внутри СВОЕГО контейнера (TELEGRAM_BOT_API_ROOT). На хосте этот же том
-# смонтирован в TELEGRAM_LOCAL_FILES_DIR — по нему мы и читаем файл напрямую,
-# вместо скачивания по HTTP (которое для локального сервера не работает).
+# Локальный Bot API сервер кладёт принятые файлы на диск (внутри своего Docker-тома)
+# и в getFile возвращает путь внутри контейнера (TELEGRAM_BOT_API_ROOT). По HTTP
+# локальный сервер файлы не отдаёт, поэтому бот забирает их из контейнера:
+#  • если бот сам в Docker и том примонтирован — читает напрямую с диска;
+#  • если бот на хосте (Windows) — копирует из контейнера через `docker cp`.
 TELEGRAM_BOT_API_ROOT = os.getenv("TELEGRAM_BOT_API_ROOT", "/var/lib/telegram-bot-api")
 TELEGRAM_LOCAL_FILES_DIR = os.getenv("TELEGRAM_LOCAL_FILES_DIR", "data/telegram-api")
+# Имя контейнера локального Bot API (для `docker cp`, когда бот запущен на хосте).
+TELEGRAM_API_CONTAINER = os.getenv("TELEGRAM_API_CONTAINER", "viasaverbot-telegram-bot-api-1")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///bot.db")
 
 # Spotify API — только для чтения метаданных трека (название, исполнитель)
@@ -45,7 +48,12 @@ WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
 # Разрешённые языки распознавания (через запятую). Whisper определяет язык сам,
 # но если он не из этого списка – берём первый из списка. Пусто = любой язык.
+# ВАЖНО: первый язык в списке – основной (запасной при сомнениях). Сейчас это ru.
 WHISPER_LANGUAGES = os.getenv("WHISPER_LANGUAGES", "ru,uk")
+# Порог уверенности автоопределения языка (0..1). Русский и украинский очень
+# похожи, и Whisper их путает. Если уверенность ниже порога – берём основной
+# язык (первый в WHISPER_LANGUAGES, т.е. ru). Выше порог = чаще русский.
+WHISPER_LANG_MIN_PROB = float(os.getenv("WHISPER_LANG_MIN_PROB", "0.85"))
 # Прогревать модель при старте бота (грузит её в видеопамять сразу, ~3 ГБ).
 # true – первое голосовое не тормозит, но видеопамять занята всё время работы.
 # false – видеопамять свободна, пока никто не прислал голосовое (как было раньше).

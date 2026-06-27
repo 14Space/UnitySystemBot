@@ -78,6 +78,50 @@ TEXTS = {
         ),
     },
 
+    # --- Справка /help ---
+    "help": {
+        "ru": (
+            "ℹ️ <b>Как пользоваться viaSaver</b>\n\n"
+            "Просто пришли ссылку — я скачаю видео, фото или музыку из YouTube, TikTok, "
+            "Instagram, Pinterest, Spotify, SoundCloud, PornHub или HDRezka.\n"
+            "А ещё пришли голосовое или видео-кружок — расшифрую его в текст.\n\n"
+            "<b>Команды:</b>\n"
+            "/start — перезапустить бота\n"
+            "/help — эта справка\n"
+            "/premium — оформить Premium ✨"
+        ),
+        "uk": (
+            "ℹ️ <b>Як користуватися viaSaver</b>\n\n"
+            "Просто надішли посилання — я завантажу відео, фото або музику з YouTube, TikTok, "
+            "Instagram, Pinterest, Spotify, SoundCloud, PornHub чи HDRezka.\n"
+            "А ще надішли голосове або відео-кружечок — розшифрую його в текст.\n\n"
+            "<b>Команди:</b>\n"
+            "/start — перезапустити бота\n"
+            "/help — ця довідка\n"
+            "/premium — оформити Premium ✨"
+        ),
+        "en": (
+            "ℹ️ <b>How to use viaSaver</b>\n\n"
+            "Just send a link — I'll download video, photo, or music from YouTube, TikTok, "
+            "Instagram, Pinterest, Spotify, SoundCloud, PornHub, or HDRezka.\n"
+            "You can also send a voice message or video note — I'll transcribe it to text.\n\n"
+            "<b>Commands:</b>\n"
+            "/start — restart the bot\n"
+            "/help — this help\n"
+            "/premium — get Premium ✨"
+        ),
+    },
+    "help_admin_extra": {
+        "ru": "\n\n<b>Админ:</b>\n/statistics — статистика\n/cleancache — очистить кэш",
+        "uk": "\n\n<b>Адмін:</b>\n/statistics — статистика\n/cleancache — очистити кеш",
+        "en": "\n\n<b>Admin:</b>\n/statistics — statistics\n/cleancache — clear cache",
+    },
+    "cache_cleared": {
+        "ru": "🧹 Кэш очищен: удалено записей — <b>{count}</b>.\nФайлы в Telegram не тронуты, бот просто перекачает их заново при следующем запросе.",
+        "uk": "🧹 Кеш очищено: видалено записів — <b>{count}</b>.\nФайли в Telegram не зачеплені, бот просто перезавантажить їх при наступному запиті.",
+        "en": "🧹 Cache cleared: <b>{count}</b> entries removed.\nTelegram files are untouched; the bot will just re-download them on next request.",
+    },
+
     # --- Общие ---
     "unsupported_link": {
         "ru": "Эта ссылка пока не поддерживается.",

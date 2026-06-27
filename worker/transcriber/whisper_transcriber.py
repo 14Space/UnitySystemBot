@@ -14,6 +14,7 @@ import threading
 
 from bot.config import (
     WHISPER_MODEL, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE, WHISPER_LANGUAGES,
+    WHISPER_LANG_MIN_PROB,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,15 +102,22 @@ def transcribe(file_path: str) -> str:
     """
     model = _get_model()
 
-    # Сначала Whisper сам определяет язык (language=None). Если он не из разрешённых
-    # (ru/uk) — перезапускаем с принудительным первым языком из списка. Так бот не
-    # будет гадать по десяткам языков и выдавать абракадабру на чужой раскладке.
-    language = None
+    # Сначала Whisper сам определяет язык (language=None).
     segments, info = model.transcribe(file_path, language=None, vad_filter=True)
 
-    if _ALLOWED_LANGS and getattr(info, "language", None) not in _ALLOWED_LANGS:
-        language = _ALLOWED_LANGS[0]
-        segments, info = model.transcribe(file_path, language=language, vad_filter=True)
+    if _ALLOWED_LANGS:
+        detected = getattr(info, "language", None)
+        prob = getattr(info, "language_probability", 1.0) or 0.0
+        # Берём определённый язык, только если он разрешён И уверенность высокая.
+        # Иначе — основной язык (первый в списке, ru). Это лечит путаницу ru/uk:
+        # они очень похожи, и при низкой уверенности Whisper часто ошибается.
+        if detected not in _ALLOWED_LANGS or prob < WHISPER_LANG_MIN_PROB:
+            forced = _ALLOWED_LANGS[0]
+            logger.info(
+                "Язык '%s' (увер. %.2f) ненадёжен — расшифровываю как '%s'",
+                detected, prob, forced,
+            )
+            segments, info = model.transcribe(file_path, language=forced, vad_filter=True)
 
     text = " ".join(segment.text.strip() for segment in segments).strip()
     return text

@@ -91,6 +91,16 @@ async def get_any_cached_file(session: AsyncSession, url: str) -> dict | None:
     return {"file_id": row.file_id, "quality": row.quality or ""}
 
 
+async def clear_cache(session: AsyncSession) -> int:
+    """Удаляет весь кэш file_id. Возвращает число удалённых записей.
+    Сами файлы не трогаются — они на серверах Telegram; стираются лишь ссылки на них."""
+    from sqlalchemy import delete
+    count = (await session.execute(select(func.count(CachedFile.id)))).scalar() or 0
+    await session.execute(delete(CachedFile))
+    await session.commit()
+    return count
+
+
 async def save_cached_file_id(session: AsyncSession, url: str, file_id: str, quality: str = None) -> None:
     """Сохраняет file_id в кэш (или обновляет, если запись уже есть)"""
     url_hash = hashlib.md5(f"{url}:{quality}".encode()).hexdigest()

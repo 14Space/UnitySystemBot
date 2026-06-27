@@ -8,7 +8,9 @@ services:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
     volumes:
-      - ./data/telegram-api:/var/lib/telegram-bot-api
+      # Файлы храним в Docker-томе (внутри Linux), а не в папке Windows: имя папки
+      # содержит двоеточие (токен), и Windows-монтирование на нём ломает сервер.
+      - tg-api-data:/var/lib/telegram-bot-api
     ports:
       - "8081:8081"
 
@@ -26,8 +28,10 @@ services:
     volumes:
       - ./data/downloads:/app/data/downloads
       - ./bot.db:/app/bot.db
-      # Файлы, принятые локальным Bot API (ГС/кружки для расшифровки) – тем же путём,
-      # что и внутри telegram-bot-api, чтобы бот читал их напрямую с диска.
-      - ./data/telegram-api:/var/lib/telegram-bot-api:ro
+      # Тот же том с принятыми файлами (ГС/кружки) — бот в Docker читает их напрямую.
+      - tg-api-data:/var/lib/telegram-bot-api:ro
     depends_on:
       - telegram-bot-api
+
+volumes:
+  tg-api-data:

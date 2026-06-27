@@ -3,6 +3,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
+from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from bot.config import BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats
@@ -32,6 +33,23 @@ async def _daily_tasks(bot: Bot):
                 logger.exception("Не удалось отправить дневной отчёт")
 
 
+async def _setup_commands(bot: Bot):
+    """Меню-кнопки команд в Telegram (синяя кнопка «Меню» / список команд).
+    Обычным пользователям — общие команды; админу в его чате — ещё и админские."""
+    common = [
+        BotCommand(command="start", description="Перезапустить бота"),
+        BotCommand(command="help", description="Справка по командам"),
+        BotCommand(command="premium", description="Купить Premium ✨"),
+    ]
+    await bot.set_my_commands(common, scope=BotCommandScopeDefault())
+    if ADMIN_ID:
+        admin_cmds = common + [
+            BotCommand(command="statistics", description="Статистика"),
+            BotCommand(command="cleancache", description="Очистить кэш"),
+        ]
+        await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
+
+
 async def main():
     # Если указан локальный API сервер — используем его (для файлов >50MB)
     if TELEGRAM_LOCAL_API_URL:
@@ -56,6 +74,9 @@ async def main():
 
     # Создаём таблицы в БД
     await init_db()
+
+    # Меню-кнопки команд в интерфейсе Telegram
+    await _setup_commands(bot)
 
     # Чистим «хвосты» прошлых сессий (безопасно: ничего ещё не качается)
     clean_downloads()

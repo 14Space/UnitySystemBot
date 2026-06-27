@@ -4,7 +4,8 @@ from aiogram.types import Message
 
 from bot.config import ADMIN_ID
 from bot.database import SessionLocal
-from bot.database.repository import get_stats
+from bot.database.repository import get_stats, clear_cache
+from bot.utils.i18n import t, lang_of
 
 router = Router()
 
@@ -29,11 +30,25 @@ def format_stats(stats: dict) -> str:
     return "\n".join(lines)
 
 
-@router.message(Command("stats"))
+def _is_admin(message: Message) -> bool:
+    return bool(ADMIN_ID) and message.from_user.id == ADMIN_ID
+
+
+@router.message(Command("statistics", "stats"))
 async def cmd_stats(message: Message):
     # Доступно только админу; остальным — тишина
-    if not ADMIN_ID or message.from_user.id != ADMIN_ID:
+    if not _is_admin(message):
         return
     async with SessionLocal() as session:
         stats = await get_stats(session)
     await message.answer(format_stats(stats), parse_mode="HTML")
+
+
+@router.message(Command("cleancache"))
+async def cmd_cleancache(message: Message):
+    """Админ: чистит весь кэш file_id (стираются только ссылки, файлы в Telegram целы)."""
+    if not _is_admin(message):
+        return
+    async with SessionLocal() as session:
+        count = await clear_cache(session)
+    await message.answer(t("cache_cleared", lang_of(message.from_user), count=count), parse_mode="HTML")
