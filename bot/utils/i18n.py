@@ -46,35 +46,41 @@ TEXTS = {
         "ru": (
             "Привет! \n"
             "Отправь ссылку – скачаю видео, фото или музыку из YouTube, TikTok, Instagram, "
-            "Pinterest, Spotify, SoundCloud, PornHub или HDRezka 🙃\n\n"
+            "Pinterest, Spotify, SoundCloud, PornHub, HDRezka и других площадок 🙃\n\n"
             "Что умеет viaSaver: \n"
             "🎬 Выбор качества видео;\n"
             "🎵 Скачивание музыки с тегами;\n"
             "🌐 Загрузка с нестандартных ресурсов;\n"
             "📸 Скачивание фото и каруселей целиком;\n"
-            "⚡️ Reels, Shorts и клипы – мгновенная загрузка в максимальном качестве."
+            "⚡️ Reels, Shorts и клипы – мгновенная загрузка в максимальном качестве.\n\n"
+            "По вопросам: @viaWarrior\n"
+            "Наш канал: @UnitySystem"
         ),
         "uk": (
             "Привіт!\n"
             "Надішли посилання – завантажу відео, фото або музику з YouTube, TikTok, Instagram, "
-            "Pinterest, Spotify, SoundCloud, PornHub чи HDRezka 🙃\n\n"
+            "Pinterest, Spotify, SoundCloud, PornHub, HDRezka та інших платформ 🙃\n\n"
             "Що вміє viaSaver:\n"
             "🎬 Вибір якості відео;\n"
             "🎵 Завантаження музики з тегами;\n"
             "🌐 Завантаження з нестандартних ресурсів;\n"
             "📸 Завантаження фото та каруселей повністю;\n"
-            "⚡️ Reels, Shorts та кліпи – миттєве завантаження в максимальній якості."
+            "⚡️ Reels, Shorts та кліпи – миттєве завантаження в максимальній якості.\n\n"
+            "З питань: @viaWarrior\n"
+            "Канал: @UnitySystem"
         ),
         "en": (
             "Hi!\n"
             "Send a link – I will download video, photo, or music from YouTube, TikTok, Instagram, "
-            "Pinterest, Spotify, SoundCloud, PornHub, or HDRezka 🙃\n\n"
+            "Pinterest, Spotify, SoundCloud, PornHub, HDRezka & more 🙃\n\n"
             "What viaSaver can do:\n"
             "🎬 Video quality selection;\n"
             "🎵 Downloading music with tags;\n"
             "🌐 Downloading from non-standard resources;\n"
             "📸 Downloading photos and full carousels;\n"
-            "⚡️ Reels, Shorts, and clips – instant download in maximum quality."
+            "⚡️ Reels, Shorts, and clips – instant download in maximum quality.\n\n"
+            "Questions: @viaWarrior\n"
+            "Channel: @UnitySystem"
         ),
     },
 
