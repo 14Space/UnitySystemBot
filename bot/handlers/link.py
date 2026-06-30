@@ -1,4 +1,6 @@
 import asyncio
+import html
+import json
 import logging
 import os
 import uuid
@@ -26,7 +28,8 @@ from worker.downloaders.ytdlp_wrapper import (
 from worker.downloaders.spotify import get_track_info, get_collection_info
 from worker.downloaders.instagram import download_reel, download_post, is_image
 from worker.downloaders.tiktok import download_tiktok
-from worker.downloaders import hdrezka
+from worker.downloaders import hdrezka, twitter
+from worker.renderer.tweet_card import render_tweet_card
 from bot.keyboards.hdrezka import (
     build_translator_keyboard, build_hdrezka_quality_keyboard,
     build_season_keyboard, build_episode_keyboard,
@@ -159,6 +162,11 @@ async def process_link(message: Message, url: str):
         await _handle_hdrezka(message, url, lang)
         return
 
+    # X (Twitter) — один пост: фото/видео/gif + текст (карточка-картинка позже)
+    if platform == Platform.TWITTER:
+        await _handle_twitter(message, url, lang)
+        return
+
 
 async def _handle_quality_video(message: Message, url: str, lang: str):
     """Получает метаданные и показывает выбор качества (YouTube, PornHub)."""
@@ -214,6 +222,7 @@ async def _handle_hdrezka(message: Message, url: str, lang: str):
     sid = uuid.uuid4().hex[:8]
     _remember(HDREZKA_STORE, sid, {
         "api": api,  # переиспользуем объект на всех шагах — не качаем страницу заново
+        "url": url,  # исходная ссылка — нужна как ключ кэша file_id
         "name": info["name"],
         "is_series": info["is_series"],
         "translators": info.get("translators", []),
@@ -396,6 +405,21 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         await callback.answer(t("premium_alert", lang), show_alert=True)
         return
 
+    # Кэш: этот фильм/серию в этой озвучке и качестве уже качали — отдаём мгновенно,
+    # без повторного скачивания (ключ = ссылка + озвучка + сезон + серия, качество — отдельно).
+    cache_url = f"{entry.get('url', '')}|hr|{tid}|{entry['season']}|{entry['episode']}"
+    async with SessionLocal() as session:
+        cached_id = await get_cached_file_id(session, cache_url, quality)
+    if cached_id:
+        await callback.answer()
+        await callback.message.delete()
+        await bot.send_video(
+            entry["chat_id"], cached_id,
+            supports_streaming=True,
+            reply_to_message_id=entry["user_msg_id"],
+        )
+        return
+
     if user_id in ACTIVE_DOWNLOADS:
         await callback.answer(t("wait_current", lang), show_alert=True)
         return
@@ -423,12 +447,16 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
             entry["name"], entry["season"], entry["episode"], on_progress,
         )
         await _safe_edit(status, t("uploading", lang))
-        await bot.send_video(
+        sent = await bot.send_video(
             chat_id, FSInputFile(file_path),
             reply_to_message_id=entry["user_msg_id"],
             **await _video_kwargs(file_path),
         )
         await status.delete()
+        # Сохраняем file_id в кэш — следующему такой же фильм отдадим без скачивания
+        if sent.video:
+            async with SessionLocal() as session:
+                await save_cached_file_id(session, cache_url, sent.video.file_id, quality)
         _cleanup(file_path)
     except Exception as e:
         logger.exception("HDRezka download failed")
@@ -518,8 +546,36 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
         ACTIVE_DOWNLOADS.discard(message.from_user.id)
 
 
+async def _send_cached_post(message: Message, cached: str):
+    """Переотправляет ранее сохранённый пост из кэша (file_id'ы через перевод строки,
+    каждый с префиксом типа: «P:» фото, «V:» видео)."""
+    tokens = cached.split("\n")
+    if len(tokens) == 1:
+        tok = tokens[0]
+        if tok.startswith("P:"):
+            await message.reply_photo(tok[2:])
+        else:
+            await message.reply_video(tok[2:], supports_streaming=True)
+        return
+    for chunk in _chunked(tokens, 10):
+        media = []
+        for tok in chunk:
+            if tok.startswith("P:"):
+                media.append(InputMediaPhoto(media=tok[2:]))
+            else:
+                media.append(InputMediaVideo(media=tok[2:], supports_streaming=True))
+        await message.reply_media_group(media)
+
+
 async def _handle_files(message: Message, url: str, download_fn, error_key: str, lang: str):
     """Качает набор файлов (Instagram пост, TikTok) и отдаёт фото/видео или альбомом."""
+    # Кэш: этот пост/карусель уже качали — переотправляем мгновенно, без скачивания
+    async with SessionLocal() as session:
+        cached = await get_cached_file_id(session, url, "post")
+    if cached:
+        await _send_cached_post(message, cached)
+        return
+
     if message.from_user.id in ACTIVE_DOWNLOADS:
         await message.reply(t("wait_current", lang))
         return
@@ -533,13 +589,20 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
             await _safe_edit(status, t("no_media", lang))
             return
 
+        # Собираем file_id'ы отправленного, чтобы потом сохранить в кэш
+        tokens: list[str] = []
+
         # Один файл — отправляем напрямую (фото или видео)
         if len(files) == 1:
             f = files[0]
             if is_image(f):
-                await message.reply_photo(FSInputFile(f))
+                sent = await message.reply_photo(FSInputFile(f))
+                if sent.photo:
+                    tokens.append("P:" + sent.photo[-1].file_id)
             else:
-                await message.reply_video(FSInputFile(f), **await _video_kwargs(f))
+                sent = await message.reply_video(FSInputFile(f), **await _video_kwargs(f))
+                if sent.video:
+                    tokens.append("V:" + sent.video.file_id)
         else:
             # Карусель/слайдшоу — альбомами по 10 (лимит Telegram на media group)
             for chunk in _chunked(files, 10):
@@ -549,7 +612,17 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
                         media.append(InputMediaPhoto(media=FSInputFile(f)))
                     else:
                         media.append(InputMediaVideo(media=FSInputFile(f), **await _video_kwargs(f)))
-                await message.reply_media_group(media)
+                sent_msgs = await message.reply_media_group(media)
+                for m in sent_msgs:
+                    if m.photo:
+                        tokens.append("P:" + m.photo[-1].file_id)
+                    elif m.video:
+                        tokens.append("V:" + m.video.file_id)
+
+        # Сохраняем набор в кэш — следующему такой же пост отдадим без скачивания
+        if tokens:
+            async with SessionLocal() as session:
+                await save_cached_file_id(session, url, "\n".join(tokens), "post")
 
         await _safe_delete(status)
         for f in files:
@@ -564,6 +637,184 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
     finally:
         await limits.release(limits.LIGHT)
         ACTIVE_DOWNLOADS.discard(message.from_user.id)
+
+
+# Telegram: подпись к медиа — максимум 1024 символа (у обычного текста 4096).
+TWEET_CAPTION_MAX = 1024
+
+
+async def _handle_twitter(message: Message, url: str, lang: str):
+    """X (Twitter): один пост. Три случая в одном потоке (+ кэш по ссылке):
+      • есть медиа        → фото/видео/gif + текст подписью;
+      • чисто текст       → карточка-скриншот твита;
+      • цитата-твит       → карточка + медиа цитаты + текст цитаты «цитатой» снизу.
+    """
+    # Кэш: этот твит уже отправляли — мгновенно переотправляем по file_id
+    cached = await _twitter_cache_get(url)
+    if cached:
+        await _send_cached_tweet(message, cached)
+        return
+
+    if message.from_user.id in ACTIVE_DOWNLOADS:
+        await message.reply(t("wait_current", lang))
+        return
+
+    status = await message.reply(t("downloading", lang))
+    try:
+        tweet = await asyncio.to_thread(twitter.get_tweet, url)
+    except Exception as e:
+        logger.exception("Twitter fetch failed")
+        await _safe_edit(status, limits.friendly_error(e, lang))
+        return
+
+    ACTIVE_DOWNLOADS.add(message.from_user.id)
+    await limits.acquire(limits.LIGHT)
+    paths: list[str] = []
+    try:
+        items, caption, parse_mode = await _build_twitter_plan(tweet)
+        paths = [it["path"] for it in items]
+
+        if not items:
+            # карточка не нарисовалась — отдаём хотя бы текст
+            await _safe_delete(status)
+            await message.reply(caption or t("no_media", lang))
+            return
+
+        tokens = await _send_twitter(message, items, caption, parse_mode)
+        await _safe_delete(status)
+        if tokens:
+            await _twitter_cache_save(url, tokens, caption, parse_mode)
+    except Exception as e:
+        logger.exception("Twitter handling failed")
+        await _safe_edit(status, limits.friendly_error(e, lang))
+    finally:
+        await limits.release(limits.LIGHT)
+        ACTIVE_DOWNLOADS.discard(message.from_user.id)
+        for p in paths:
+            _cleanup(p)
+
+
+async def _build_twitter_plan(tweet: dict) -> tuple[list[dict], str | None, str | None]:
+    """Готовит к отправке: (список медиа [{'kind','path'}], подпись, parse_mode).
+    Скачивает файлы / рисует карточку. Пустой список = отдать текстом (карточка не вышла)."""
+    # 1) Пост со своим медиа
+    if tweet["media"]:
+        files = await asyncio.to_thread(twitter.download_media, tweet["media"], tweet["id"])
+        caption = tweet["text"][:TWEET_CAPTION_MAX] if tweet["text"] else None
+        return files, caption, None
+
+    # 2) Чисто текстовый твит — карточка-скриншот
+    if tweet["quote"] is None:
+        try:
+            card = await asyncio.to_thread(render_tweet_card, tweet)
+            return [{"kind": "photo", "path": card}], None, None
+        except Exception:
+            logger.exception("Tweet card render failed")
+            return [], tweet["text"], None  # пусто → вызывающий отправит текст
+
+    # 3) Цитата-твит: карточка всего поста + медиа цитаты + текст цитаты «цитатой»
+    quote = tweet["quote"]
+    card = await asyncio.to_thread(render_tweet_card, tweet)
+    items = [{"kind": "photo", "path": card}]
+    if quote["media"]:
+        qfiles = await asyncio.to_thread(twitter.download_media, quote["media"], tweet["id"] + "_q")
+        items += qfiles
+    caption, parse_mode = None, None
+    if quote["text"]:
+        safe = html.escape(quote["text"][:TWEET_CAPTION_MAX - 30])
+        caption, parse_mode = f"<blockquote>{safe}</blockquote>", "HTML"
+    return items, caption, parse_mode
+
+
+async def _send_twitter(message: Message, items: list[dict], caption: str | None,
+                        parse_mode: str | None) -> list[dict]:
+    """Отправляет медиа твита (одно или альбомом) и возвращает токены file_id для кэша:
+    [{'k': 'P'|'V'|'G', 'id': ...}]. Подпись крепится к первому элементу."""
+    tokens: list[dict] = []
+    if len(items) == 1:
+        it = items[0]
+        f = FSInputFile(it["path"])
+        if it["kind"] == "photo":
+            sent = await message.reply_photo(f, caption=caption, parse_mode=parse_mode)
+            if sent.photo:
+                tokens.append({"k": "P", "id": sent.photo[-1].file_id})
+        elif it["kind"] == "gif":
+            sent = await message.reply_animation(f, caption=caption, parse_mode=parse_mode)
+            if sent.animation:
+                tokens.append({"k": "G", "id": sent.animation.file_id})
+        else:
+            sent = await message.reply_video(f, caption=caption, parse_mode=parse_mode,
+                                             **await _video_kwargs(it["path"]))
+            if sent.video:
+                tokens.append({"k": "V", "id": sent.video.file_id})
+        return tokens
+
+    media = []
+    for i, it in enumerate(items):
+        cap = caption if i == 0 else None
+        pm = parse_mode if i == 0 else None
+        f = FSInputFile(it["path"])
+        if it["kind"] == "photo":
+            media.append(InputMediaPhoto(media=f, caption=cap, parse_mode=pm))
+        else:
+            # gif внутри альбома Telegram показывает как видео — это нормально
+            media.append(InputMediaVideo(media=f, caption=cap, parse_mode=pm,
+                                         **await _video_kwargs(it["path"])))
+    sent_msgs = await message.reply_media_group(media)
+    for m in sent_msgs:
+        if m.photo:
+            tokens.append({"k": "P", "id": m.photo[-1].file_id})
+        elif m.animation:
+            tokens.append({"k": "G", "id": m.animation.file_id})
+        elif m.video:
+            tokens.append({"k": "V", "id": m.video.file_id})
+    return tokens
+
+
+async def _twitter_cache_get(url: str) -> dict | None:
+    """Достаёт сохранённый твит из кэша (или None). Значение — JSON с токенами и подписью."""
+    async with SessionLocal() as session:
+        raw = await get_cached_file_id(session, url, "x")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+async def _twitter_cache_save(url: str, tokens: list[dict], caption: str | None,
+                              parse_mode: str | None):
+    payload = json.dumps({"items": tokens, "caption": caption, "pm": parse_mode})
+    async with SessionLocal() as session:
+        await save_cached_file_id(session, url, payload, "x")
+
+
+async def _send_cached_tweet(message: Message, data: dict):
+    """Переотправляет твит из кэша по сохранённым file_id (без скачивания/рендера)."""
+    items = data.get("items") or []
+    caption = data.get("caption")
+    pm = data.get("pm")
+    if not items:
+        return
+    if len(items) == 1:
+        it = items[0]
+        if it["k"] == "P":
+            await message.reply_photo(it["id"], caption=caption, parse_mode=pm)
+        elif it["k"] == "G":
+            await message.reply_animation(it["id"], caption=caption, parse_mode=pm)
+        else:
+            await message.reply_video(it["id"], caption=caption, parse_mode=pm, supports_streaming=True)
+        return
+    media = []
+    for i, it in enumerate(items):
+        cap = caption if i == 0 else None
+        p = pm if i == 0 else None
+        if it["k"] == "P":
+            media.append(InputMediaPhoto(media=it["id"], caption=cap, parse_mode=p))
+        else:
+            media.append(InputMediaVideo(media=it["id"], caption=cap, parse_mode=p, supports_streaming=True))
+    await message.reply_media_group(media)
 
 
 def _chunked(items: list, size: int):

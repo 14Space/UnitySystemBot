@@ -22,6 +22,28 @@ logger = logging.getLogger(__name__)
 # Разрешённые языки: ["ru", "uk"]. Если Whisper определит другой – берём первый.
 _ALLOWED_LANGS = [x.strip() for x in WHISPER_LANGUAGES.split(",") if x.strip()]
 
+# Кириллические «братья», которых Whisper легко путает между собой. Порог уверенности
+# (WHISPER_LANG_MIN_PROB) применяем ТОЛЬКО внутри этой группы: если при низкой уверенности
+# определился, скажем, uk вместо ru — берём основной (ru). А вот явно другой язык (en)
+# при низкой уверенности НЕ ломаем переводом в русский — принимаем как есть.
+_CONFUSABLE = {"ru", "uk", "be", "bg"}
+
+# --- Защита от «галлюцинаций» -------------------------------------------------
+# Whisper на шуме/музыке/невнятной речи не молчит, а ВЫДУМЫВАЕТ частые фразы
+# («Продолжение следует…», «Спасибо за просмотр»). Эти параметры говорят модели
+# «лучше отдай пусто, чем выдумывай». Минус: очень тихую/невнятную НАСТОЯЩУЮ речь
+# тоже может пропустить. Всё тут можно крутить или убрать — поведение изменится.
+_DECODE_OPTS = dict(
+    vad_filter=True,                  # отсекаем участки без голоса (тишина/шум)
+    condition_on_previous_text=False, # не «додумывать» по уже распознанному — частая
+                                      # причина зацикленных выдуманных фраз в конце
+    no_speech_threshold=0.6,          # выше порог = чаще решаем «речи нет» → пусто
+    log_prob_threshold=-1.0,          # отбрасываем сегменты, в которых модель не уверена
+    compression_ratio_threshold=2.4,  # режем повторяющийся «зацикленный» бред
+    word_timestamps=True,             # нужно для проверки тишины ниже
+    hallucination_silence_threshold=2.0,  # пропускаем подозрительные «фразы» в тишине
+)
+
 # Модель тяжёлая — грузим её один раз и переиспользуем (ленивая инициализация).
 # Блокировка защищает от гонки, если два сообщения придут одновременно.
 _model = None
@@ -103,21 +125,27 @@ def transcribe(file_path: str) -> str:
     model = _get_model()
 
     # Сначала Whisper сам определяет язык (language=None).
-    segments, info = model.transcribe(file_path, language=None, vad_filter=True)
+    segments, info = model.transcribe(file_path, language=None, **_DECODE_OPTS)
 
     if _ALLOWED_LANGS:
         detected = getattr(info, "language", None)
         prob = getattr(info, "language_probability", 1.0) or 0.0
-        # Берём определённый язык, только если он разрешён И уверенность высокая.
-        # Иначе — основной язык (первый в списке, ru). Это лечит путаницу ru/uk:
-        # они очень похожи, и при низкой уверенности Whisper часто ошибается.
-        if detected not in _ALLOWED_LANGS or prob < WHISPER_LANG_MIN_PROB:
-            forced = _ALLOWED_LANGS[0]
+        primary = _ALLOWED_LANGS[0]
+        # Когда откатываемся в основной язык (ru):
+        #  • язык не из разрешённых — берём основной;
+        #  • ИЛИ это «кириллический брат» (ru/uk) с низкой уверенностью — лечим путаницу.
+        # Явно другой язык (en) при низкой уверенности НЕ трогаем: насильный перевод
+        # английского в русский даёт мусор ("Продолжение следует...").
+        confusable_doubt = (
+            detected in _CONFUSABLE and primary in _CONFUSABLE
+            and prob < WHISPER_LANG_MIN_PROB
+        )
+        if detected not in _ALLOWED_LANGS or confusable_doubt:
             logger.info(
                 "Язык '%s' (увер. %.2f) ненадёжен — расшифровываю как '%s'",
-                detected, prob, forced,
+                detected, prob, primary,
             )
-            segments, info = model.transcribe(file_path, language=forced, vad_filter=True)
+            segments, info = model.transcribe(file_path, language=primary, **_DECODE_OPTS)
 
     text = " ".join(segment.text.strip() for segment in segments).strip()
     return text

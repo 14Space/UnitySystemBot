@@ -17,6 +17,7 @@ class Platform(Enum):
     PORNHUB = "pornhub"
     PORNHUB_SHORT = "pornhub_short"  # shorties — короткие вертикальные видео
     HDREZKA = "hdrezka"  # фильмы и сериалы
+    TWITTER = "twitter"  # X (Twitter): фото/видео/gif/текст одного поста
     UNKNOWN = "unknown"
 
 
@@ -66,6 +67,13 @@ def detect_platform(url: str) -> Platform:
                 return Platform.INSTAGRAM_REEL
             if "/p/" in path or "/tv/" in path:
                 return Platform.INSTAGRAM_POST
+
+        # X (Twitter): поддерживаем ссылку на конкретный пост (/status/<id>).
+        # Профили и прочие страницы не качаем. Зеркала fx/vx тоже принимаем.
+        if domain in ("twitter.com", "x.com", "mobile.twitter.com", "m.twitter.com",
+                      "fxtwitter.com", "vxtwitter.com", "fixupx.com"):
+            if "/status/" in path:
+                return Platform.TWITTER
 
         # Spotify: качаем через поиск трека на YouTube (напрямую DRM не даёт)
         if domain in ("open.spotify.com", "spotify.com"):

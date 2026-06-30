@@ -2,11 +2,17 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Устанавливаем ffmpeg — нужен для конвертации видео/аудио
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# ffmpeg — конвертация видео/аудио. Шрифты Noto — чтобы карточки твитов (Chromium)
+# правильно рисовали кириллицу и цветные эмодзи, а не «квадратики».
+RUN apt-get update && apt-get install -y \
+        ffmpeg fonts-noto-core fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Браузер Chromium для Playwright (рендер карточек твитов) + его системные зависимости.
+RUN playwright install --with-deps chromium
 
 # Whisper на видеокарте (cuda): в Linux-контейнере CUDA-библиотеки из pip-пакетов
 # (nvidia-cublas-cu12, nvidia-cudnn-cu12) лежат в site-packages и не видны загрузчику

@@ -39,6 +39,10 @@ PREMIUM_PRICE_STARS = int(os.getenv("PREMIUM_PRICE_STARS", "250"))
 # Пусто/файла нет = ходим анонимно (только публичный контент).
 INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "data/instagram_cookies.txt")
 
+# Куки залогиненного аккаунта X (Twitter), формат Netscape. Нужны как запасной путь
+# для видео и контента, видимого только вошедшим. Публичные посты берём и без них.
+X_COOKIES = os.getenv("X_COOKIES", "data/x.com_cookies.txt")
+
 # Прокси для обхода гео-блокировок YouTube/YT Music (http:// или socks5://).
 # Пусто = без прокси. Пример: socks5://127.0.0.1:1080
 PROXY_URL = os.getenv("PROXY_URL", "")

@@ -7,6 +7,7 @@
 """
 import asyncio
 import glob
+import html
 import logging
 import os
 import shutil
@@ -47,9 +48,12 @@ async def _handle(message: Message, file_id: str, suffix: str):
             await _safe_edit(status, t("transcribe_nothing", lang))
             return
 
-        if len(text) > MAX_TEXT:
-            text = text[:MAX_TEXT - 1] + "…"
-        await _safe_edit(status, text)
+        # Оформляем расшифровку «цитатой» (как голосовое-первоисточник). Берём с
+        # запасом под теги blockquote и экранирование спецсимволов HTML.
+        if len(text) > MAX_TEXT - 100:
+            text = text[:MAX_TEXT - 100] + "…"
+        quoted = f"<blockquote expandable>{html.escape(text)}</blockquote>"
+        await _safe_edit(status, quoted, parse_mode="HTML")
     except Exception:
         logger.exception("Transcription failed")
         await _safe_edit(status, t("transcribe_nothing", lang))
@@ -72,6 +76,13 @@ async def _fetch_file(message: Message, file_id: str, dest: str):
         if file.file_path and os.path.exists(file.file_path):
             await asyncio.to_thread(shutil.copyfile, file.file_path, dest)
             return
+        # 1b) бот в Docker: том сервера примонтирован (TELEGRAM_BOT_API_ROOT), но
+        # getFile отдаёт ОТНОСИТЕЛЬНЫЙ путь (voice/file_0.oga) — собираем абсолютный
+        # путь внутри тома и читаем файл напрямую, без docker cp.
+        container = _container_path(file.file_path)
+        if container and os.path.exists(container):
+            await asyncio.to_thread(shutil.copyfile, container, dest)
+            return
         local = _map_local_path(file.file_path)
         if local and os.path.exists(local):
             await asyncio.to_thread(shutil.copyfile, local, dest)
@@ -82,22 +93,33 @@ async def _fetch_file(message: Message, file_id: str, dest: str):
     await message.bot.download(file_id, destination=dest)
 
 
+def _container_path(server_path: str) -> str | None:
+    """Абсолютный путь файла внутри тома Bot API (бот в Docker читает его напрямую).
+    getFile отдаёт относительный путь (voice/file_0.oga) — дополняем корнем тома
+    и папкой токена. Абсолютный путь от сервера берём как есть."""
+    if not server_path:
+        return None
+    sp = server_path.replace("\\", "/")
+    if sp.startswith("/"):
+        return sp
+    return f"{TELEGRAM_BOT_API_ROOT.rstrip('/')}/{BOT_TOKEN}/{sp}"
+
+
 async def _docker_cp(server_path: str, dest: str) -> bool:
     """Копирует файл из контейнера Bot API на хост через `docker cp`. True при успехе."""
-    if not server_path:
+    container_path = _container_path(server_path)
+    if not container_path:
         return False
-    sp = server_path.replace("\\", "/")
-    # getFile отдаёт относительный путь (voice/file_0.oga) — дополняем папкой токена
-    if sp.startswith("/"):
-        container_path = sp
-    else:
-        container_path = f"{TELEGRAM_BOT_API_ROOT.rstrip('/')}/{BOT_TOKEN}/{sp}"
     # docker cp делит аргумент по ПЕРВОМУ двоеточию (контейнер:путь), двоеточие
     # внутри пути (в токене) остаётся частью пути — то, что нам нужно.
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "cp", f"{TELEGRAM_API_CONTAINER}:{container_path}", dest,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "cp", f"{TELEGRAM_API_CONTAINER}:{container_path}", dest,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        # docker не установлен (например, бот сам в контейнере) — не наш путь
+        return False
     _, err = await proc.communicate()
     if proc.returncode == 0 and os.path.exists(dest):
         return True
@@ -132,9 +154,9 @@ async def handle_video_note(message: Message):
     await _handle(message, message.video_note.file_id, ".mp4")
 
 
-async def _safe_edit(msg, text: str):
+async def _safe_edit(msg, text: str, parse_mode: str | None = None):
     try:
-        await msg.edit_text(text)
+        await msg.edit_text(text, parse_mode=parse_mode)
     except Exception:
         pass
 

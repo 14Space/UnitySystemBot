@@ -26,6 +26,9 @@ faster-whisper==1.1.1
 nvidia-cublas-cu12
 nvidia-cudnn-cu12
 
+# Рендер карточек твитов X (текстовые посты и цитаты) через headless Chromium
+playwright==1.55.0
+
 # HDRezka (фильмы/сериалы)
 HdRezkaApi==11.2.3
 beautifulsoup4==4.15.0
