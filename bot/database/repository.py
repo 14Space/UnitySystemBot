@@ -1,8 +1,9 @@
 import hashlib
+from datetime import datetime, timezone
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from bot.database.models import User, CachedFile, DownloadStat
+from bot.database.models import User, CachedFile, DownloadStat, MonthlyTraffic
 
 
 async def get_or_create_user(
@@ -52,8 +53,36 @@ async def increment_download(session: AsyncSession, platform: str) -> None:
     await session.commit()
 
 
+def _current_month() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+async def add_traffic(session: AsyncSession, nbytes: int, nfiles: int) -> None:
+    """Прибавляет скачанные байты/файлы к счётчику текущего месяца (для износа SSD)."""
+    if nbytes <= 0:
+        return
+    month = _current_month()
+    row = (await session.execute(
+        select(MonthlyTraffic).where(MonthlyTraffic.month == month)
+    )).scalar_one_or_none()
+    if row:
+        row.total_bytes += nbytes
+        row.files += nfiles
+    else:
+        session.add(MonthlyTraffic(month=month, total_bytes=nbytes, files=nfiles))
+    await session.commit()
+
+
+async def get_traffic(session: AsyncSession, limit: int = 6) -> list[dict]:
+    """Трафик по месяцам (свежие сверху): [{'month','bytes','files'}]."""
+    rows = (await session.execute(
+        select(MonthlyTraffic).order_by(MonthlyTraffic.month.desc()).limit(limit)
+    )).scalars().all()
+    return [{"month": r.month, "bytes": r.total_bytes, "files": r.files} for r in rows]
+
+
 async def get_stats(session: AsyncSession) -> dict:
-    """Сводка для админа: скачивания по платформам, число юзеров, языки"""
+    """Сводка для админа: скачивания по платформам, число юзеров, языки, трафик"""
     rows = (await session.execute(select(DownloadStat))).scalars().all()
     downloads = {r.platform: r.count for r in rows}
 
@@ -69,6 +98,7 @@ async def get_stats(session: AsyncSession) -> dict:
         "total_downloads": sum(downloads.values()),
         "users": users,
         "languages": languages,
+        "traffic": await get_traffic(session),
     }
 
 

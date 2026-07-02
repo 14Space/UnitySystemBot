@@ -20,7 +20,7 @@ from bot.config import (
     DOWNLOADS_DIR, TELEGRAM_LOCAL_API_URL, TELEGRAM_LOCAL_FILES_DIR,
     TELEGRAM_BOT_API_ROOT, TELEGRAM_API_CONTAINER, BOT_TOKEN,
 )
-from bot.utils import limits
+from bot.utils import limits, traffic
 from bot.utils.i18n import t, lang_of
 from worker.transcriber import transcribe
 
@@ -164,6 +164,7 @@ async def _safe_edit(msg, text: str, parse_mode: str | None = None):
 def _cleanup(file_path: str):
     try:
         if file_path and os.path.exists(file_path):
+            traffic.record(file_path)
             os.remove(file_path)
     except Exception:
         logger.warning("Не смог удалить %s", file_path)

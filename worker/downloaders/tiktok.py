@@ -75,25 +75,49 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
     return out_path
 
 
-def download_tiktok(url: str) -> list[str]:
-    """
-    Скачивает TikTok: видео (без водяного знака) или слайдшоу (несколько фото).
-    Возвращает список файлов.
-    """
-    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+def fetch_tiktok(url: str) -> dict:
+    """Запрашивает данные поста (без скачивания файлов) и определяет тип:
+    'video' — обычное видео, 'slideshow' — набор фото (+ возможно музыка),
+    'live' — Live Photo (короткие видео). Возвращает {'id','kind','data'}."""
     r = requests.get(API, params={"url": url, "hd": 1}, headers=HEADERS, timeout=30)
     payload = r.json()
     if payload.get("code") != 0:
         raise ValueError(payload.get("msg") or "TikTok API error")
-
     data = payload["data"]
-    item_id = str(data.get("id", "tiktok"))
-    files = []
+    if data.get("live_images"):
+        kind = "live"
+    elif data.get("images"):
+        kind = "slideshow"
+    else:
+        kind = "video"
+    return {"id": str(data.get("id", "tiktok")), "kind": kind, "data": data}
 
-    # Live Photo: у каждого «живого фото» есть короткое видео — отдаём альбомом видео
-    live_images = data.get("live_images")
-    if live_images:
-        for i, vid_url in enumerate(live_images, 1):
+
+def _download_images(images: list[str], item_id: str) -> list[str]:
+    files = []
+    for i, img_url in enumerate(images, 1):
+        content = requests.get(_abs(img_url), headers=HEADERS, timeout=60).content
+        path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.jpg")
+        with open(path, "wb") as f:
+            f.write(content)
+        files.append(path)
+    return files
+
+
+def download_from(info: dict, mode: str = "auto") -> list[str]:
+    """
+    Скачивает TikTok по уже полученным данным (fetch_tiktok).
+    mode для слайдшоу: 'photos' — только фото, 'video' — собрать видео со звуком,
+    'auto' — видео, если есть музыка, иначе фото. Возвращает список файлов.
+    """
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    data = info["data"]
+    item_id = info["id"]
+
+    # Live Photo: набор коротких видео — отдаём альбомом видео
+    if info["kind"] == "live":
+        files = []
+        for i, vid_url in enumerate(data["live_images"], 1):
             content = requests.get(_abs(vid_url), headers=HEADERS, timeout=120).content
             path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.mp4")
             with open(path, "wb") as f:
@@ -101,16 +125,13 @@ def download_tiktok(url: str) -> list[str]:
             files.append(path)
         return files
 
-    images = data.get("images")
-    if images:  # слайдшоу — набор фото
-        for i, img_url in enumerate(images, 1):
-            content = requests.get(_abs(img_url), headers=HEADERS, timeout=60).content
-            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.jpg")
-            with open(path, "wb") as f:
-                f.write(content)
-            files.append(path)
-
-        # Если есть музыка — собираем слайдшоу-видео (как в самом TikTok)
+    # Слайдшоу — набор фото (+ возможно музыка)
+    if info["kind"] == "slideshow":
+        files = _download_images(data["images"], item_id)
+        # Только фото — отдаём картинки как есть
+        if mode == "photos":
+            return files
+        # Видео или авто: собираем слайдшоу-видео, если есть музыка
         music_url = data.get("music")
         if music_url:
             try:
@@ -121,20 +142,24 @@ def download_tiktok(url: str) -> list[str]:
                 video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_viaSaver.mp4")
                 _build_slideshow(files, audio_path, video_path)
                 if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-                    # Убираем картинки и аудио — отдаём только готовое видео
                     for f in files:
                         _safe_remove(f)
                     _safe_remove(audio_path)
                     return [video_path]
                 _safe_remove(audio_path)
             except Exception:
-                pass  # не вышло собрать видео — отдадим картинки как есть
-    else:  # обычное видео
-        play = data.get("hdplay") or data.get("play")
-        content = requests.get(_abs(play), headers=HEADERS, timeout=120).content
-        path = os.path.join(DOWNLOADS_DIR, f"{item_id}_viaSaver.mp4")
-        with open(path, "wb") as f:
-            f.write(content)
-        files.append(path)
+                pass  # не вышло собрать видео — отдадим картинки
+        return files  # музыки нет (или сборка не удалась) — отдаём фото
 
-    return files
+    # Обычное видео
+    play = data.get("hdplay") or data.get("play")
+    content = requests.get(_abs(play), headers=HEADERS, timeout=120).content
+    path = os.path.join(DOWNLOADS_DIR, f"{item_id}_viaSaver.mp4")
+    with open(path, "wb") as f:
+        f.write(content)
+    return [path]
+
+
+def download_tiktok(url: str, mode: str = "auto") -> list[str]:
+    """Скачивает TikTok одним вызовом (данные + файлы). Обёртка над fetch_tiktok+download_from."""
+    return download_from(fetch_tiktok(url), mode)

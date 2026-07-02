@@ -27,7 +27,21 @@ def format_stats(stats: dict) -> str:
         for lang, cnt in sorted(stats["languages"].items(), key=lambda x: -x[1]):
             lines.append(f"• {lang}: {cnt} ({cnt * 100 // total}%)")
 
+    if stats.get("traffic"):
+        lines.append("\n📊 <b>Прокачано за месяц:</b>")
+        for row in stats["traffic"]:
+            lines.append(f"• {row['month']}: {_human_size(row['bytes'])} ({row['files']} файлов)")
+
     return "\n".join(lines)
+
+
+def _human_size(nbytes: int) -> str:
+    """Байты в человекочитаемый вид: 1.4 ГБ, 812 МБ и т.п."""
+    size = float(nbytes)
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if size < 1024 or unit == "ТБ":
+            return f"{size:.0f} {unit}" if unit in ("Б", "КБ") else f"{size:.1f} {unit}"
+        size /= 1024
 
 
 def _is_admin(message: Message) -> bool:

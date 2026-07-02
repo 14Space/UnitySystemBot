@@ -6,7 +6,8 @@ from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from bot.config import BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM
 from bot.database import init_db, SessionLocal
-from bot.database.repository import get_stats
+from bot.database.repository import get_stats, add_traffic
+from bot.utils import traffic
 from bot.middlewares.register_user import RegisterUserMiddleware
 from bot.middlewares.throttle import ThrottleMiddleware
 from bot.handlers import start, link, admin, payment, inline, transcribe
@@ -31,6 +32,19 @@ async def _daily_tasks(bot: Bot):
                 await bot.send_message(ADMIN_ID, format_stats(stats), parse_mode="HTML")
             except Exception:
                 logger.exception("Не удалось отправить дневной отчёт")
+
+
+async def _flush_traffic():
+    """Раз в минуту сбрасываем накопленный трафик (скачанные байты) в БД."""
+    while True:
+        await asyncio.sleep(60)
+        nbytes, nfiles = traffic.take()
+        if nbytes:
+            try:
+                async with SessionLocal() as session:
+                    await add_traffic(session, nbytes, nfiles)
+            except Exception:
+                logger.exception("Не удалось сохранить статистику трафика")
 
 
 async def _setup_commands(bot: Bot):
@@ -84,6 +98,9 @@ async def main():
 
     # Фоновая дневная задача (обновление yt-dlp + отчёт)
     asyncio.create_task(_daily_tasks(bot))
+
+    # Периодический сброс статистики трафика (скачано на диск) в БД
+    asyncio.create_task(_flush_traffic())
 
     # Прогрев модели расшифровки: грузим в видеопамять заранее, в фоне, чтобы
     # не задерживать старт бота и чтобы первое голосовое не тормозило.

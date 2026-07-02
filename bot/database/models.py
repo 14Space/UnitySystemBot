@@ -26,6 +26,16 @@ class DownloadStat(Base):
     count = Column(Integer, default=0)
 
 
+class MonthlyTraffic(Base):
+    """Сколько байт скачано (записано на диск) за месяц — для оценки износа SSD.
+    Кэш-переотправки сюда не попадают: они на диск ничего не пишут."""
+    __tablename__ = "monthly_traffic"
+
+    month = Column(String, primary_key=True)  # "YYYY-MM" (UTC)
+    total_bytes = Column(Integer, default=0)
+    files = Column(Integer, default=0)
+
+
 class CachedFile(Base):
     """Кэш: URL+качество → file_id Telegram (файл лежит на серверах Telegram)"""
     __tablename__ = "cached_files"

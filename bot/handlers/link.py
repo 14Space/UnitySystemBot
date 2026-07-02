@@ -14,7 +14,7 @@ from bot.utils.platform_detector import detect_platform, Platform
 from bot.keyboards.quality import build_quality_keyboard, FREE_LIMIT
 from bot.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar
-from bot.utils import limits
+from bot.utils import limits, traffic
 from bot.utils.i18n import t, lang_of, t_kind
 from bot.database import SessionLocal
 from bot.database.repository import (
@@ -26,10 +26,11 @@ from worker.downloaders.ytdlp_wrapper import (
     download_media, convert_gif_to_mp4,
 )
 from worker.downloaders.spotify import get_track_info, get_collection_info
+from worker.downloaders.music_search import find_track_source
 from worker.downloaders.instagram import download_reel, download_post, is_image
-from worker.downloaders.tiktok import download_tiktok
-from worker.downloaders import hdrezka, twitter
+from worker.downloaders import hdrezka, twitter, tiktok
 from worker.renderer.tweet_card import render_tweet_card
+from bot.keyboards.tiktok import build_tiktok_slideshow_keyboard
 from bot.keyboards.hdrezka import (
     build_translator_keyboard, build_hdrezka_quality_keyboard,
     build_season_keyboard, build_episode_keyboard,
@@ -50,6 +51,9 @@ COLLECTION_STORE: dict[str, dict] = {}
 # sid -> {"api", "name", "is_series", "translators", "season", "episode",
 #         "chat_id", "user_msg_id", "streams": {tid: stream}}
 HDREZKA_STORE: dict[str, dict] = {}
+
+# sid -> {"url", "info"} — данные слайдшоу TikTok между вопросом и выбором формата
+TIKTOK_STORE: dict[str, dict] = {}
 
 # Чтобы хранилища не росли бесконечно (утечка памяти при долгой работе),
 # держим не больше последних N записей — старые выкидываем.
@@ -134,9 +138,9 @@ async def process_link(message: Message, url: str):
         await _handle_files(message, url, download_post, "ig_post_failed", lang)
         return
 
-    # TikTok — видео без водяного знака или слайдшоу (через tikwm API)
+    # TikTok — видео без водяного знака; слайдшоу спрашивает формат (видео/фото)
     if platform == Platform.TIKTOK:
-        await _handle_files(message, url, download_tiktok, "generic_dl_failed", lang)
+        await _handle_tiktok(message, url, lang)
         return
 
     # Pinterest — одно медиа (фото или видео) через yt-dlp
@@ -639,6 +643,138 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
         ACTIVE_DOWNLOADS.discard(message.from_user.id)
 
 
+async def _send_media_files(message: Message, files: list[str], lang: str) -> list[str]:
+    """Отправляет файлы (фото/видео) одиночно или альбомом. Возвращает токены file_id
+    ('P:' фото, 'V:' видео) для сохранения в кэш."""
+    tokens: list[str] = []
+    if len(files) == 1:
+        f = files[0]
+        if is_image(f):
+            sent = await message.reply_photo(FSInputFile(f))
+            if sent.photo:
+                tokens.append("P:" + sent.photo[-1].file_id)
+        else:
+            sent = await message.reply_video(FSInputFile(f), **await _video_kwargs(f))
+            if sent.video:
+                tokens.append("V:" + sent.video.file_id)
+    else:
+        for chunk in _chunked(files, 10):
+            media = []
+            for f in chunk:
+                if is_image(f):
+                    media.append(InputMediaPhoto(media=FSInputFile(f)))
+                else:
+                    media.append(InputMediaVideo(media=FSInputFile(f), **await _video_kwargs(f)))
+            sent_msgs = await message.reply_media_group(media)
+            for m in sent_msgs:
+                if m.photo:
+                    tokens.append("P:" + m.photo[-1].file_id)
+                elif m.video:
+                    tokens.append("V:" + m.video.file_id)
+    return tokens
+
+
+async def _handle_tiktok(message: Message, url: str, lang: str):
+    """TikTok: обычное видео — сразу; слайдшоу — спрашиваем формат (видео/фото)."""
+    # Быстрый кэш обычного видео (уже качали) — мгновенно, без обращения к API
+    async with SessionLocal() as session:
+        cached = await get_cached_file_id(session, url, "tt_auto")
+    if cached:
+        await _send_cached_post(message, cached)
+        return
+
+    if message.from_user.id in ACTIVE_DOWNLOADS:
+        await message.reply(t("wait_current", lang))
+        return
+
+    status = await message.reply(t("downloading", lang))
+    try:
+        info = await asyncio.to_thread(tiktok.fetch_tiktok, url)
+    except Exception as e:
+        logger.exception("TikTok fetch failed")
+        await _safe_edit(status, limits.friendly_error(e, lang))
+        return
+
+    # Слайдшоу — спрашиваем, как скачать (видео или фото)
+    if info["kind"] == "slideshow":
+        await _safe_delete(status)
+        sid = uuid.uuid4().hex[:8]
+        _remember(TIKTOK_STORE, sid, {"url": url, "info": info})
+        await message.reply(
+            t("tt_slideshow_ask", lang),
+            reply_markup=build_tiktok_slideshow_keyboard(sid, lang),
+        )
+        return
+
+    # Обычное видео / Live Photo — качаем сразу
+    ACTIVE_DOWNLOADS.add(message.from_user.id)
+    await limits.acquire(limits.LIGHT)
+    try:
+        files = await asyncio.to_thread(tiktok.download_from, info, "auto")
+        tokens = await _send_media_files(message, files, lang)
+        if tokens:
+            async with SessionLocal() as session:
+                await save_cached_file_id(session, url, "\n".join(tokens), "tt_auto")
+        await _safe_delete(status)
+        for f in files:
+            _cleanup(f)
+    except Exception as e:
+        logger.exception("TikTok download failed")
+        await _safe_edit(status, limits.friendly_error(e, lang))
+    finally:
+        await limits.release(limits.LIGHT)
+        ACTIVE_DOWNLOADS.discard(message.from_user.id)
+
+
+@router.callback_query(F.data.startswith("ttdl:"))
+async def handle_tiktok_slideshow(callback: CallbackQuery):
+    """Выбран формат слайдшоу TikTok: 'video' (со звуком) или 'photos' (отдельные фото)."""
+    lang = lang_of(callback.from_user)
+    _, mode, sid = callback.data.split(":")
+    entry = TIKTOK_STORE.get(sid)
+    if not entry:
+        await callback.answer(t("link_expired", lang), show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    if user_id in ACTIVE_DOWNLOADS:
+        await callback.answer(t("wait_current", lang), show_alert=True)
+        return
+
+    url, info = entry["url"], entry["info"]
+    cache_key = "tt_" + mode  # tt_video / tt_photos
+
+    # Кэш выбранного формата — отдаём мгновенно
+    async with SessionLocal() as session:
+        cached = await get_cached_file_id(session, url, cache_key)
+    if cached:
+        await callback.answer()
+        await _send_cached_post(callback.message, cached)
+        await _safe_delete(callback.message)
+        return
+
+    await callback.answer()
+    await _safe_edit(callback.message, t("downloading", lang))  # убираем кнопки, показываем статус
+
+    ACTIVE_DOWNLOADS.add(user_id)
+    await limits.acquire(limits.LIGHT)
+    try:
+        files = await asyncio.to_thread(tiktok.download_from, info, mode)
+        tokens = await _send_media_files(callback.message, files, lang)
+        if tokens:
+            async with SessionLocal() as session:
+                await save_cached_file_id(session, url, "\n".join(tokens), cache_key)
+        await _safe_delete(callback.message)
+        for f in files:
+            _cleanup(f)
+    except Exception as e:
+        logger.exception("TikTok slideshow download failed")
+        await _safe_edit(callback.message, limits.friendly_error(e, lang))
+    finally:
+        await limits.release(limits.LIGHT)
+        ACTIVE_DOWNLOADS.discard(user_id)
+
+
 # Telegram: подпись к медиа — максимум 1024 символа (у обычного текста 4096).
 TWEET_CAPTION_MAX = 1024
 
@@ -995,9 +1131,19 @@ async def _do_download_audio(
         # недоступности первого видео попробовать следующее. Иначе — один источник.
         if source.startswith("ytsearch"):
             query = source.split(":", 1)[1]
-            candidates = await asyncio.to_thread(search_audio_candidates, query, target_duration)
-            if not candidates:
-                raise ValueError("not found")
+            # Spotify (есть meta): ищем оригинал по цепочке YT Music → SoundCloud.
+            found = None
+            if meta:
+                found = await asyncio.to_thread(
+                    find_track_source, meta["performer"], meta["title"], meta["duration"]
+                )
+            if found:
+                candidates = [found]
+            else:
+                # запасной путь — обычный поиск на YouTube (несколько кандидатов)
+                candidates = await asyncio.to_thread(search_audio_candidates, query, target_duration)
+                if not candidates:
+                    raise ValueError("not found")
             source = candidates[0]
         else:
             candidates = [source]
@@ -1220,9 +1366,11 @@ async def _safe_delete(msg):
 
 
 def _cleanup(file_path: str):
-    """Удаляет локальный файл после отправки — диск не копит мусор"""
+    """Удаляет локальный файл после отправки — диск не копит мусор.
+    Заодно учитываем размер в статистике трафика (сколько записано на SSD)."""
     try:
         if file_path and os.path.exists(file_path):
+            traffic.record(file_path)
             os.remove(file_path)
     except Exception:
         logger.warning(f"Не смог удалить {file_path}")
