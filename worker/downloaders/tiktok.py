@@ -1,11 +1,16 @@
 import os
+import re
 import subprocess
+import time
 import requests
 from worker.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
 
 # Публичный API без авторизации: отдаёт видео без водяного знака и слайдшоу.
 # yt-dlp web-парсинг TikTok нестабилен (анти-бот), поэтому идём через него.
 API = "https://www.tikwm.com/api/"
+# Запасной сервис на случай, если основной не отдал видео (свои серверы — может
+# вытащить то, что не смог tikwm). Отдаёт только видео (не слайдшоу).
+BACKUP_API = "https://lovetik.com/api/ajax/search"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
@@ -75,22 +80,66 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
     return out_path
 
 
+def _resolve_short(url: str) -> str:
+    """Разворачивает короткую ссылку (vt./vm.tiktok.com) в полную — так API надёжнее.
+    Если не вышло — возвращаем исходную ссылку как есть."""
+    try:
+        if url and ("vt.tiktok.com" in url or "vm.tiktok.com" in url):
+            return requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True).url
+    except Exception:
+        pass
+    return url
+
+
+def _api_call(url: str) -> dict:
+    return requests.get(API, params={"url": url, "hd": 1}, headers=HEADERS, timeout=30).json()
+
+
+def _fetch_backup(url: str) -> dict | None:
+    """Запасной сервис (lovetik): когда основной не отдал видео. Возвращает данные
+    в том же формате, что и основной (kind='video'), или None. Слайдшоу не умеет."""
+    try:
+        j = requests.post(BACKUP_API, data={"query": url}, headers=HEADERS, timeout=25).json()
+    except Exception:
+        return None
+    if j.get("status") != "ok":
+        return None
+    # ft==1 — варианты БЕЗ водяного знака; берём лучшее качество (последнее в списке)
+    nowm = [ln for ln in (j.get("links") or []) if ln.get("ft") == 1 and ln.get("a")]
+    if not nowm:
+        return None
+    m = re.search(r"/video/(\d+)", url)
+    item_id = m.group(1) if m else "tiktok"
+    play = nowm[-1]["a"]
+    return {"id": item_id, "kind": "video", "data": {"id": item_id, "play": play, "hdplay": play}}
+
+
 def fetch_tiktok(url: str) -> dict:
     """Запрашивает данные поста (без скачивания файлов) и определяет тип:
     'video' — обычное видео, 'slideshow' — набор фото (+ возможно музыка),
     'live' — Live Photo (короткие видео). Возвращает {'id','kind','data'}."""
-    r = requests.get(API, params={"url": url, "hd": 1}, headers=HEADERS, timeout=30)
-    payload = r.json()
+    url = _resolve_short(url)
+    payload = _api_call(url)
+    # Отказ бывает из-за мелочей: временный сбой сервиса или лимит «1 запрос/сек».
+    # Ждём секунду и пробуем ещё раз — пользователь заминки не замечает.
     if payload.get("code") != 0:
-        raise ValueError(payload.get("msg") or "TikTok API error")
-    data = payload["data"]
-    if data.get("live_images"):
-        kind = "live"
-    elif data.get("images"):
-        kind = "slideshow"
-    else:
-        kind = "video"
-    return {"id": str(data.get("id", "tiktok")), "kind": kind, "data": data}
+        time.sleep(1.2)
+        payload = _api_call(url)
+    if payload.get("code") == 0:
+        data = payload["data"]
+        if data.get("live_images"):
+            kind = "live"
+        elif data.get("images"):
+            kind = "slideshow"
+        else:
+            kind = "video"
+        return {"id": str(data.get("id", "tiktok")), "kind": kind, "data": data}
+
+    # Основной сервис не смог — пробуем запасной (только видео)
+    backup = _fetch_backup(url)
+    if backup:
+        return backup
+    raise ValueError(payload.get("msg") or "TikTok API error")
 
 
 def _download_images(images: list[str], item_id: str) -> list[str]:
