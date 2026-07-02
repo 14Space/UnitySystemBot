@@ -93,8 +93,9 @@ async def process_link(message: Message, url: str):
     lang = lang_of(message.from_user)
     platform = detect_platform(url)
 
+    # Неподдерживаемая ссылка — молчим (особенно важно в группах: не реагируем
+    # на чужие/сторонние ссылки, чтобы не спамить и не отвечать невпопад).
     if platform == Platform.UNKNOWN:
-        await message.answer(t("unsupported_link", lang))
         return
 
     # Статистика популярности платформ
