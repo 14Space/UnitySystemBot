@@ -479,27 +479,21 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
         await message.reply_video(cached_id, supports_streaming=True)
         return
 
-    if message.from_user.id in ACTIVE_DOWNLOADS:
-        await message.reply(t("wait_current", lang))
-        return
-
-    ACTIVE_DOWNLOADS.add(message.from_user.id)
+    # Лёгкие задачи не ограничиваем «одна за раз» — можно кидать подряд, общий лимит
+    # (limits.LIGHT) сам поставит лишние в очередь.
     await limits.acquire(limits.LIGHT)
-    status = await message.reply(t("downloading", lang))
     try:
         file_path = await asyncio.to_thread(download_fn, url)
         sent = await message.reply_video(FSInputFile(file_path), **await _video_kwargs(file_path))
         if sent.video:
             async with SessionLocal() as session:
                 await save_cached_file_id(session, url, sent.video.file_id, cache_key)
-        await _safe_delete(status)
         _cleanup(file_path)
     except Exception as e:
         logger.exception("%s download failed", cache_key)
-        await _safe_edit(status, limits.friendly_error(e, lang))
+        await message.reply(limits.friendly_error(e, lang))
     finally:
         await limits.release(limits.LIGHT)
-        ACTIVE_DOWNLOADS.discard(message.from_user.id)
 
 
 async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
@@ -516,13 +510,7 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
             await message.reply_video(cached[2:], supports_streaming=True)
         return
 
-    if message.from_user.id in ACTIVE_DOWNLOADS:
-        await message.reply(t("wait_current", lang))
-        return
-
-    ACTIVE_DOWNLOADS.add(message.from_user.id)
     await limits.acquire(limits.LIGHT)
-    status = await message.reply(t("downloading", lang))
     try:
         file_path = await asyncio.to_thread(download_media, url)
         if file_path.lower().endswith(".gif"):
@@ -541,14 +529,12 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
         if fid:
             async with SessionLocal() as session:
                 await save_cached_file_id(session, url, fid, cache_key)
-        await _safe_delete(status)
         _cleanup(file_path)
     except Exception as e:
         logger.exception("%s download failed", cache_key)
-        await _safe_edit(status, limits.friendly_error(e, lang))
+        await message.reply(limits.friendly_error(e, lang))
     finally:
         await limits.release(limits.LIGHT)
-        ACTIVE_DOWNLOADS.discard(message.from_user.id)
 
 
 async def _send_cached_post(message: Message, cached: str):
@@ -581,17 +567,11 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
         await _send_cached_post(message, cached)
         return
 
-    if message.from_user.id in ACTIVE_DOWNLOADS:
-        await message.reply(t("wait_current", lang))
-        return
-
-    ACTIVE_DOWNLOADS.add(message.from_user.id)
     await limits.acquire(limits.LIGHT)
-    status = await message.reply(t("downloading", lang))
     try:
         files = await asyncio.to_thread(download_fn, url)
         if not files:
-            await _safe_edit(status, t("no_media", lang))
+            await message.reply(t("no_media", lang))
             return
 
         # Собираем file_id'ы отправленного, чтобы потом сохранить в кэш
@@ -629,7 +609,6 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
             async with SessionLocal() as session:
                 await save_cached_file_id(session, url, "\n".join(tokens), "post")
 
-        await _safe_delete(status)
         for f in files:
             _cleanup(f)
     except Exception as e:
@@ -638,10 +617,9 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
         # ошибка не распознана — даём платформенную подсказку (напр. про приватность)
         if msg == t("generic_dl_failed", lang):
             msg = t(error_key, lang)
-        await _safe_edit(status, msg)
+        await message.reply(msg)
     finally:
         await limits.release(limits.LIGHT)
-        ACTIVE_DOWNLOADS.discard(message.from_user.id)
 
 
 async def _send_media_files(message: Message, files: list[str], lang: str) -> list[str]:
@@ -684,48 +662,52 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         await _send_cached_post(message, cached)
         return
 
-    if message.from_user.id in ACTIVE_DOWNLOADS:
-        await message.reply(t("wait_current", lang))
-        return
-
-    status = await message.reply(t("downloading", lang))
     try:
         info = await asyncio.to_thread(tiktok.fetch_tiktok, url)
     except Exception as e:
         logger.exception("TikTok fetch failed")
-        await _safe_edit(status, limits.friendly_error(e, lang))
+        await message.reply(limits.friendly_error(e, lang))
         return
 
-    # Слайдшоу — спрашиваем, как скачать (видео или фото)
+    # Слайдшоу: в личке даём выбор (видео/фото), в группе — сразу видео без кнопок,
+    # чтобы не засорять чат и не заставлять всех ждать чужой выбор.
     if info["kind"] == "slideshow":
-        await _safe_delete(status)
-        sid = uuid.uuid4().hex[:8]
-        # запоминаем автора — кнопки слайдшоу слушаются только его
-        _remember(TIKTOK_STORE, sid, {"url": url, "info": info, "owner": message.from_user.id})
-        await message.reply(
-            t("tt_slideshow_ask", lang),
-            reply_markup=build_tiktok_slideshow_keyboard(sid, lang),
-        )
-        return
+        if message.chat.type == "private":
+            sid = uuid.uuid4().hex[:8]
+            # запоминаем автора — кнопки слайдшоу слушаются только его
+            _remember(TIKTOK_STORE, sid, {"url": url, "info": info, "owner": message.from_user.id})
+            await message.reply(
+                t("tt_slideshow_ask", lang),
+                reply_markup=build_tiktok_slideshow_keyboard(sid, lang),
+            )
+            return
+        mode, cache_key = "video", "tt_video"  # группа — сразу видео
+    else:
+        mode, cache_key = "auto", "tt_auto"    # обычное видео / Live
 
-    # Обычное видео / Live Photo — качаем сразу
-    ACTIVE_DOWNLOADS.add(message.from_user.id)
+    # Кэш выбранного варианта (обычное видео уже проверено выше по tt_auto;
+    # для группового слайдшоу проверяем tt_video, чтобы повтор был мгновенным)
+    if cache_key != "tt_auto":
+        async with SessionLocal() as session:
+            cached = await get_cached_file_id(session, url, cache_key)
+        if cached:
+            await _send_cached_post(message, cached)
+            return
+
     await limits.acquire(limits.LIGHT)
     try:
-        files = await asyncio.to_thread(tiktok.download_from, info, "auto")
+        files = await asyncio.to_thread(tiktok.download_from, info, mode)
         tokens = await _send_media_files(message, files, lang)
         if tokens:
             async with SessionLocal() as session:
-                await save_cached_file_id(session, url, "\n".join(tokens), "tt_auto")
-        await _safe_delete(status)
+                await save_cached_file_id(session, url, "\n".join(tokens), cache_key)
         for f in files:
             _cleanup(f)
     except Exception as e:
         logger.exception("TikTok download failed")
-        await _safe_edit(status, limits.friendly_error(e, lang))
+        await message.reply(limits.friendly_error(e, lang))
     finally:
         await limits.release(limits.LIGHT)
-        ACTIVE_DOWNLOADS.discard(message.from_user.id)
 
 
 @router.callback_query(F.data.startswith("ttdl:"))
@@ -744,11 +726,6 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         await callback.answer()
         return
 
-    user_id = callback.from_user.id
-    if user_id in ACTIVE_DOWNLOADS:
-        await callback.answer(t("wait_current", lang), show_alert=True)
-        return
-
     url, info = entry["url"], entry["info"]
     cache_key = "tt_" + mode  # tt_video / tt_photos
 
@@ -762,9 +739,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         return
 
     await callback.answer()
-    await _safe_edit(callback.message, t("downloading", lang))  # убираем кнопки, показываем статус
 
-    ACTIVE_DOWNLOADS.add(user_id)
     await limits.acquire(limits.LIGHT)
     try:
         files = await asyncio.to_thread(tiktok.download_from, info, mode)
@@ -772,7 +747,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         if tokens:
             async with SessionLocal() as session:
                 await save_cached_file_id(session, url, "\n".join(tokens), cache_key)
-        await _safe_delete(callback.message)
+        await _safe_delete(callback.message)  # убираем сообщение с кнопками
         for f in files:
             _cleanup(f)
     except Exception as e:
@@ -780,7 +755,6 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         await _safe_edit(callback.message, limits.friendly_error(e, lang))
     finally:
         await limits.release(limits.LIGHT)
-        ACTIVE_DOWNLOADS.discard(user_id)
 
 
 # Telegram: подпись к медиа — максимум 1024 символа (у обычного текста 4096).
@@ -799,19 +773,13 @@ async def _handle_twitter(message: Message, url: str, lang: str):
         await _send_cached_tweet(message, cached)
         return
 
-    if message.from_user.id in ACTIVE_DOWNLOADS:
-        await message.reply(t("wait_current", lang))
-        return
-
-    status = await message.reply(t("downloading", lang))
     try:
         tweet = await asyncio.to_thread(twitter.get_tweet, url)
     except Exception as e:
         logger.exception("Twitter fetch failed")
-        await _safe_edit(status, limits.friendly_error(e, lang))
+        await message.reply(limits.friendly_error(e, lang))
         return
 
-    ACTIVE_DOWNLOADS.add(message.from_user.id)
     await limits.acquire(limits.LIGHT)
     paths: list[str] = []
     try:
@@ -820,20 +788,17 @@ async def _handle_twitter(message: Message, url: str, lang: str):
 
         if not items:
             # карточка не нарисовалась — отдаём хотя бы текст
-            await _safe_delete(status)
             await message.reply(caption or t("no_media", lang))
             return
 
         tokens = await _send_twitter(message, items, caption, parse_mode)
-        await _safe_delete(status)
         if tokens:
             await _twitter_cache_save(url, tokens, caption, parse_mode)
     except Exception as e:
         logger.exception("Twitter handling failed")
-        await _safe_edit(status, limits.friendly_error(e, lang))
+        await message.reply(limits.friendly_error(e, lang))
     finally:
         await limits.release(limits.LIGHT)
-        ACTIVE_DOWNLOADS.discard(message.from_user.id)
         for p in paths:
             _cleanup(p)
 
@@ -1100,15 +1065,9 @@ async def _download_and_send_audio(
     bot: Bot, chat_id: int, user_id: int, reply_to: int,
     cache_url: str, source: str, lang: str, meta: dict = None, fallback_query: str = None,
 ):
-    """Скачивание одного трека с лимитом «1 загрузка на пользователя»."""
-    if user_id in ACTIVE_DOWNLOADS:
-        await bot.send_message(chat_id, t("wait_current", lang), reply_to_message_id=reply_to)
-        return
-    ACTIVE_DOWNLOADS.add(user_id)
-    try:
-        await _do_download_audio(bot, chat_id, reply_to, cache_url, source, lang, meta, fallback_query)
-    finally:
-        ACTIVE_DOWNLOADS.discard(user_id)
+    """Скачивание одного трека. Ограничение «одна за раз» снято — музыка лёгкая,
+    общий лимит (limits.LIGHT внутри) сам ставит лишние треки в очередь."""
+    await _do_download_audio(bot, chat_id, reply_to, cache_url, source, lang, meta, fallback_query)
 
 
 async def _do_download_audio(
