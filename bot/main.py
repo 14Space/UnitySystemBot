@@ -14,8 +14,11 @@ from bot.utils import traffic
 from bot.middlewares.register_user import RegisterUserMiddleware
 from bot.middlewares.throttle import ThrottleMiddleware
 from bot.middlewares.routing import RoutingMiddleware
-from bot.handlers import start, link, admin, payment, inline, transcribe, config
-from bot.handlers.admin import format_stats
+from bot.features.common import start, admin, payment, inline
+from bot.features.download import link
+from bot.features.transcribe import transcribe
+from bot.features.config import setconfig
+from bot.features.common.admin import format_stats
 from worker.maintenance import clean_downloads, update_ytdlp
 
 logging.basicConfig(level=logging.INFO)
@@ -134,7 +137,7 @@ async def main():
     # Все роутеры подключаем один раз (маршрутизатор отфильтрует лишнее по каждому боту)
     dp.include_router(start.router)
     dp.include_router(admin.router)
-    dp.include_router(config.router)
+    dp.include_router(setconfig.router)
     dp.include_router(transcribe.router)
     dp.include_router(payment.router)
     dp.include_router(inline.router)

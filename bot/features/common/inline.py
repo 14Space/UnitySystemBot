@@ -7,7 +7,7 @@ from aiogram.types import (
 
 from bot.database import SessionLocal
 from bot.database.repository import get_any_cached_file
-from bot.handlers.link import stash_inline_link
+from bot.features.download.link import stash_inline_link
 from bot.utils.platform_detector import detect_platform, Platform
 from bot.utils.i18n import t, lang_of
 

@@ -41,9 +41,8 @@ services:
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
     volumes:
-      # Монтируем всю папку data: и downloads, и cookies Instagram (data/instagram_cookies.txt).
+      # Монтируем всю папку data: downloads, cookies и база unitysystem.db (data/unitysystem.db).
       - ./data:/app/data
-      - ./unitysystem.db:/app/unitysystem.db
       # Тот же том с принятыми файлами (ГС/кружки) — бот в Docker читает их напрямую.
       - tg-api-data:/var/lib/telegram-bot-api:ro
       # Кэш модели Whisper (~3 ГБ): скачивается один раз, переживает пересборку.

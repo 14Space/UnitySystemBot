@@ -3,7 +3,7 @@ from aiogram.filters import CommandStart, CommandObject, Command
 from aiogram.types import Message
 
 from bot.config import ADMIN_ID
-from bot.handlers.link import INLINE_LINKS, process_link
+from bot.features.download.link import INLINE_LINKS, process_link
 from bot.keyboards.menu import main_menu_keyboard
 from bot.utils.i18n import t, lang_of
 
