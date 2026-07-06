@@ -674,8 +674,7 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
     if info["kind"] == "slideshow":
         if message.chat.type == "private":
             sid = uuid.uuid4().hex[:8]
-            # запоминаем автора — кнопки слайдшоу слушаются только его
-            _remember(TIKTOK_STORE, sid, {"url": url, "info": info, "owner": message.from_user.id})
+            _remember(TIKTOK_STORE, sid, {"url": url, "info": info})
             await message.reply(
                 t("tt_slideshow_ask", lang),
                 reply_markup=build_tiktok_slideshow_keyboard(sid, lang),
@@ -718,12 +717,6 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     entry = TIKTOK_STORE.get(sid)
     if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
-        return
-
-    # Кнопки слушаются только у того, кто прислал ссылку. Чужое нажатие тихо гасим
-    # (пустой ответ убирает «часики» на кнопке), скачивание не запускаем.
-    if callback.from_user.id != entry.get("owner"):
-        await callback.answer()
         return
 
     url, info = entry["url"], entry["info"]
