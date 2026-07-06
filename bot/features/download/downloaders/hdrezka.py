@@ -3,7 +3,7 @@ import re
 import subprocess
 import requests
 from HdRezkaApi import HdRezkaApi
-from worker.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
+from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
 
 # Коды языков субтитров → метка для контейнера mp4
 _LANG = {"ru": "rus", "en": "eng", "ua": "ukr", "uk": "ukr"}

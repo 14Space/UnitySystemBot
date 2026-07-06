@@ -22,7 +22,7 @@ from bot.config import (
 )
 from bot.utils import limits, traffic
 from bot.utils.i18n import t, lang_of
-from worker.transcriber import transcribe
+from bot.features.transcribe.transcriber import transcribe
 
 router = Router()
 logger = logging.getLogger(__name__)

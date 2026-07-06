@@ -6,7 +6,7 @@ import requests
 import yt_dlp
 import instaloader
 from urllib.parse import urlparse
-from worker.downloaders.ytdlp_wrapper import BASE_OPTS, DOWNLOADS_DIR
+from bot.features.download.downloaders.ytdlp_wrapper import BASE_OPTS, DOWNLOADS_DIR
 
 try:
     from bot.config import INSTAGRAM_COOKIES

@@ -25,6 +25,5 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/us
 ENV HF_HOME=/cache
 
 COPY bot/ ./bot/
-COPY worker/ ./worker/
 
 CMD ["python", "-m", "bot.main"]

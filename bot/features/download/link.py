@@ -11,8 +11,8 @@ from aiogram.types import (
     InputMediaPhoto, InputMediaVideo,
 )
 from bot.utils.platform_detector import detect_platform, Platform
-from bot.keyboards.quality import build_quality_keyboard, FREE_LIMIT
-from bot.keyboards.tracklist import build_tracklist_keyboard
+from bot.features.download.keyboards.quality import build_quality_keyboard, FREE_LIMIT
+from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar
 from bot.utils import limits, traffic
 from bot.utils.i18n import t, lang_of, t_kind
@@ -20,23 +20,23 @@ from bot.database import SessionLocal
 from bot.database.repository import (
     get_cached_file_id, save_cached_file_id, increment_download, is_premium,
 )
-from worker.downloaders.ytdlp_wrapper import (
+from bot.features.download.downloaders.ytdlp_wrapper import (
     get_video_info, get_available_qualities, download_video, download_shorts,
     download_audio, search_audio, search_audio_candidates, get_soundcloud_set,
     download_media, convert_gif_to_mp4,
 )
-from worker.downloaders.spotify import get_track_info, get_collection_info
-from worker.downloaders.music_search import find_track_source
-from worker.downloaders.instagram import download_reel, download_post, is_image
-from worker.downloaders import hdrezka, twitter, tiktok
-from worker.renderer.tweet_card import render_tweet_card
-from bot.keyboards.tiktok import build_tiktok_slideshow_keyboard
-from bot.keyboards.hdrezka import (
+from bot.features.download.downloaders.spotify import get_track_info, get_collection_info
+from bot.features.download.downloaders.music_search import find_track_source
+from bot.features.download.downloaders.instagram import download_reel, download_post, is_image
+from bot.features.download.downloaders import hdrezka, twitter, tiktok
+from bot.features.download.renderer.tweet_card import render_tweet_card
+from bot.features.download.keyboards.tiktok import build_tiktok_slideshow_keyboard
+from bot.features.download.keyboards.hdrezka import (
     build_translator_keyboard, build_hdrezka_quality_keyboard,
     build_season_keyboard, build_episode_keyboard,
 )
-from worker.downloaders.audio_meta import set_metadata, get_soundcloud_cover, make_thumbnail
-from worker.downloaders.video_meta import probe_video, make_video_thumbnail
+from bot.features.download.downloaders.audio_meta import set_metadata, get_soundcloud_cover, make_thumbnail
+from bot.features.download.downloaders.video_meta import probe_video, make_video_thumbnail
 
 router = Router()
 logger = logging.getLogger(__name__)

@@ -19,7 +19,7 @@ from bot.features.download import link
 from bot.features.transcribe import transcribe
 from bot.features.config import setconfig
 from bot.features.common.admin import format_stats
-from worker.maintenance import clean_downloads, update_ytdlp
+from bot.features.download.maintenance import clean_downloads, update_ytdlp
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -146,7 +146,7 @@ async def main():
     asyncio.create_task(_daily_tasks(bots[0]))
     asyncio.create_task(_flush_traffic())
     if WHISPER_PREWARM and any_transcribe:
-        from worker.transcriber import warmup
+        from bot.features.transcribe.transcriber import warmup
         asyncio.create_task(asyncio.to_thread(warmup))
 
     print(f"Запущено ботов: {len(bots)}")

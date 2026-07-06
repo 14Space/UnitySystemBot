@@ -4,7 +4,7 @@ from aiogram.types import Message
 
 from bot.config import ADMIN_ID
 from bot.features.download.link import INLINE_LINKS, process_link
-from bot.keyboards.menu import main_menu_keyboard
+from bot.features.common.keyboards.menu import main_menu_keyboard
 from bot.utils.i18n import t, lang_of
 
 router = Router()

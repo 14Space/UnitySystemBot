@@ -11,7 +11,7 @@ import re
 
 import requests
 
-from worker.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
+from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
 
 # i/status/<id> — самый стабильный путь: не зависит от имени автора в ссылке.
 API = "https://api.fxtwitter.com/i/status/{id}"

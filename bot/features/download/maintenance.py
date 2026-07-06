@@ -5,7 +5,7 @@ import logging
 import subprocess
 import importlib.metadata as meta
 
-from worker.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
+from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
 
 logger = logging.getLogger(__name__)
 

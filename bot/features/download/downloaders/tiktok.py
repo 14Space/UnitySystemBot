@@ -3,7 +3,7 @@ import re
 import subprocess
 import time
 import requests
-from worker.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
+from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
 
 # Публичный API без авторизации: отдаёт видео без водяного знака и слайдшоу.
 # yt-dlp web-парсинг TikTok нестабилен (анти-бот), поэтому идём через него.

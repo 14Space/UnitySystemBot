@@ -20,7 +20,7 @@ import time
 
 import requests
 
-from worker.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
+from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
 
 logger = logging.getLogger(__name__)
 

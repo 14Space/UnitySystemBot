@@ -11,7 +11,7 @@ import logging
 import os
 import subprocess
 
-from worker.downloaders.ytdlp_wrapper import FFMPEG_DIR
+from bot.features.download.downloaders.ytdlp_wrapper import FFMPEG_DIR
 
 logger = logging.getLogger(__name__)
 
