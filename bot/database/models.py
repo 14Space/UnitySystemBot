@@ -36,6 +36,15 @@ class MonthlyTraffic(Base):
     files = Column(Integer, default=0)
 
 
+class ChatSettings(Base):
+    """Настройки функций по чату (для /setconfig в @viaUnitySystem).
+    disabled_features — какие функции выключены в этом чате, через запятую."""
+    __tablename__ = "chat_settings"
+
+    chat_id = Column(Integer, primary_key=True)
+    disabled_features = Column(String, default="")
+
+
 class CachedFile(Base):
     """Кэш: URL+качество → file_id Telegram (файл лежит на серверах Telegram)"""
     __tablename__ = "cached_files"

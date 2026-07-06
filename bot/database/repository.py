@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from bot.database.models import User, CachedFile, DownloadStat, MonthlyTraffic
+from bot.database.models import User, CachedFile, DownloadStat, MonthlyTraffic, ChatSettings
 
 
 async def get_or_create_user(
@@ -100,6 +100,33 @@ async def get_stats(session: AsyncSession) -> dict:
         "languages": languages,
         "traffic": await get_traffic(session),
     }
+
+
+async def get_disabled_features(session: AsyncSession, chat_id: int) -> set[str]:
+    """Множество выключенных в этом чате функций (пусто = всё включено)."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    if not row or not row.disabled_features:
+        return set()
+    return {f for f in row.disabled_features.split(",") if f}
+
+
+async def set_feature(session: AsyncSession, chat_id: int, feature: str, enable: bool) -> None:
+    """Включает/выключает функцию в чате (для /setconfig)."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    if not row:
+        row = ChatSettings(chat_id=chat_id, disabled_features="")
+        session.add(row)
+    disabled = {f for f in (row.disabled_features or "").split(",") if f}
+    if enable:
+        disabled.discard(feature)
+    else:
+        disabled.add(feature)
+    row.disabled_features = ",".join(sorted(disabled))
+    await session.commit()
 
 
 async def get_cached_file_id(session: AsyncSession, url: str, quality: str = None) -> str | None:

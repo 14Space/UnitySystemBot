@@ -4,6 +4,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Дополнительные боты (общий мотor, ресурсы не дублируются). Пусто = бот не запускается.
+# Пока пусто — @viaSaver умеет всё (скачивание + расшифровка). Как только появятся эти
+# токены — @viaSaver станет «только скачивание», расшифровка уедет в @viaTranscription,
+# а @viaUnitySystem получит все функции + /setconfig по группам.
+TRANSCRIBE_BOT_TOKEN = os.getenv("TRANSCRIBE_BOT_TOKEN", "")
+UNITY_BOT_TOKEN = os.getenv("UNITY_BOT_TOKEN", "")
 # Локальный Telegram Bot API сервер (лимит файлов 2 ГБ вместо 50 МБ, быстрая отдача)
 TELEGRAM_LOCAL_API_URL = os.getenv("TELEGRAM_LOCAL_API_URL", "http://localhost:8081")
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "data/downloads")
