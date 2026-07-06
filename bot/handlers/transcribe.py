@@ -18,7 +18,7 @@ from aiogram.types import Message
 
 from bot.config import (
     DOWNLOADS_DIR, TELEGRAM_LOCAL_API_URL, TELEGRAM_LOCAL_FILES_DIR,
-    TELEGRAM_BOT_API_ROOT, TELEGRAM_API_CONTAINER, BOT_TOKEN,
+    TELEGRAM_BOT_API_ROOT, TELEGRAM_API_CONTAINER,
 )
 from bot.utils import limits, traffic
 from bot.utils.i18n import t, lang_of
@@ -71,6 +71,9 @@ async def _fetch_file(message: Message, file_id: str, dest: str):
       3) иначе (облачный API) — обычное скачивание.
     """
     if TELEGRAM_LOCAL_API_URL:
+        # Токен именно того бота, что принял голосовое: локальный сервер хранит файлы
+        # под папкой токена. В мульти-бот режиме это не общий BOT_TOKEN, а свой у каждого.
+        token = message.bot.token
         file = await message.bot.get_file(file_id)
         # 1) файл виден напрямую (бот и сервер делят том) или через bind-папку
         if file.file_path and os.path.exists(file.file_path):
@@ -79,7 +82,7 @@ async def _fetch_file(message: Message, file_id: str, dest: str):
         # 1b) бот в Docker: том сервера примонтирован (TELEGRAM_BOT_API_ROOT), но
         # getFile отдаёт ОТНОСИТЕЛЬНЫЙ путь (voice/file_0.oga) — собираем абсолютный
         # путь внутри тома и читаем файл напрямую, без docker cp.
-        container = _container_path(file.file_path)
+        container = _container_path(file.file_path, token)
         if container and os.path.exists(container):
             await asyncio.to_thread(shutil.copyfile, container, dest)
             return
@@ -88,26 +91,26 @@ async def _fetch_file(message: Message, file_id: str, dest: str):
             await asyncio.to_thread(shutil.copyfile, local, dest)
             return
         # 2) забираем файл из контейнера сервера
-        if await _docker_cp(file.file_path, dest):
+        if await _docker_cp(file.file_path, dest, token):
             return
     await message.bot.download(file_id, destination=dest)
 
 
-def _container_path(server_path: str) -> str | None:
+def _container_path(server_path: str, token: str) -> str | None:
     """Абсолютный путь файла внутри тома Bot API (бот в Docker читает его напрямую).
     getFile отдаёт относительный путь (voice/file_0.oga) — дополняем корнем тома
-    и папкой токена. Абсолютный путь от сервера берём как есть."""
+    и папкой токена ЭТОГО бота. Абсолютный путь от сервера берём как есть."""
     if not server_path:
         return None
     sp = server_path.replace("\\", "/")
     if sp.startswith("/"):
         return sp
-    return f"{TELEGRAM_BOT_API_ROOT.rstrip('/')}/{BOT_TOKEN}/{sp}"
+    return f"{TELEGRAM_BOT_API_ROOT.rstrip('/')}/{token}/{sp}"
 
 
-async def _docker_cp(server_path: str, dest: str) -> bool:
+async def _docker_cp(server_path: str, dest: str, token: str) -> bool:
     """Копирует файл из контейнера Bot API на хост через `docker cp`. True при успехе."""
-    container_path = _container_path(server_path)
+    container_path = _container_path(server_path, token)
     if not container_path:
         return False
     # docker cp делит аргумент по ПЕРВОМУ двоеточию (контейнер:путь), двоеточие
