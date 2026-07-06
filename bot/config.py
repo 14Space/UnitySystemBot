@@ -22,8 +22,8 @@ DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "data/downloads")
 TELEGRAM_BOT_API_ROOT = os.getenv("TELEGRAM_BOT_API_ROOT", "/var/lib/telegram-bot-api")
 TELEGRAM_LOCAL_FILES_DIR = os.getenv("TELEGRAM_LOCAL_FILES_DIR", "data/telegram-api")
 # Имя контейнера локального Bot API (для `docker cp`, когда бот запущен на хосте).
-TELEGRAM_API_CONTAINER = os.getenv("TELEGRAM_API_CONTAINER", "viasaverbot-telegram-bot-api-1")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///viasaverbot.db")
+TELEGRAM_API_CONTAINER = os.getenv("TELEGRAM_API_CONTAINER", "unitysystem-telegram-bot-api-1")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///unitysystem.db")
 
 # Spotify API — только для чтения метаданных трека (название, исполнитель)
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")

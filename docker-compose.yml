@@ -1,3 +1,7 @@
+# Имя проекта — от него зависят имена контейнеров (unitysystem-*) и томов.
+# Закреплено явно, чтобы не зависеть от имени папки.
+name: unitysystem
+
 services:
 
   # Локальный Telegram Bot API сервер — снимает лимит файлов с 50MB до 2GB
@@ -39,7 +43,7 @@ services:
     volumes:
       # Монтируем всю папку data: и downloads, и cookies Instagram (data/instagram_cookies.txt).
       - ./data:/app/data
-      - ./viasaverbot.db:/app/viasaverbot.db
+      - ./unitysystem.db:/app/unitysystem.db
       # Тот же том с принятыми файлами (ГС/кружки) — бот в Docker читает их напрямую.
       - tg-api-data:/var/lib/telegram-bot-api:ro
       # Кэш модели Whisper (~3 ГБ): скачивается один раз, переживает пересборку.
