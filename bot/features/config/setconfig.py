@@ -71,8 +71,9 @@ async def cmd_setconfig(message: Message):
     if message.chat.type not in GROUP_TYPES:
         await message.reply(t("cfg_group_only", lang))
         return
+    # Не-админам не отвечаем вообще — команда для них будто не существует
+    # (чтобы бот не реагировал на /setconfig от любого участника группы).
     if not await _is_admin(message.bot, message.chat.id, message.from_user.id):
-        await message.reply(t("cfg_admin_only", lang))
         return
     async with SessionLocal() as session:
         disabled = await get_disabled_features(session, message.chat.id)
