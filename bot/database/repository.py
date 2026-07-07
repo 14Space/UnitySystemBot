@@ -150,6 +150,41 @@ async def set_slideshow_mode(session: AsyncSession, chat_id: int, mode: str) -> 
     await session.commit()
 
 
+DEFAULT_CURRENCY_TARGETS = ["USD", "EUR"]
+
+
+async def get_currency_targets(session: AsyncSession, chat_id: int) -> list[str]:
+    """Валюты для конвертации в этой группе. Нет строки — набор по умолчанию."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    if row is None or row.currency_targets is None:
+        return list(DEFAULT_CURRENCY_TARGETS)
+    return [c for c in row.currency_targets.split(",") if c]
+
+
+async def toggle_currency_target(session: AsyncSession, chat_id: int, code: str) -> None:
+    """Добавляет/убирает валюту из набора конвертации для группы."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    if row is None:
+        # первая настройка — стартуем от набора по умолчанию
+        current = list(DEFAULT_CURRENCY_TARGETS)
+        row = ChatSettings(chat_id=chat_id, disabled_features="")
+        session.add(row)
+    elif row.currency_targets is None:
+        current = list(DEFAULT_CURRENCY_TARGETS)
+    else:
+        current = [c for c in row.currency_targets.split(",") if c]
+    if code in current:
+        current.remove(code)
+    else:
+        current.append(code)
+    row.currency_targets = ",".join(current)
+    await session.commit()
+
+
 async def get_cached_file_id(session: AsyncSession, url: str, quality: str = None) -> str | None:
     """Возвращает Telegram file_id для пары URL+качество, если он уже в кэше"""
     url_hash = hashlib.md5(f"{url}:{quality}".encode()).hexdigest()

@@ -10,19 +10,25 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from bot.database import SessionLocal
 from bot.database.repository import (
     get_disabled_features, set_feature, get_slideshow_mode, set_slideshow_mode,
+    get_currency_targets, toggle_currency_target,
 )
+from bot.features.currency.parser import ORDER as CURRENCY_ORDER
 from bot.utils.i18n import t, lang_of
 
 router = Router()
 
 GROUP_TYPES = ("group", "supergroup")
 
-# Функции, которые можно переключать: (внутреннее имя, ключ подписи).
-# Currency добавим, когда реализуем конвертер.
+# Функции-переключатели отдельной строкой: (внутреннее имя, ключ подписи).
+# Конвертер сюда НЕ входит — им управляет заголовок блока валют (см. _keyboard).
 TOGGLEABLE = [
     ("transcribe", "cfg_transcribe"),
     ("download", "cfg_download"),
 ]
+
+# Множество callback'ов переключателей функций (для точного матча хендлера).
+# Конвертер (cfg:currency) обрабатывается тем же toggle_feature, добавляем явно.
+_FEATURE_CB = {f"cfg:{name}" for name, _ in TOGGLEABLE} | {"cfg:currency"}
 
 
 async def _is_admin(bot, chat_id: int, user_id: int) -> bool:
@@ -42,7 +48,7 @@ SLIDESHOW_MODES = [
 ]
 
 
-def _keyboard(disabled: set[str], ss_mode: str, lang: str) -> InlineKeyboardMarkup:
+def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], lang: str) -> InlineKeyboardMarkup:
     rows = []
     # Переключатели функций (вкл/выкл)
     for feature, label_key in TOGGLEABLE:
@@ -59,6 +65,22 @@ def _keyboard(disabled: set[str], ss_mode: str, lang: str) -> InlineKeyboardMark
         ss_row.append(InlineKeyboardButton(
             text=f"{mark}{t(label_key, lang)}", callback_data=f"cfg:ss:{mode}"))
     rows.append(ss_row)
+    # Заголовок блока валют = переключатель конвертера: ✅ включён (показываем сетку
+    # валют), ❌ выключен (сетку прячем, бот не конвертирует в этой группе).
+    cur_on = "currency" not in disabled
+    rows.append([InlineKeyboardButton(
+        text=f"{'✅' if cur_on else '❌'} {t('cfg_currency_header', lang)}",
+        callback_data="cfg:currency")])
+    if cur_on:
+        row = []
+        for code in CURRENCY_ORDER:
+            mark = "🔘 " if code in targets else ""
+            row.append(InlineKeyboardButton(text=f"{mark}{code}", callback_data=f"cfg:cur:{code}"))
+            if len(row) == 3:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
     # Кнопка «Готово» — сохранять не нужно (всё сохраняется сразу), она убирает
     # сообщение настроек, чтобы по нему потом случайно не тыкали.
     rows.append([InlineKeyboardButton(text=t("cfg_done", lang), callback_data="cfg:done")])
@@ -78,7 +100,9 @@ async def cmd_setconfig(message: Message):
     async with SessionLocal() as session:
         disabled = await get_disabled_features(session, message.chat.id)
         ss_mode = await get_slideshow_mode(session, message.chat.id)
-    await message.reply(t("cfg_title", lang), reply_markup=_keyboard(disabled, ss_mode, lang))
+        targets = await get_currency_targets(session, message.chat.id)
+    await message.reply(t("cfg_title", lang),
+                        reply_markup=_keyboard(disabled, ss_mode, targets, lang))
 
 
 async def _refresh(callback: CallbackQuery, lang: str):
@@ -87,7 +111,9 @@ async def _refresh(callback: CallbackQuery, lang: str):
     async with SessionLocal() as session:
         disabled = await get_disabled_features(session, chat_id)
         ss_mode = await get_slideshow_mode(session, chat_id)
-    await callback.message.edit_reply_markup(reply_markup=_keyboard(disabled, ss_mode, lang))
+        targets = await get_currency_targets(session, chat_id)
+    await callback.message.edit_reply_markup(
+        reply_markup=_keyboard(disabled, ss_mode, targets, lang))
 
 
 @router.callback_query(F.data == "cfg:noop")
@@ -126,7 +152,21 @@ async def set_slideshow(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data.in_({"cfg:transcribe", "cfg:download"}))
+@router.callback_query(F.data.startswith("cfg:cur:"))
+async def toggle_currency(callback: CallbackQuery):
+    lang = lang_of(callback.from_user)
+    chat_id = callback.message.chat.id
+    code = callback.data.split(":", 2)[2]
+    if not await _is_admin(callback.bot, chat_id, callback.from_user.id):
+        await callback.answer(t("cfg_admin_only", lang), show_alert=True)
+        return
+    async with SessionLocal() as session:
+        await toggle_currency_target(session, chat_id, code)
+    await _refresh(callback, lang)
+    await callback.answer()
+
+
+@router.callback_query(F.data.in_(_FEATURE_CB))
 async def toggle_feature(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
     feature = callback.data.split(":", 1)[1]

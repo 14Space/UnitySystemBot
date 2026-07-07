@@ -18,3 +18,7 @@ async def init_db():
             await conn.exec_driver_sql(
                 "ALTER TABLE chat_settings ADD COLUMN slideshow_mode VARCHAR DEFAULT 'video'"
             )
+        if "currency_targets" not in cols:
+            await conn.exec_driver_sql(
+                "ALTER TABLE chat_settings ADD COLUMN currency_targets VARCHAR DEFAULT 'USD,EUR,UAH'"
+            )

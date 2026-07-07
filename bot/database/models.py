@@ -45,6 +45,8 @@ class ChatSettings(Base):
     disabled_features = Column(String, default="")
     # Режим слайдшоу TikTok в этой группе: video | photos | ask (по умолчанию video)
     slideshow_mode = Column(String, default="video")
+    # Валюты, в которые конвертер переводит в этой группе (коды через запятую)
+    currency_targets = Column(String, default="USD,EUR")
 
 
 class CachedFile(Base):

@@ -8,7 +8,7 @@ from aiogram.types import (
     BotCommandScopeAllChatAdministrators,
 )
 from bot.config import (
-    BOT_TOKEN, TRANSCRIBE_BOT_TOKEN, UNITY_BOT_TOKEN,
+    BOT_TOKEN, TRANSCRIBE_BOT_TOKEN, UNITY_BOT_TOKEN, CURRENCY_BOT_TOKEN,
     TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM,
 )
 from bot.database import init_db, SessionLocal
@@ -20,6 +20,7 @@ from bot.middlewares.routing import RoutingMiddleware
 from bot.features.common import start, admin, payment, inline
 from bot.features.download import link
 from bot.features.transcribe import transcribe
+from bot.features.currency import convert as currency
 from bot.features.config import setconfig
 from bot.features.common.admin import format_stats
 from bot.features.download.maintenance import clean_downloads, update_ytdlp
@@ -32,23 +33,26 @@ DAY_SECONDS = 24 * 60 * 60
 # Что умеет бот (набор функций). По ним маршрутизатор пускает нужные апдейты.
 DOWNLOAD = "download"
 TRANSCRIBE = "transcribe"
-# CURRENCY = "currency"  # добавим позже
+CURRENCY = "currency"
 
 
 def _bot_configs() -> list[dict]:
     """Список ботов к запуску. Запускаем только тех, у кого задан токен.
     Пока нет доп. токенов — @viaSaver умеет всё (чтобы не потерять расшифровку).
     Как только появятся остальные — @viaSaver становится «только скачивание»."""
-    others = bool(TRANSCRIBE_BOT_TOKEN) or bool(UNITY_BOT_TOKEN)
-    saver_features = {DOWNLOAD} if others else {DOWNLOAD, TRANSCRIBE}
+    others = bool(TRANSCRIBE_BOT_TOKEN) or bool(UNITY_BOT_TOKEN) or bool(CURRENCY_BOT_TOKEN)
+    saver_features = {DOWNLOAD} if others else {DOWNLOAD, TRANSCRIBE, CURRENCY}
 
     bots = [{"name": "viaSaver", "token": BOT_TOKEN, "features": saver_features, "config": False}]
     if TRANSCRIBE_BOT_TOKEN:
         bots.append({"name": "viaVoice", "token": TRANSCRIBE_BOT_TOKEN,
                      "features": {TRANSCRIBE}, "config": False})
+    if CURRENCY_BOT_TOKEN:
+        bots.append({"name": "viaCurrency", "token": CURRENCY_BOT_TOKEN,
+                     "features": {CURRENCY}, "config": False})
     if UNITY_BOT_TOKEN:
         bots.append({"name": "viaUnity", "token": UNITY_BOT_TOKEN,
-                     "features": {DOWNLOAD, TRANSCRIBE}, "config": True})
+                     "features": {DOWNLOAD, TRANSCRIBE, CURRENCY}, "config": True})
     return bots
 
 
@@ -150,6 +154,9 @@ async def main():
     dp.include_router(transcribe.router)
     dp.include_router(payment.router)
     dp.include_router(inline.router)
+    # Конвертер — раньше скачивания: его фильтр срабатывает только на «число+валюта»,
+    # иначе сообщение уходит дальше в обработчик ссылок (F.text).
+    dp.include_router(currency.router)
     dp.include_router(link.router)
 
     asyncio.create_task(_daily_tasks(bots[0]))

@@ -312,6 +312,21 @@ TEXTS = {
         "uk": "Транскрибація",
         "en": "Transcription",
     },
+    "cfg_currency": {
+        "ru": "Конвертер валют",
+        "uk": "Конвертер валют",
+        "en": "Currency converter",
+    },
+    "cfg_currency_header": {
+        "ru": "Валюты для конвертации:",
+        "uk": "Валюти для конвертації:",
+        "en": "Convert to:",
+    },
+    "cur_head": {
+        "ru": "{src} это:",
+        "uk": "{src} це:",
+        "en": "{src} =",
+    },
     "cfg_download": {
         "ru": "Скачивание",
         "uk": "Завантаження",

@@ -13,6 +13,7 @@ from aiogram.types import Message, CallbackQuery, InlineQuery
 
 from bot.database import SessionLocal
 from bot.database.repository import get_disabled_features
+from bot.features.currency.parser import parse as parse_currency
 
 GROUP_TYPES = ("group", "supergroup")
 
@@ -21,8 +22,13 @@ def _msg_feature(m: Message) -> str | None:
     """К какой функции относится сообщение (None = команда/прочее, не гейтим)."""
     if m.voice or m.video_note:
         return "transcribe"
-    if (m.text or "").startswith("http"):
+    text = m.text or ""
+    if text.startswith("http"):
         return "download"
+    # Конвертер валют — только в группах (в личке не работает по требованию) и только
+    # если в тексте реально распознан запрос «число+валюта».
+    if text and m.chat.type in GROUP_TYPES and parse_currency(text):
+        return "currency"
     return None
 
 

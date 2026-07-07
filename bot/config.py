@@ -10,6 +10,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # а @viaUnitySystem получит все функции + /setconfig по группам.
 TRANSCRIBE_BOT_TOKEN = os.getenv("TRANSCRIBE_BOT_TOKEN", "")
 UNITY_BOT_TOKEN = os.getenv("UNITY_BOT_TOKEN", "")
+# Пусто — конвертер валют живёт внутри @viaUnitySystem. Появится токен — станет
+# отдельным ботом @viaCurrency (по образцу viaVoice), без рефакторинга.
+CURRENCY_BOT_TOKEN = os.getenv("CURRENCY_BOT_TOKEN", "")
 # Локальный Telegram Bot API сервер (лимит файлов 2 ГБ вместо 50 МБ, быстрая отдача)
 TELEGRAM_LOCAL_API_URL = os.getenv("TELEGRAM_LOCAL_API_URL", "http://localhost:8081")
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "data/downloads")
