@@ -292,6 +292,21 @@ TEXTS = {
         "uk": "Налаштовувати функції можуть лише адміністратори групи.",
         "en": "Only group admins can change features.",
     },
+    "cfg_slideshow_header": {
+        "ru": "Как качать слайдшоу:",
+        "uk": "Як качати слайдшоу:",
+        "en": "How to download slideshow:",
+    },
+    "cfg_slideshow_ask": {
+        "ru": "Выбор",
+        "uk": "Вибір",
+        "en": "Choose",
+    },
+    "cfg_done": {
+        "ru": "Готово",
+        "uk": "Готово",
+        "en": "Done",
+    },
     "cfg_transcribe": {
         "ru": "Транскрибация",
         "uk": "Транскрибація",

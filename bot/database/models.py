@@ -43,6 +43,8 @@ class ChatSettings(Base):
 
     chat_id = Column(Integer, primary_key=True)
     disabled_features = Column(String, default="")
+    # Режим слайдшоу TikTok в этой группе: video | photos | ask (по умолчанию video)
+    slideshow_mode = Column(String, default="video")
 
 
 class CachedFile(Base):

@@ -129,6 +129,27 @@ async def set_feature(session: AsyncSession, chat_id: int, feature: str, enable:
     await session.commit()
 
 
+async def get_slideshow_mode(session: AsyncSession, chat_id: int) -> str:
+    """Режим слайдшоу TikTok в этой группе: video | photos | ask (по умолчанию video)."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    return row.slideshow_mode if row and row.slideshow_mode else "video"
+
+
+async def set_slideshow_mode(session: AsyncSession, chat_id: int, mode: str) -> None:
+    """Сохраняет режим слайдшоу для группы (для /setconfig)."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    if not row:
+        row = ChatSettings(chat_id=chat_id, disabled_features="", slideshow_mode=mode)
+        session.add(row)
+    else:
+        row.slideshow_mode = mode
+    await session.commit()
+
+
 async def get_cached_file_id(session: AsyncSession, url: str, quality: str = None) -> str | None:
     """Возвращает Telegram file_id для пары URL+качество, если он уже в кэше"""
     url_hash = hashlib.md5(f"{url}:{quality}".encode()).hexdigest()

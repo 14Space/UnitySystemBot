@@ -19,6 +19,7 @@ from bot.utils.i18n import t, lang_of, t_kind
 from bot.database import SessionLocal
 from bot.database.repository import (
     get_cached_file_id, save_cached_file_id, increment_download, is_premium,
+    get_slideshow_mode,
 )
 from bot.features.download.downloaders.ytdlp_wrapper import (
     get_video_info, get_available_qualities, download_video, download_shorts,
@@ -669,18 +670,29 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         await message.reply(limits.friendly_error(e, lang))
         return
 
-    # Слайдшоу: в личке даём выбор (видео/фото), в группе — сразу видео без кнопок,
-    # чтобы не засорять чат и не заставлять всех ждать чужой выбор.
+    # Слайдшоу: в личке всегда даём выбор (видео/фото). В группе — по настройке
+    # /setconfig: video (сразу видео, по умолчанию), photos (сразу фото) или ask
+    # (кнопки выбора; их слушает только приславший ссылку — см. handle_tiktok_slideshow).
     if info["kind"] == "slideshow":
         if message.chat.type == "private":
+            ss_mode = "ask"
+        else:
+            async with SessionLocal() as session:
+                ss_mode = await get_slideshow_mode(session, message.chat.id)
+
+        if ss_mode == "ask":
             sid = uuid.uuid4().hex[:8]
-            _remember(TIKTOK_STORE, sid, {"url": url, "info": info})
+            # запоминаем автора — в группе кнопки слушаются только его
+            _remember(TIKTOK_STORE, sid, {"url": url, "info": info, "owner": message.from_user.id})
             await message.reply(
                 t("tt_slideshow_ask", lang),
                 reply_markup=build_tiktok_slideshow_keyboard(sid, lang),
             )
             return
-        mode, cache_key = "video", "tt_video"  # группа — сразу видео
+        if ss_mode == "photos":
+            mode, cache_key = "photos", "tt_photos"
+        else:
+            mode, cache_key = "video", "tt_video"
     else:
         mode, cache_key = "auto", "tt_auto"    # обычное видео / Live
 
@@ -717,6 +729,12 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     entry = TIKTOK_STORE.get(sid)
     if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
+        return
+
+    # Кнопки слушаются только у того, кто прислал ссылку (важно для групп в режиме
+    # «Выбор»). Чужое нажатие тихо гасим — «часики» на кнопке уберутся, скачивание нет.
+    if callback.from_user.id != entry.get("owner"):
+        await callback.answer()
         return
 
     url, info = entry["url"], entry["info"]
