@@ -12,7 +12,7 @@ router = Router()
 
 def format_stats(stats: dict) -> str:
     """Текст отчёта по статистике."""
-    lines = ["📊 <b>Статистика viaSaver</b>", ""]
+    lines = ["📊 <b>Статистика UnitySystem</b>", ""]
     lines.append(f"👥 Пользователей: <b>{stats['users']}</b>")
     lines.append(f"⬇️ Всего запросов: <b>{stats['total_downloads']}</b>")
 
