@@ -16,8 +16,15 @@ DEFAULT_LANG = "en"  # для всех, у кого Telegram не на русс�
 
 
 def lang_of(user) -> str:
-    """Определяет язык пользователя по настройкам Telegram."""
+    """Определяет язык пользователя по настройкам Telegram.
+
+    Если клиент не прислал language_code (бывает у части сборок Telegram) — берём
+    русский: это основная аудитория, и так же поступает register_user при записи в
+    БД. Раньше здесь пустой код уходил в 'en', из-за чего у русских без language_code
+    интерфейс показывался на английском. Явно указанный не-ru/uk язык — на английском."""
     code = (getattr(user, "language_code", None) or "")[:2].lower()
+    if not code:
+        return "ru"
     return code if code in SUPPORTED else DEFAULT_LANG
 
 
@@ -242,6 +249,9 @@ TEXTS = {
     },
     "btn_season": {
         "ru": "Сезон {n}", "uk": "Сезон {n}", "en": "Season {n}",
+    },
+    "btn_no_subtitles": {
+        "ru": "Без субтитров", "uk": "Без субтитрів", "en": "No subtitles",
     },
     "nav_back": {"ru": "← Назад", "uk": "← Назад", "en": "← Back"},
     "nav_forward": {"ru": "Вперёд →", "uk": "Вперед →", "en": "Next →"},

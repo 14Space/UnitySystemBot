@@ -54,13 +54,13 @@ def build_translator_keyboard(sid: str, translators: list, page: int, lang: str 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_subtitle_keyboard(sid: str, tid: int, subtitles: list) -> InlineKeyboardMarkup:
+def build_subtitle_keyboard(sid: str, tid: int, subtitles: list, lang: str = "ru") -> InlineKeyboardMarkup:
     """Выбор языка субтитров (+ вариант без них)."""
     rows = [
         [InlineKeyboardButton(text=f"💬 {title}", callback_data=f"hrs:{sid}:{tid}:{code}")]
         for code, title in subtitles
     ]
-    rows.append([InlineKeyboardButton(text="Без субтитров", callback_data=f"hrs:{sid}:{tid}:none")])
+    rows.append([InlineKeyboardButton(text=t("btn_no_subtitles", lang), callback_data=f"hrs:{sid}:{tid}:none")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
