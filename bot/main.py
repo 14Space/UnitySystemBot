@@ -3,7 +3,10 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
+from aiogram.types import (
+    BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
+    BotCommandScopeAllChatAdministrators,
+)
 from bot.config import (
     BOT_TOKEN, TRANSCRIBE_BOT_TOKEN, UNITY_BOT_TOKEN,
     TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM,
@@ -62,9 +65,15 @@ async def _setup_commands(bot: Bot, features: set[str], with_config: bool):
     common = [BotCommand(command="help", description="Справка по командам")]
     if DOWNLOAD in features:
         common.append(BotCommand(command="premium", description="Купить Premium ✨"))
-    if with_config:
-        common.append(BotCommand(command="setconfig", description="Настроить функции (в группе)"))
     await bot.set_my_commands(common, scope=BotCommandScopeDefault())
+    # /setconfig показываем ТОЛЬКО админам групп: этот scope действует лишь в группах
+    # и только для их администраторов. В личке (там свои параметры уже заданы) и у
+    # обычных участников команда в меню не появляется.
+    if with_config:
+        admin_group_cmds = common + [
+            BotCommand(command="setconfig", description="Настроить функции (в группе)"),
+        ]
+        await bot.set_my_commands(admin_group_cmds, scope=BotCommandScopeAllChatAdministrators())
     if ADMIN_ID:
         admin_cmds = common + [
             BotCommand(command="statistics", description="Статистика"),
