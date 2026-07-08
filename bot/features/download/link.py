@@ -1483,11 +1483,3 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
         await _safe_delete(status)
     finally:
         ACTIVE_DOWNLOADS.discard(user_id)
-
-
-@router.callback_query(F.data.startswith("stub:"))
-async def handle_stub(callback: CallbackQuery):
-    await callback.answer(
-        t("feature_wip", lang_of(callback.from_user)),
-        show_alert=True
-    )

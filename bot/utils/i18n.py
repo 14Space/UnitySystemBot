@@ -156,11 +156,6 @@ TEXTS = {
         "uk": "Посилання застаріло, надішли його ще раз",
         "en": "This link has expired, send it again",
     },
-    "downloading": {
-        "ru": "⏳ Скачиваю...",
-        "uk": "⏳ Завантажую...",
-        "en": "⏳ Downloading...",
-    },
     "uploading": {
         "ru": "📤 Отправляю...",
         "uk": "📤 Надсилаю...",
@@ -175,11 +170,6 @@ TEXTS = {
         "ru": "Premium ✨",
         "uk": "Premium ✨",
         "en": "Premium ✨",
-    },
-    "feature_wip": {
-        "ru": "Эта функция в разработке, скоро будет доступна 🚀",
-        "uk": "Ця функція в розробці, скоро буде доступна 🚀",
-        "en": "This feature is in development, coming soon 🚀",
     },
 
     # --- YouTube / PornHub (видео с выбором качества) ---
