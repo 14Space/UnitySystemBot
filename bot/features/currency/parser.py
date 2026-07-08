@@ -87,10 +87,17 @@ _CUR = rf"(?:(?<!{_LETTER})(?:{_WORD_ALT})(?!{_LETTER})|(?:{_SYM_ALT}))"
 # Число: цифры с возможными пробелами/разделителями тысяч и дробной частью
 _NUM = r"\d[\d\s .,]*\d|\d"
 
+# Перед числом не должно быть буквы, иначе «ZSCwn7UsD» (кусок ссылки) читается как
+# «7 USD». Требуем, чтобы число не было приклеено к буквам.
 _PATTERN = re.compile(
-    rf"(?P<n1>{_NUM})\s*(?P<c1>{_CUR})|(?P<c2>{_CUR})\s*(?P<n2>{_NUM})",
+    rf"(?<!\w)(?P<n1>{_NUM})\s*(?P<c1>{_CUR})"
+    rf"|(?P<c2>{_CUR})\s*(?<!\w)(?P<n2>{_NUM})",
     re.IGNORECASE | re.UNICODE,
 )
+
+# Если в сообщении есть ссылка — это точно не запрос на конвертацию (ею занимается
+# скачиватель). Не разбираем такой текст вовсе, чтобы не ловить «валюту» внутри URL.
+_URL_RE = re.compile(r"https?://|www\.|t\.me/", re.IGNORECASE)
 
 
 def _match_code(token: str) -> str | None:
@@ -128,7 +135,7 @@ def _to_number(s: str) -> float | None:
 
 def parse(text: str) -> tuple[float, str] | None:
     """Первая пара «число+валюта» в тексте -> (сумма, код). Иначе None."""
-    if not text:
+    if not text or _URL_RE.search(text):
         return None
     m = _PATTERN.search(text)
     if not m:

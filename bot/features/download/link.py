@@ -230,6 +230,11 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
     status = await message.reply(t("searching_video", lang))
     try:
         info = await asyncio.to_thread(get_video_info, url)
+        # Идущий (или предстоящий) прямой эфир не качаем — yt-dlp запишет лишь кусок
+        # с момента подключения. Просим прислать ссылку после завершения трансляции.
+        if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
+            await _safe_edit(status, t("live_stream", lang))
+            return
         available = await asyncio.to_thread(get_available_qualities, info)
 
         title = info.get("title", "Без названия")
