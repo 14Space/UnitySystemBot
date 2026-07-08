@@ -10,7 +10,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from bot.database import SessionLocal
 from bot.database.repository import (
     get_disabled_features, set_feature, get_slideshow_mode, set_slideshow_mode,
-    get_currency_targets, toggle_currency_target,
+    get_currency_targets, toggle_currency_target, get_audio_track, set_audio_track,
 )
 from bot.features.currency.parser import ORDER as CURRENCY_ORDER
 from bot.utils.i18n import t, lang_of
@@ -48,13 +48,18 @@ SLIDESHOW_MODES = [
 ]
 
 
-def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], lang: str) -> InlineKeyboardMarkup:
+def _keyboard(disabled: set[str], ss_mode: str, targets: list[str],
+              audio_on: bool, lang: str) -> InlineKeyboardMarkup:
     rows = []
     # Переключатели функций (вкл/выкл)
     for feature, label_key in TOGGLEABLE:
         mark = "❌" if feature in disabled else "✅"
         rows.append([InlineKeyboardButton(
             text=f"{mark} {t(label_key, lang)}", callback_data=f"cfg:{feature}")])
+    # Отдельный тумблер: слать ли аудиодорожку к видео «лёгких» платформ
+    rows.append([InlineKeyboardButton(
+        text=f"{'✅' if audio_on else '❌'} {t('cfg_audio_track', lang)}",
+        callback_data="cfg:audio")])
     # Заголовок блока слайдшоу (некликабельный — по нажатию просто ничего не делаем)
     rows.append([InlineKeyboardButton(
         text=t("cfg_slideshow_header", lang), callback_data="cfg:noop")])
@@ -101,8 +106,9 @@ async def cmd_setconfig(message: Message):
         disabled = await get_disabled_features(session, message.chat.id)
         ss_mode = await get_slideshow_mode(session, message.chat.id)
         targets = await get_currency_targets(session, message.chat.id)
+        audio_on = await get_audio_track(session, message.chat.id)
     await message.reply(t("cfg_title", lang),
-                        reply_markup=_keyboard(disabled, ss_mode, targets, lang))
+                        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, lang))
 
 
 async def _refresh(callback: CallbackQuery, lang: str):
@@ -112,8 +118,9 @@ async def _refresh(callback: CallbackQuery, lang: str):
         disabled = await get_disabled_features(session, chat_id)
         ss_mode = await get_slideshow_mode(session, chat_id)
         targets = await get_currency_targets(session, chat_id)
+        audio_on = await get_audio_track(session, chat_id)
     await callback.message.edit_reply_markup(
-        reply_markup=_keyboard(disabled, ss_mode, targets, lang))
+        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, lang))
 
 
 @router.callback_query(F.data == "cfg:noop")
@@ -148,6 +155,20 @@ async def set_slideshow(callback: CallbackQuery):
         return
     async with SessionLocal() as session:
         await set_slideshow_mode(session, chat_id, mode)
+    await _refresh(callback, lang)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cfg:audio")
+async def toggle_audio(callback: CallbackQuery):
+    lang = lang_of(callback.from_user)
+    chat_id = callback.message.chat.id
+    if not await _is_admin(callback.bot, chat_id, callback.from_user.id):
+        await callback.answer(t("cfg_admin_only", lang), show_alert=True)
+        return
+    async with SessionLocal() as session:
+        now = await get_audio_track(session, chat_id)
+        await set_audio_track(session, chat_id, not now)
     await _refresh(callback, lang)
     await callback.answer()
 

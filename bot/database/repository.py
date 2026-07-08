@@ -185,6 +185,26 @@ async def toggle_currency_target(session: AsyncSession, chat_id: int, code: str)
     await session.commit()
 
 
+async def get_audio_track(session: AsyncSession, chat_id: int) -> bool:
+    """Включена ли отправка аудиодорожки к видео в этой группе (по умолчанию нет)."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    return bool(row and row.audio_track)
+
+
+async def set_audio_track(session: AsyncSession, chat_id: int, on: bool) -> None:
+    """Включает/выключает аудиодорожку к видео для группы."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    if row is None:
+        row = ChatSettings(chat_id=chat_id, disabled_features="")
+        session.add(row)
+    row.audio_track = on
+    await session.commit()
+
+
 async def get_cached_file_id(session: AsyncSession, url: str, quality: str = None) -> str | None:
     """Возвращает Telegram file_id для пары URL+качество, если он уже в кэше"""
     url_hash = hashlib.md5(f"{url}:{quality}".encode()).hexdigest()

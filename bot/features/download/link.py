@@ -19,8 +19,9 @@ from bot.utils.i18n import t, lang_of, t_kind
 from bot.database import SessionLocal
 from bot.database.repository import (
     get_cached_file_id, save_cached_file_id, increment_download, is_premium,
-    get_slideshow_mode,
+    get_slideshow_mode, get_audio_track,
 )
+from bot.features.download.downloaders.audio_extract import extract_audio_track
 from bot.features.download.downloaders.ytdlp_wrapper import (
     get_video_info, get_available_qualities, download_video, download_shorts,
     download_audio, search_audio, search_audio_candidates, get_soundcloud_set,
@@ -103,6 +104,23 @@ async def process_link(message: Message, url: str):
     async with SessionLocal() as session:
         await increment_download(session, platform.value)
 
+    await _dispatch_platform(message, url, platform, lang)
+
+    # Аудиодорожка к видео «лёгких» платформ — если включена в этой группе
+    if platform in AUDIO_TRACK_PLATFORMS:
+        await _maybe_send_audio_track(message, url, platform, lang)
+
+
+# «Лёгкие» платформы, для которых можно отдать отдельную аудиодорожку (тумблер в
+# /setconfig). Для остальных (YouTube, HDRezka, музыка, коллекции) — не применяем.
+AUDIO_TRACK_PLATFORMS = {
+    Platform.INSTAGRAM_REEL, Platform.INSTAGRAM_POST, Platform.TIKTOK,
+    Platform.TWITTER, Platform.PINTEREST, Platform.PORNHUB_SHORT,
+}
+
+
+async def _dispatch_platform(message: Message, url: str, platform, lang: str):
+    """Отправляет контент по платформе; каждая ветка сама завершает работу."""
     # Shorts — скачиваем сразу без лишних сообщений
     if platform == Platform.YOUTUBE_SHORTS:
         await _handle_simple_video(message, url, download_shorts, "shorts", lang)
@@ -172,6 +190,39 @@ async def process_link(message: Message, url: str):
     if platform == Platform.TWITTER:
         await _handle_twitter(message, url, lang)
         return
+
+
+async def _maybe_send_audio_track(message: Message, url: str, platform, lang: str):
+    """Если в группе включён тумблер «Скачивать аудио с видео» — шлём отдельным аудио
+    дорожку поста. Работает только в группах; в личке функция всегда выключена."""
+    if message.chat.type not in ("group", "supergroup"):
+        return
+    async with SessionLocal() as session:
+        if not await get_audio_track(session, message.chat.id):
+            return
+
+    # Кэш аудиодорожки — повторная отправка мгновенная
+    async with SessionLocal() as session:
+        cached = await get_cached_file_id(session, url, "audiotrack")
+    if cached:
+        await message.reply_audio(cached)
+        return
+
+    await limits.acquire(limits.LIGHT)
+    try:
+        result = await asyncio.to_thread(extract_audio_track, url, platform)
+        if not result:
+            return  # нет звука или не удалось извлечь — молча пропускаем (это бонус)
+        path, title = result
+        sent = await message.reply_audio(FSInputFile(path), title=title)
+        if sent.audio:
+            async with SessionLocal() as session:
+                await save_cached_file_id(session, url, sent.audio.file_id, "audiotrack")
+        _cleanup(path)
+    except Exception:
+        logger.exception("Не удалось отправить аудиодорожку")
+    finally:
+        await limits.release(limits.LIGHT)
 
 
 async def _handle_quality_video(message: Message, url: str, lang: str):

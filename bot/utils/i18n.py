@@ -317,6 +317,11 @@ TEXTS = {
         "uk": "Конвертер валют",
         "en": "Currency converter",
     },
+    "cfg_audio_track": {
+        "ru": "Скачивать аудио с видео",
+        "uk": "Завантажувати аудіо з відео",
+        "en": "Download audio from video",
+    },
     "cfg_currency_header": {
         "ru": "Валюты для конвертации:",
         "uk": "Валюти для конвертації:",

@@ -22,3 +22,7 @@ async def init_db():
             await conn.exec_driver_sql(
                 "ALTER TABLE chat_settings ADD COLUMN currency_targets VARCHAR DEFAULT 'USD,EUR,UAH'"
             )
+        if "audio_track" not in cols:
+            await conn.exec_driver_sql(
+                "ALTER TABLE chat_settings ADD COLUMN audio_track BOOLEAN DEFAULT 0"
+            )

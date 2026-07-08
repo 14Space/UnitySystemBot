@@ -13,6 +13,12 @@ API = "https://www.tikwm.com/api/"
 BACKUP_API = "https://lovetik.com/api/ajax/search"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
+# Короткий кэш ответов API: {url: (время, результат)}. Нужен, чтобы один и тот же
+# пост в рамках одного запроса (контент + аудиодорожка) не запрашивался дважды.
+# TTL маленький — CDN-ссылки внутри живут недолго, а нам они нужны сразу.
+_FETCH_CACHE: dict[str, tuple[float, dict]] = {}
+_FETCH_TTL = 120  # секунд
+
 
 def _abs(url: str) -> str:
     """tikwm иногда отдаёт относительный путь (/video/...) — дополняем доменом."""
@@ -30,6 +36,35 @@ def _safe_remove(path: str):
         os.remove(path)
     except OSError:
         pass
+
+
+def download_music(url: str) -> tuple[str, str] | None:
+    """Скачивает оригинальный звук поста TikTok (видео или слайдшоу) как mp3.
+    Возвращает (путь, «Автор – Название») или None. Используется для отдельной
+    аудиодорожки, когда включён соответствующий тумблер в /setconfig."""
+    info = fetch_tiktok(url)
+    data = info["data"]
+    music_url = data.get("music")
+    if not music_url:
+        return None
+    raw = os.path.join(DOWNLOADS_DIR, f"{info['id']}_track_src")
+    content = requests.get(_abs(music_url), headers=HEADERS, timeout=60).content
+    with open(raw, "wb") as f:
+        f.write(content)
+    # Приводим к чистому mp3 (звук из tikwm бывает в контейнере m4a/без тегов).
+    out = os.path.join(DOWNLOADS_DIR, f"{info['id']}_track.mp3")
+    subprocess.run(
+        [_ffbin("ffmpeg"), "-y", "-i", raw, "-vn", "-acodec", "libmp3lame",
+         "-b:a", "192k", out],
+        capture_output=True,
+    )
+    _safe_remove(raw)
+    if not (os.path.exists(out) and os.path.getsize(out) > 0):
+        return None
+    mi = data.get("music_info") or {}
+    title = mi.get("title") or "оригинальный звук"
+    author = mi.get("author")
+    return out, (f"{author} – {title}" if author else title)
 
 
 def _audio_duration(path: str) -> float:
@@ -148,6 +183,21 @@ def _fetch_backup(url: str) -> dict | None:
 
 
 def fetch_tiktok(url: str) -> dict:
+    """Данные поста с коротким кэшем (TTL): один и тот же пост в рамках запроса
+    (основной контент + аудиодорожка) не дёргает API дважды."""
+    now = time.time()
+    hit = _FETCH_CACHE.get(url)
+    if hit and now - hit[0] < _FETCH_TTL:
+        return hit[1]
+    result = _fetch_tiktok_api(url)     # успех или исключение (ошибки не кэшируем)
+    _FETCH_CACHE[url] = (now, result)
+    if len(_FETCH_CACHE) > 64:          # лёгкая уборка протухших записей
+        for k in [k for k, (ts, _) in _FETCH_CACHE.items() if now - ts >= _FETCH_TTL]:
+            _FETCH_CACHE.pop(k, None)
+    return result
+
+
+def _fetch_tiktok_api(url: str) -> dict:
     """Запрашивает данные поста (без скачивания файлов) и определяет тип:
     'video' — обычное видео, 'slideshow' — набор фото (+ возможно музыка),
     'live' — Live Photo (короткие видео). Возвращает {'id','kind','data'}."""
