@@ -1,8 +1,9 @@
 """
-Команда /setconfig: администратор группы включает/выключает функции бота в этой
-группе. Доступна ботам с config=True (viaUnity и viaSaver). Клавиатура подстраивается
-под функции конкретного бота: у viaSaver (только скачивание) не будет разделов
-транскрибации и конвертации валют — см. _keyboard(features=...).
+Команда /setconfig: включает/выключает функции бота в этом чате. В группах — только
+админам/владельцу; в личке доступна у бота-хаба (Unity) самому пользователю (это его
+чат, проверка админа не нужна). Клавиатура подстраивается под функции бота и под тип
+чата: у viaSaver нет транскрибации и валют, а в личке скрыты аудиодорожка и режим
+слайдшоу (они там не работают) — см. _keyboard(features=..., personal=...).
 """
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -41,6 +42,14 @@ async def _is_admin(bot, chat_id: int, user_id: int) -> bool:
         return False
 
 
+async def _allowed(bot, chat, user_id: int) -> bool:
+    """Кому можно менять настройки. В личке — всегда (это твой чат), в группе — только
+    админам/владельцу."""
+    if chat.type not in GROUP_TYPES:
+        return True
+    return await _is_admin(bot, chat.id, user_id)
+
+
 # Режимы слайдшоу: (внутреннее имя, ключ подписи). Порядок кнопок в ряду.
 SLIDESHOW_MODES = [
     ("photos", "tt_as_photos"),
@@ -50,9 +59,10 @@ SLIDESHOW_MODES = [
 
 
 def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bool,
-              features: set[str], lang: str) -> InlineKeyboardMarkup:
-    """Клавиатура настроек. Показываем только разделы под функции конкретного бота:
-    у viaSaver (только скачивание) не будет транскрибации и конвертера валют."""
+              features: set[str], personal: bool, lang: str) -> InlineKeyboardMarkup:
+    """Клавиатура настроек. Показываем только разделы под функции конкретного бота
+    (у viaSaver нет транскрибации и валют). В личке (personal) прячем настройки, которые
+    в личке не работают: аудиодорожку и режим слайдшоу (в личке бот всегда спрашивает)."""
     rows = []
     # Переключатели функций — только те, что у этого бота есть
     for feature, label_key in TOGGLEABLE:
@@ -62,8 +72,8 @@ def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bo
         rows.append([InlineKeyboardButton(
             text=f"{mark} {t(label_key, lang)}", callback_data=f"cfg:{feature}")])
 
-    # Аудиодорожка и слайдшоу относятся к скачиванию
-    if "download" in features:
+    # Аудиодорожка и слайдшоу — только для скачивания и только в группах
+    if "download" in features and not personal:
         rows.append([InlineKeyboardButton(
             text=f"{'✅' if audio_on else '❌'} {t('cfg_audio_track', lang)}",
             callback_data="cfg:audio")])
@@ -100,14 +110,16 @@ def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bo
 
 
 @router.message(Command("setconfig"))
-async def cmd_setconfig(message: Message, bot_features: set[str] = frozenset()):
+async def cmd_setconfig(message: Message, bot_features: set[str] = frozenset(),
+                        is_hub: bool = False):
     lang = lang_of(message.from_user)
-    if message.chat.type not in GROUP_TYPES:
+    personal = message.chat.type not in GROUP_TYPES
+    # В личке /setconfig есть только у хаба (личные настройки). У остальных — только группы.
+    if personal and not is_hub:
         await message.reply(t("cfg_group_only", lang))
         return
-    # Не-админам не отвечаем вообще — команда для них будто не существует
-    # (чтобы бот не реагировал на /setconfig от любого участника группы).
-    if not await _is_admin(message.bot, message.chat.id, message.from_user.id):
+    # В группе не-админам не отвечаем вообще (команда для них будто не существует).
+    if not personal and not await _is_admin(message.bot, message.chat.id, message.from_user.id):
         return
     async with SessionLocal() as session:
         disabled = await get_disabled_features(session, message.chat.id)
@@ -115,19 +127,21 @@ async def cmd_setconfig(message: Message, bot_features: set[str] = frozenset()):
         targets = await get_currency_targets(session, message.chat.id)
         audio_on = await get_audio_track(session, message.chat.id)
     await message.reply(t("cfg_title", lang),
-                        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, bot_features, lang))
+                        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on,
+                                               bot_features, personal, lang))
 
 
 async def _refresh(callback: CallbackQuery, lang: str, features: set[str]):
     """Перерисовывает клавиатуру настроек актуальным состоянием."""
-    chat_id = callback.message.chat.id
+    chat = callback.message.chat
+    personal = chat.type not in GROUP_TYPES
     async with SessionLocal() as session:
-        disabled = await get_disabled_features(session, chat_id)
-        ss_mode = await get_slideshow_mode(session, chat_id)
-        targets = await get_currency_targets(session, chat_id)
-        audio_on = await get_audio_track(session, chat_id)
+        disabled = await get_disabled_features(session, chat.id)
+        ss_mode = await get_slideshow_mode(session, chat.id)
+        targets = await get_currency_targets(session, chat.id)
+        audio_on = await get_audio_track(session, chat.id)
     await callback.message.edit_reply_markup(
-        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, features, lang))
+        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, features, personal, lang))
 
 
 @router.callback_query(F.data == "cfg:noop")
@@ -140,7 +154,7 @@ async def cfg_noop(callback: CallbackQuery):
 async def cfg_done(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
-    if not await _is_admin(callback.bot, chat_id, callback.from_user.id):
+    if not await _allowed(callback.bot, callback.message.chat, callback.from_user.id):
         await callback.answer(t("cfg_admin_only", lang), show_alert=True)
         return
     # Настройки уже сохранены на каждом нажатии — просто убираем сообщение,
@@ -157,7 +171,7 @@ async def set_slideshow(callback: CallbackQuery, bot_features: set[str] = frozen
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     mode = callback.data.split(":", 2)[2]
-    if not await _is_admin(callback.bot, chat_id, callback.from_user.id):
+    if not await _allowed(callback.bot, callback.message.chat, callback.from_user.id):
         await callback.answer(t("cfg_admin_only", lang), show_alert=True)
         return
     async with SessionLocal() as session:
@@ -170,7 +184,7 @@ async def set_slideshow(callback: CallbackQuery, bot_features: set[str] = frozen
 async def toggle_audio(callback: CallbackQuery, bot_features: set[str] = frozenset()):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
-    if not await _is_admin(callback.bot, chat_id, callback.from_user.id):
+    if not await _allowed(callback.bot, callback.message.chat, callback.from_user.id):
         await callback.answer(t("cfg_admin_only", lang), show_alert=True)
         return
     async with SessionLocal() as session:
@@ -185,7 +199,7 @@ async def toggle_currency(callback: CallbackQuery, bot_features: set[str] = froz
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     code = callback.data.split(":", 2)[2]
-    if not await _is_admin(callback.bot, chat_id, callback.from_user.id):
+    if not await _allowed(callback.bot, callback.message.chat, callback.from_user.id):
         await callback.answer(t("cfg_admin_only", lang), show_alert=True)
         return
     async with SessionLocal() as session:
@@ -200,7 +214,7 @@ async def toggle_feature(callback: CallbackQuery, bot_features: set[str] = froze
     feature = callback.data.split(":", 1)[1]
     chat_id = callback.message.chat.id
     # Переключать могут только админы (проверяем именно нажавшего)
-    if not await _is_admin(callback.bot, chat_id, callback.from_user.id):
+    if not await _allowed(callback.bot, callback.message.chat, callback.from_user.id):
         await callback.answer(t("cfg_admin_only", lang), show_alert=True)
         return
     async with SessionLocal() as session:

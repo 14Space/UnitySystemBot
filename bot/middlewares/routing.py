@@ -5,7 +5,7 @@
 
   • viaSaver     — только скачивание;
   • viaVoice     — только транскрибация;
-  • viaUnity     — всё + /setconfig по группам.
+  • viaUnity     — всё + /setconfig; в личке работает как в группе (флаг «хаб»).
 """
 from typing import Callable, Any
 from aiogram import BaseMiddleware
@@ -19,31 +19,34 @@ GROUP_TYPES = ("group", "supergroup")
 
 
 def _msg_feature(m: Message) -> str | None:
-    """К какой функции относится сообщение (None = команда/прочее, не гейтим)."""
+    """К какой функции относится сообщение (None = команда/прочее, не гейтим).
+    Где именно разрешён конвертер (группа / личка хаба) — решает уже __call__."""
     if m.voice or m.video_note:
         return "transcribe"
     text = m.text or ""
     if text.startswith("http"):
         return "download"
-    # Конвертер валют — только в группах (в личке не работает по требованию) и только
-    # если в тексте реально распознан запрос «число+валюта».
-    if text and m.chat.type in GROUP_TYPES and parse_currency(text):
+    if text and parse_currency(text):
         return "currency"
     return None
 
 
 class RoutingMiddleware(BaseMiddleware):
-    def __init__(self, features_by_bot: dict[int, set[str]], config_ids: set[int]):
+    def __init__(self, features_by_bot: dict[int, set[str]],
+                 config_ids: set[int], hub_ids: set[int]):
         self.features_by_bot = features_by_bot
-        self.config_ids = config_ids
+        self.config_ids = config_ids      # боты с /setconfig (в группах)
+        self.hub_ids = hub_ids            # боты-хабы: в личке работают как в группе
 
     async def __call__(self, handler: Callable, event: Any, data: dict) -> Any:
         bot = getattr(event, "bot", None)
         bot_id = bot.id if bot else None
         feats = self.features_by_bot.get(bot_id, set())
         is_config = bot_id in self.config_ids
-        # набор функций бота — для /setconfig, чтобы показывать только его разделы
+        is_hub = bot_id in self.hub_ids
+        # для /setconfig: набор функций бота и «хаб ли он» (чтобы работал в личке)
         data["bot_features"] = feats
+        data["is_hub"] = is_hub
 
         feature = None
         chat = None
@@ -74,9 +77,15 @@ class RoutingMiddleware(BaseMiddleware):
         if feature:
             if feature not in feats:          # бот не умеет эту функцию — молчим
                 return
-            if is_config and chat and chat.type in GROUP_TYPES:
+            in_group = chat and chat.type in GROUP_TYPES
+            in_hub_dm = is_hub and chat and chat.type == "private"
+            # Конвертер в личке — только у хаба
+            if feature == "currency" and not in_group and not in_hub_dm:
+                return
+            # Выключенные функции: в группах у config-ботов и в личке у хаба
+            if (is_config and in_group) or in_hub_dm:
                 async with SessionLocal() as session:
                     disabled = await get_disabled_features(session, chat.id)
-                if feature in disabled:       # выключено в этой группе через /setconfig
+                if feature in disabled:       # выключено в этом чате через /setconfig
                     return
         return await handler(event, data)

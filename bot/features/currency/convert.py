@@ -1,11 +1,13 @@
 """
-Конвертер валют. Работает только в группах (в личке отключён на уровне маршрутизатора).
-Ловит «число+валюта» в сообщении и отвечает переводом в валюты, выбранные для этой
-группы в /setconfig. Формат ответа:
+Конвертер валют. Работает в группах, а также в личке бота-хаба (Unity) — где именно,
+решает маршрутизатор. Ловит «число+валюта» и отвечает переводом. Если в сообщении явно
+указана целевая валюта («500 UAH to AED»), переводит только в неё; иначе — в набор
+валют, заданный для чата в /setconfig. Формат ответа:
 
-    100$ это:
-    95 евро
-    25 шекелей
+    🇺🇸100$ это:
+
+    🇪🇺95 евро
+    🇮🇱25 шекелей
 """
 import logging
 
@@ -43,10 +45,13 @@ def _source_label(amount: float, code: str) -> str:
 
 
 @router.message(CurrencyText())
-async def handle_currency(message: Message, parsed: tuple[float, str]):
-    amount, code = parsed
-    async with SessionLocal() as session:
-        targets = await get_currency_targets(session, message.chat.id)
+async def handle_currency(message: Message, parsed: tuple[float, str, str | None]):
+    amount, code, target = parsed
+    if target:
+        targets = [target]                  # явно указана цель — переводим только в неё
+    else:
+        async with SessionLocal() as session:
+            targets = await get_currency_targets(session, message.chat.id)
     # Не переводим валюту саму в себя
     targets = [c for c in targets if c != code]
     if not targets:

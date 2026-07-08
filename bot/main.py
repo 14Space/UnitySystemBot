@@ -5,7 +5,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import (
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
-    BotCommandScopeAllChatAdministrators,
+    BotCommandScopeAllChatAdministrators, BotCommandScopeAllPrivateChats,
 )
 from bot.config import (
     BOT_TOKEN, TRANSCRIBE_BOT_TOKEN, UNITY_BOT_TOKEN, CURRENCY_BOT_TOKEN,
@@ -43,16 +43,19 @@ def _bot_configs() -> list[dict]:
     others = bool(TRANSCRIBE_BOT_TOKEN) or bool(UNITY_BOT_TOKEN) or bool(CURRENCY_BOT_TOKEN)
     saver_features = {DOWNLOAD} if others else {DOWNLOAD, TRANSCRIBE, CURRENCY}
 
-    bots = [{"name": "viaSaver", "token": BOT_TOKEN, "features": saver_features, "config": True}]
+    # «hub» — бот-комбайн: в личке работает как в группе (конвертер + личный /setconfig).
+    # В одиночном режиме хабом становится сам viaSaver (он умеет всё).
+    bots = [{"name": "viaSaver", "token": BOT_TOKEN, "features": saver_features,
+             "config": True, "hub": not others}]
     if TRANSCRIBE_BOT_TOKEN:
         bots.append({"name": "viaVoice", "token": TRANSCRIBE_BOT_TOKEN,
-                     "features": {TRANSCRIBE}, "config": False})
+                     "features": {TRANSCRIBE}, "config": False, "hub": False})
     if CURRENCY_BOT_TOKEN:
         bots.append({"name": "viaCurrency", "token": CURRENCY_BOT_TOKEN,
-                     "features": {CURRENCY}, "config": False})
+                     "features": {CURRENCY}, "config": False, "hub": False})
     if UNITY_BOT_TOKEN:
         bots.append({"name": "viaUnity", "token": UNITY_BOT_TOKEN,
-                     "features": {DOWNLOAD, TRANSCRIBE, CURRENCY}, "config": True})
+                     "features": {DOWNLOAD, TRANSCRIBE, CURRENCY}, "config": True, "hub": True})
     return bots
 
 
@@ -64,20 +67,22 @@ def _make_bot(token: str) -> Bot:
     return Bot(token=token)
 
 
-async def _setup_commands(bot: Bot, features: set[str], with_config: bool):
+async def _setup_commands(bot: Bot, features: set[str], with_config: bool, is_hub: bool):
     """Меню команд под конкретного бота (у скачивателя — Premium и т.д.)."""
     common = [BotCommand(command="help", description="Справка по командам")]
     if DOWNLOAD in features:
         common.append(BotCommand(command="premium", description="Купить Premium ✨"))
     await bot.set_my_commands(common, scope=BotCommandScopeDefault())
     # /setconfig показываем ТОЛЬКО админам групп: этот scope действует лишь в группах
-    # и только для их администраторов. В личке (там свои параметры уже заданы) и у
-    # обычных участников команда в меню не появляется.
+    # и только для их администраторов. У обычных участников команда в меню не появляется.
     if with_config:
-        admin_group_cmds = common + [
-            BotCommand(command="setconfig", description="Настроить функции (в группе)"),
-        ]
-        await bot.set_my_commands(admin_group_cmds, scope=BotCommandScopeAllChatAdministrators())
+        setconfig_cmd = BotCommand(command="setconfig", description="Настроить функции")
+        await bot.set_my_commands(common + [setconfig_cmd],
+                                  scope=BotCommandScopeAllChatAdministrators())
+        # У хаба /setconfig есть и в личке (личные настройки) — показываем в меню лички.
+        if is_hub:
+            await bot.set_my_commands(common + [setconfig_cmd],
+                                      scope=BotCommandScopeAllPrivateChats())
     if ADMIN_ID:
         admin_cmds = common + [
             BotCommand(command="statistics", description="Статистика"),
@@ -126,6 +131,7 @@ async def main():
     bots: list[Bot] = []
     features_by_bot: dict[int, set[str]] = {}
     config_ids: set[int] = set()          # боты с доступом к /setconfig
+    hub_ids: set[int] = set()             # боты-хабы: в личке работают как в группе
     any_transcribe = False
     for cfg in _bot_configs():
         bot = _make_bot(cfg["token"])
@@ -133,16 +139,18 @@ async def main():
         features_by_bot[bot.id] = cfg["features"]
         if cfg["config"]:
             config_ids.add(bot.id)
+        if cfg.get("hub"):
+            hub_ids.add(bot.id)
         any_transcribe = any_transcribe or (TRANSCRIBE in cfg["features"])
-        await _setup_commands(bot, cfg["features"], cfg["config"])
-        logger.info("Бот %s (id=%s): функции=%s, config=%s",
-                    cfg["name"], bot.id, cfg["features"], cfg["config"])
+        await _setup_commands(bot, cfg["features"], cfg["config"], cfg.get("hub", False))
+        logger.info("Бот %s (id=%s): функции=%s, config=%s, hub=%s",
+                    cfg["name"], bot.id, cfg["features"], cfg["config"], cfg.get("hub", False))
 
     # Один диспетчер на всех ботов; маршрутизатор раздаёт функции по ботам/группам
     dp = Dispatcher()
     dp.message.middleware(ThrottleMiddleware())
     dp.message.middleware(RegisterUserMiddleware())
-    routing = RoutingMiddleware(features_by_bot, config_ids)
+    routing = RoutingMiddleware(features_by_bot, config_ids, hub_ids)
     dp.message.middleware(routing)
     dp.callback_query.middleware(routing)
     dp.inline_query.middleware(routing)
