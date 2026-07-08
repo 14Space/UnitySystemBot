@@ -36,9 +36,10 @@ class CurrencyText(BaseFilter):
 
 
 def _source_label(amount: float, code: str) -> str:
-    """Как показать исходную сумму: «100$» или «100 CNY», если символа нет."""
-    sym = CURRENCIES[code]["symbol"]
-    return f"{fmt_amount(amount)}{sym}" if sym else f"{fmt_amount(amount)} {code}"
+    """Исходная сумма с флагом: «🇬🇧4 200£» или «🇨🇳100 CNY», если символа нет."""
+    cur = CURRENCIES[code]
+    body = f"{fmt_amount(amount)}{cur['symbol']}" if cur["symbol"] else f"{fmt_amount(amount)} {code}"
+    return f"{cur['flag']}{body}"
 
 
 @router.message(CurrencyText())
@@ -56,13 +57,15 @@ async def handle_currency(message: Message, parsed: tuple[float, str]):
         return
 
     lang = lang_of(message.from_user)
-    lines = [t("cur_head", lang, src=_source_label(amount, code))]
+    # Заголовок с исходной суммой, затем пустая строка, затем переводы (каждый с флагом)
+    lines = [t("cur_head", lang, src=_source_label(amount, code)), ""]
     for c in targets:                       # сохраняем порядок из настроек
         val = result.get(c)
         if val is None:
             continue
-        name = CURRENCIES[c]["names"].get(lang) or CURRENCIES[c]["names"]["en"]
-        lines.append(f"{fmt_amount(val)} {name}")
+        cur = CURRENCIES[c]
+        name = cur["names"].get(lang) or cur["names"]["en"]
+        lines.append(f"{cur['flag']}{fmt_amount(val)} {name}")
 
-    if len(lines) > 1:                      # есть что показать
+    if len(lines) > 2:                       # есть хотя бы один перевод
         await message.reply("\n".join(lines))
