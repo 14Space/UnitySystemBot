@@ -80,6 +80,39 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
     return out_path
 
 
+def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: str,
+                           still_sec: float = 3.0) -> str:
+    """Собирает видео из смешанных элементов: статичный кадр показывается still_sec
+    секунд, «живой» кадр идёт своим коротким видео. Музыка — фоном, зациклена под всю
+    длину. Всё приводится к холсту 1080x1920."""
+    n = len(items)
+    cmd = [_ffbin("ffmpeg"), "-y"]
+    for path, is_video in items:
+        if is_video:
+            cmd += ["-i", path]                                  # клип своей длины
+        else:
+            cmd += ["-loop", "1", "-t", f"{still_sec:.3f}", "-i", path]
+    cmd += ["-stream_loop", "-1", "-i", audio]                   # музыка (вход n), зациклена
+
+    parts = []
+    for i in range(n):
+        parts.append(
+            f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v{i}]"
+        )
+    concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
+    filtergraph = ";".join(parts) + ";" + concat
+
+    cmd += [
+        "-filter_complex", filtergraph,
+        "-map", "[v]", "-map", f"{n}:a",
+        "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
+        "-shortest", out_path,
+    ]
+    subprocess.run(cmd, capture_output=True)
+    return out_path
+
+
 def _resolve_short(url: str) -> str:
     """Разворачивает короткую ссылку (vt./vm.tiktok.com) в полную — так API надёжнее.
     Если не вышло — возвращаем исходную ссылку как есть."""
@@ -127,10 +160,14 @@ def fetch_tiktok(url: str) -> dict:
         payload = _api_call(url)
     if payload.get("code") == 0:
         data = payload["data"]
-        if data.get("live_images"):
-            kind = "live"
-        elif data.get("images"):
+        # Фото-посты (photo mode) содержат images. У «живых фото» вдобавок бывает
+        # live_images с короткими видео, причём часть элементов может быть null.
+        # Поэтому наличие images важнее: это полноценное слайдшоу (фото + музыка),
+        # его мы всегда умеем отдать. Чистый Live Photo (только live_images) — отдельно.
+        if data.get("images"):
             kind = "slideshow"
+        elif data.get("live_images") and any(data["live_images"]):
+            kind = "live"
         else:
             kind = "video"
         return {"id": str(data.get("id", "tiktok")), "kind": kind, "data": data}
@@ -153,6 +190,29 @@ def _download_images(images: list[str], item_id: str) -> list[str]:
     return files
 
 
+def _download_slideshow_items(data: dict, item_id: str) -> list[tuple[str, bool]]:
+    """Качает элементы слайдшоу в исходном порядке: живой кадр (есть live_images) —
+    как короткое видео .mp4, статичный — как фото .jpg. Возвращает [(путь, это_видео)].
+    Так фото отправляется фото, а «живое фото» — видео (как у оригинала в TikTok)."""
+    images = data.get("images") or []
+    lives = data.get("live_images") or []
+    out: list[tuple[str, bool]] = []
+    for i, img_url in enumerate(images, 1):
+        live = lives[i - 1] if i - 1 < len(lives) else None
+        if live:
+            content = requests.get(_abs(live), headers=HEADERS, timeout=120).content
+            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.mp4")
+            is_video = True
+        else:
+            content = requests.get(_abs(img_url), headers=HEADERS, timeout=60).content
+            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.jpg")
+            is_video = False
+        with open(path, "wb") as f:
+            f.write(content)
+        out.append((path, is_video))
+    return out
+
+
 def download_from(info: dict, mode: str = "auto") -> list[str]:
     """
     Скачивает TikTok по уже полученным данным (fetch_tiktok).
@@ -163,10 +223,13 @@ def download_from(info: dict, mode: str = "auto") -> list[str]:
     data = info["data"]
     item_id = info["id"]
 
-    # Live Photo: набор коротких видео — отдаём альбомом видео
+    # Live Photo: набор коротких видео — отдаём альбомом видео. Часть элементов
+    # live_images бывает null (для статичных кадров) — их пропускаем.
     if info["kind"] == "live":
         files = []
         for i, vid_url in enumerate(data["live_images"], 1):
+            if not vid_url:
+                continue
             content = requests.get(_abs(vid_url), headers=HEADERS, timeout=120).content
             path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.mp4")
             with open(path, "wb") as f:
@@ -174,14 +237,39 @@ def download_from(info: dict, mode: str = "auto") -> list[str]:
             files.append(path)
         return files
 
-    # Слайдшоу — набор фото (+ возможно музыка)
+    # Слайдшоу (фото-пост, возможно с «живыми фото»)
     if info["kind"] == "slideshow":
-        files = _download_images(data["images"], item_id)
-        # Только фото — отдаём картинки как есть
+        has_live = any(data.get("live_images") or [])
+
+        # Формат «фото»: отдаём как в оригинале — статичные кадры фото, живые видео.
         if mode == "photos":
-            return files
-        # Видео или авто: собираем слайдшоу-видео, если есть музыка
+            return [p for p, _ in _download_slideshow_items(data, item_id)]
+
+        # Формат «видео»/«авто»: собираем один ролик с музыкой. Если есть живые кадры —
+        # с их движением (mixed), иначе обычное слайдшоу из фото.
         music_url = data.get("music")
+        if has_live:
+            items = _download_slideshow_items(data, item_id)
+            all_files = [p for p, _ in items]
+            if music_url:
+                try:
+                    audio_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_audio.mp3")
+                    content = requests.get(_abs(music_url), headers=HEADERS, timeout=60).content
+                    with open(audio_path, "wb") as f:
+                        f.write(content)
+                    video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_viaSaver.mp4")
+                    _build_slideshow_mixed(items, audio_path, video_path)
+                    if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+                        for f in all_files:
+                            _safe_remove(f)
+                        _safe_remove(audio_path)
+                        return [video_path]
+                    _safe_remove(audio_path)
+                except Exception:
+                    pass  # не вышло собрать — отдадим смешанным альбомом
+            return all_files
+
+        files = _download_images(data["images"], item_id)
         if music_url:
             try:
                 audio_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_audio.mp3")
