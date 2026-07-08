@@ -1,7 +1,8 @@
 """
-Команда /setconfig для @viaUnitySystem: администратор группы включает/выключает
-функции бота в этой группе (транскрибация, скачивание, позже — конвертация валют).
-Подключается только к боту-комбайну (with_config=True), обычных ботов не касается.
+Команда /setconfig: администратор группы включает/выключает функции бота в этой
+группе. Доступна ботам с config=True (viaUnity и viaSaver). Клавиатура подстраивается
+под функции конкретного бота: у viaSaver (только скачивание) не будет разделов
+транскрибации и конвертации валют — см. _keyboard(features=...).
 """
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -48,52 +49,58 @@ SLIDESHOW_MODES = [
 ]
 
 
-def _keyboard(disabled: set[str], ss_mode: str, targets: list[str],
-              audio_on: bool, lang: str) -> InlineKeyboardMarkup:
+def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bool,
+              features: set[str], lang: str) -> InlineKeyboardMarkup:
+    """Клавиатура настроек. Показываем только разделы под функции конкретного бота:
+    у viaSaver (только скачивание) не будет транскрибации и конвертера валют."""
     rows = []
-    # Переключатели функций (вкл/выкл)
+    # Переключатели функций — только те, что у этого бота есть
     for feature, label_key in TOGGLEABLE:
+        if feature not in features:
+            continue
         mark = "❌" if feature in disabled else "✅"
         rows.append([InlineKeyboardButton(
             text=f"{mark} {t(label_key, lang)}", callback_data=f"cfg:{feature}")])
-    # Отдельный тумблер: слать ли аудиодорожку к видео «лёгких» платформ
-    rows.append([InlineKeyboardButton(
-        text=f"{'✅' if audio_on else '❌'} {t('cfg_audio_track', lang)}",
-        callback_data="cfg:audio")])
-    # Заголовок блока слайдшоу (некликабельный — по нажатию просто ничего не делаем)
-    rows.append([InlineKeyboardButton(
-        text=t("cfg_slideshow_header", lang), callback_data="cfg:noop")])
-    # Три режима в одном ряду, активный помечаем «радио-точкой»
-    ss_row = []
-    for mode, label_key in SLIDESHOW_MODES:
-        mark = "✅ " if ss_mode == mode else ""
-        ss_row.append(InlineKeyboardButton(
-            text=f"{mark}{t(label_key, lang)}", callback_data=f"cfg:ss:{mode}"))
-    rows.append(ss_row)
-    # Заголовок блока валют = переключатель конвертера: ✅ включён (показываем сетку
-    # валют), ❌ выключен (сетку прячем, бот не конвертирует в этой группе).
-    cur_on = "currency" not in disabled
-    rows.append([InlineKeyboardButton(
-        text=f"{'✅' if cur_on else '❌'} {t('cfg_currency_header', lang)}",
-        callback_data="cfg:currency")])
-    if cur_on:
-        row = []
-        for code in CURRENCY_ORDER:
-            mark = "🔘 " if code in targets else ""
-            row.append(InlineKeyboardButton(text=f"{mark}{code}", callback_data=f"cfg:cur:{code}"))
-            if len(row) == 3:
+
+    # Аудиодорожка и слайдшоу относятся к скачиванию
+    if "download" in features:
+        rows.append([InlineKeyboardButton(
+            text=f"{'✅' if audio_on else '❌'} {t('cfg_audio_track', lang)}",
+            callback_data="cfg:audio")])
+        rows.append([InlineKeyboardButton(
+            text=t("cfg_slideshow_header", lang), callback_data="cfg:noop")])
+        ss_row = []
+        for mode, label_key in SLIDESHOW_MODES:
+            mark = "✅ " if ss_mode == mode else ""
+            ss_row.append(InlineKeyboardButton(
+                text=f"{mark}{t(label_key, lang)}", callback_data=f"cfg:ss:{mode}"))
+        rows.append(ss_row)
+
+    # Блок валют — только если бот умеет конвертацию. Заголовок = переключатель
+    # конвертера: ✅ включён (показываем сетку), ❌ выключен (сетку прячем).
+    if "currency" in features:
+        cur_on = "currency" not in disabled
+        rows.append([InlineKeyboardButton(
+            text=f"{'✅' if cur_on else '❌'} {t('cfg_currency_header', lang)}",
+            callback_data="cfg:currency")])
+        if cur_on:
+            row = []
+            for code in CURRENCY_ORDER:
+                mark = "🔘 " if code in targets else ""
+                row.append(InlineKeyboardButton(text=f"{mark}{code}", callback_data=f"cfg:cur:{code}"))
+                if len(row) == 3:
+                    rows.append(row)
+                    row = []
+            if row:
                 rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
-    # Кнопка «Готово» — сохранять не нужно (всё сохраняется сразу), она убирает
-    # сообщение настроек, чтобы по нему потом случайно не тыкали.
+
+    # Кнопка «Готово» — убирает сообщение настроек, чтобы по нему потом не тыкали.
     rows.append([InlineKeyboardButton(text=t("cfg_done", lang), callback_data="cfg:done")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.message(Command("setconfig"))
-async def cmd_setconfig(message: Message):
+async def cmd_setconfig(message: Message, bot_features: set[str] = frozenset()):
     lang = lang_of(message.from_user)
     if message.chat.type not in GROUP_TYPES:
         await message.reply(t("cfg_group_only", lang))
@@ -108,10 +115,10 @@ async def cmd_setconfig(message: Message):
         targets = await get_currency_targets(session, message.chat.id)
         audio_on = await get_audio_track(session, message.chat.id)
     await message.reply(t("cfg_title", lang),
-                        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, lang))
+                        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, bot_features, lang))
 
 
-async def _refresh(callback: CallbackQuery, lang: str):
+async def _refresh(callback: CallbackQuery, lang: str, features: set[str]):
     """Перерисовывает клавиатуру настроек актуальным состоянием."""
     chat_id = callback.message.chat.id
     async with SessionLocal() as session:
@@ -120,7 +127,7 @@ async def _refresh(callback: CallbackQuery, lang: str):
         targets = await get_currency_targets(session, chat_id)
         audio_on = await get_audio_track(session, chat_id)
     await callback.message.edit_reply_markup(
-        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, lang))
+        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, features, lang))
 
 
 @router.callback_query(F.data == "cfg:noop")
@@ -146,7 +153,7 @@ async def cfg_done(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("cfg:ss:"))
-async def set_slideshow(callback: CallbackQuery):
+async def set_slideshow(callback: CallbackQuery, bot_features: set[str] = frozenset()):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     mode = callback.data.split(":", 2)[2]
@@ -155,12 +162,12 @@ async def set_slideshow(callback: CallbackQuery):
         return
     async with SessionLocal() as session:
         await set_slideshow_mode(session, chat_id, mode)
-    await _refresh(callback, lang)
+    await _refresh(callback, lang, bot_features)
     await callback.answer()
 
 
 @router.callback_query(F.data == "cfg:audio")
-async def toggle_audio(callback: CallbackQuery):
+async def toggle_audio(callback: CallbackQuery, bot_features: set[str] = frozenset()):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     if not await _is_admin(callback.bot, chat_id, callback.from_user.id):
@@ -169,12 +176,12 @@ async def toggle_audio(callback: CallbackQuery):
     async with SessionLocal() as session:
         now = await get_audio_track(session, chat_id)
         await set_audio_track(session, chat_id, not now)
-    await _refresh(callback, lang)
+    await _refresh(callback, lang, bot_features)
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("cfg:cur:"))
-async def toggle_currency(callback: CallbackQuery):
+async def toggle_currency(callback: CallbackQuery, bot_features: set[str] = frozenset()):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     code = callback.data.split(":", 2)[2]
@@ -183,12 +190,12 @@ async def toggle_currency(callback: CallbackQuery):
         return
     async with SessionLocal() as session:
         await toggle_currency_target(session, chat_id, code)
-    await _refresh(callback, lang)
+    await _refresh(callback, lang, bot_features)
     await callback.answer()
 
 
 @router.callback_query(F.data.in_(_FEATURE_CB))
-async def toggle_feature(callback: CallbackQuery):
+async def toggle_feature(callback: CallbackQuery, bot_features: set[str] = frozenset()):
     lang = lang_of(callback.from_user)
     feature = callback.data.split(":", 1)[1]
     chat_id = callback.message.chat.id
@@ -200,5 +207,5 @@ async def toggle_feature(callback: CallbackQuery):
         disabled = await get_disabled_features(session, chat_id)
         # если сейчас выключена — включаем, и наоборот
         await set_feature(session, chat_id, feature, enable=(feature in disabled))
-    await _refresh(callback, lang)
+    await _refresh(callback, lang, bot_features)
     await callback.answer()

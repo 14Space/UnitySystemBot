@@ -43,7 +43,7 @@ def _bot_configs() -> list[dict]:
     others = bool(TRANSCRIBE_BOT_TOKEN) or bool(UNITY_BOT_TOKEN) or bool(CURRENCY_BOT_TOKEN)
     saver_features = {DOWNLOAD} if others else {DOWNLOAD, TRANSCRIBE, CURRENCY}
 
-    bots = [{"name": "viaSaver", "token": BOT_TOKEN, "features": saver_features, "config": False}]
+    bots = [{"name": "viaSaver", "token": BOT_TOKEN, "features": saver_features, "config": True}]
     if TRANSCRIBE_BOT_TOKEN:
         bots.append({"name": "viaVoice", "token": TRANSCRIBE_BOT_TOKEN,
                      "features": {TRANSCRIBE}, "config": False})
@@ -125,14 +125,14 @@ async def main():
     # Поднимаем всех ботов, у кого есть токен
     bots: list[Bot] = []
     features_by_bot: dict[int, set[str]] = {}
-    unity_ids: set[int] = set()
+    config_ids: set[int] = set()          # боты с доступом к /setconfig
     any_transcribe = False
     for cfg in _bot_configs():
         bot = _make_bot(cfg["token"])
         bots.append(bot)
         features_by_bot[bot.id] = cfg["features"]
         if cfg["config"]:
-            unity_ids.add(bot.id)
+            config_ids.add(bot.id)
         any_transcribe = any_transcribe or (TRANSCRIBE in cfg["features"])
         await _setup_commands(bot, cfg["features"], cfg["config"])
         logger.info("Бот %s (id=%s): функции=%s, config=%s",
@@ -142,7 +142,7 @@ async def main():
     dp = Dispatcher()
     dp.message.middleware(ThrottleMiddleware())
     dp.message.middleware(RegisterUserMiddleware())
-    routing = RoutingMiddleware(features_by_bot, unity_ids)
+    routing = RoutingMiddleware(features_by_bot, config_ids)
     dp.message.middleware(routing)
     dp.callback_query.middleware(routing)
     dp.inline_query.middleware(routing)

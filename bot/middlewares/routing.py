@@ -33,15 +33,17 @@ def _msg_feature(m: Message) -> str | None:
 
 
 class RoutingMiddleware(BaseMiddleware):
-    def __init__(self, features_by_bot: dict[int, set[str]], unity_ids: set[int]):
+    def __init__(self, features_by_bot: dict[int, set[str]], config_ids: set[int]):
         self.features_by_bot = features_by_bot
-        self.unity_ids = unity_ids
+        self.config_ids = config_ids
 
     async def __call__(self, handler: Callable, event: Any, data: dict) -> Any:
         bot = getattr(event, "bot", None)
         bot_id = bot.id if bot else None
         feats = self.features_by_bot.get(bot_id, set())
-        is_unity = bot_id in self.unity_ids
+        is_config = bot_id in self.config_ids
+        # набор функций бота — для /setconfig, чтобы показывать только его разделы
+        data["bot_features"] = feats
 
         feature = None
         chat = None
@@ -49,14 +51,14 @@ class RoutingMiddleware(BaseMiddleware):
         if isinstance(event, Message):
             chat = event.chat
             if (event.text or "").startswith("/setconfig"):
-                if not is_unity:      # /setconfig есть только у бота-комбайна
+                if not is_config:     # /setconfig только у ботов с конфигом
                     return
                 return await handler(event, data)
             feature = _msg_feature(event)
 
         elif isinstance(event, CallbackQuery):
             if (event.data or "").startswith("cfg:"):
-                if not is_unity:      # переключатели конфига — только у комбайна
+                if not is_config:     # переключатели конфига — только у ботов с конфигом
                     return
                 return await handler(event, data)
             # прочие callback приходят с кнопок, которые появляются только у ботов
@@ -72,7 +74,7 @@ class RoutingMiddleware(BaseMiddleware):
         if feature:
             if feature not in feats:          # бот не умеет эту функцию — молчим
                 return
-            if is_unity and chat and chat.type in GROUP_TYPES:
+            if is_config and chat and chat.type in GROUP_TYPES:
                 async with SessionLocal() as session:
                     disabled = await get_disabled_features(session, chat.id)
                 if feature in disabled:       # выключено в этой группе через /setconfig
