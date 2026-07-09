@@ -55,6 +55,39 @@ CURRENCIES: dict[str, dict] = {
     # Чешская крона: общий «kr» и «крона» ловятся сюда (датская — только по коду/«датск»).
     "CZK": {"names": {"ru": "чеш. крон", "uk": "чеськ. крон", "en": "CZK"}, "symbol": None, "flag": "🇨🇿",
             "aliases": [r"czk", r"kr", r"крон\w*", r"чешск\w*", r"чеськ\w*", r"korun\w*"]},
+    "THB": {"names": {"ru": "батов", "uk": "батів", "en": "THB"}, "symbol": "฿", "flag": "🇹🇭",
+            "aliases": [r"thb", r"бат", r"бата", r"батов", r"баты", r"baht"]},
+    "KRW": {"names": {"ru": "вон", "uk": "вон", "en": "KRW"}, "symbol": "₩", "flag": "🇰🇷",
+            "aliases": [r"krw", r"вон", r"вона", r"воны", r"won"]},
+    "AUD": {"names": {"ru": "австрал. долларов", "uk": "австрал. доларів", "en": "AUD"}, "symbol": None, "flag": "🇦🇺",
+            "aliases": [r"aud", r"австралийск\w*", r"aussie"]},
+    "CAD": {"names": {"ru": "канад. долларов", "uk": "канад. доларів", "en": "CAD"}, "symbol": None, "flag": "🇨🇦",
+            "aliases": [r"cad", r"канадск\w*", r"канадськ\w*"]},
+    "VND": {"names": {"ru": "донгов", "uk": "донгів", "en": "VND"}, "symbol": "₫", "flag": "🇻🇳",
+            "aliases": [r"vnd", r"донг", r"донга", r"донгов", r"dong"]},
+    # Кроны: скандинавские ловятся только по коду/прилагательному («крона» уже занята чешской).
+    "ISK": {"names": {"ru": "исл. крон", "uk": "ісл. крон", "en": "ISK"}, "symbol": None, "flag": "🇮🇸",
+            "aliases": [r"isk", r"исландск\w*", r"ісландськ\w*"]},
+    "NOK": {"names": {"ru": "норв. крон", "uk": "норв. крон", "en": "NOK"}, "symbol": None, "flag": "🇳🇴",
+            "aliases": [r"nok", r"норвежск\w*", r"норвезьк\w*"]},
+    "SEK": {"names": {"ru": "швед. крон", "uk": "швед. крон", "en": "SEK"}, "symbol": None, "flag": "🇸🇪",
+            "aliases": [r"sek", r"шведск\w*", r"шведськ\w*"]},
+    "GEL": {"names": {"ru": "лари", "uk": "ларі", "en": "GEL"}, "symbol": "₾", "flag": "🇬🇪",
+            "aliases": [r"gel", r"лари", r"ларі", r"lari"]},
+    "INR": {"names": {"ru": "рупий", "uk": "рупій", "en": "INR"}, "symbol": "₹", "flag": "🇮🇳",
+            "aliases": [r"inr", r"рупи\w*", r"rupee\w*"]},
+    "AZN": {"names": {"ru": "манатов", "uk": "манатів", "en": "AZN"}, "symbol": "₼", "flag": "🇦🇿",
+            "aliases": [r"azn", r"манат\w*", r"manat"]},
+    "AMD": {"names": {"ru": "драмов", "uk": "драмів", "en": "AMD"}, "symbol": "֏", "flag": "🇦🇲",
+            "aliases": [r"amd", r"драм", r"драмов", r"dram"]},
+    "UZS": {"names": {"ru": "сумов", "uk": "сумів", "en": "UZS"}, "symbol": None, "flag": "🇺🇿",
+            "aliases": [r"uzs", r"сум", r"сумов", r"узбекск\w*"]},
+    "KGS": {"names": {"ru": "сомов", "uk": "сомів", "en": "KGS"}, "symbol": None, "flag": "🇰🇬",
+            "aliases": [r"kgs", r"сом", r"сомов", r"кыргызск\w*", r"киргизск\w*"]},
+    "HUF": {"names": {"ru": "форинтов", "uk": "форинтів", "en": "HUF"}, "symbol": None, "flag": "🇭🇺",
+            "aliases": [r"huf", r"форинт\w*", r"forint"]},
+    "BGN": {"names": {"ru": "левов", "uk": "левів", "en": "BGN"}, "symbol": None, "flag": "🇧🇬",
+            "aliases": [r"bgn", r"лв", r"лева", r"левов", r"болгарск\w*"]},
 }
 
 ORDER = list(CURRENCIES.keys())
@@ -78,6 +111,9 @@ for _code, _data in CURRENCIES.items():
         _symbol_aliases.append((_sym, _code))
 
 _symbol_aliases.sort(key=lambda x: -len(x[0]))
+# «Код/символ» валюты (usd, $, zł) — в отличие от описательного слова («долларов»).
+# Нужно, чтобы «100 usd eur» считать как цель, а «50 австралийских долларов» — нет.
+_CODEISH = {c.lower() for c in CURRENCIES} | {s.lower() for s, _ in _symbol_aliases}
 _SYM_ALT = "|".join(re.escape(s) for s, _ in _symbol_aliases)
 _WORD_ALT = "|".join(al for d in CURRENCIES.values() for al in d["aliases"]
                      if not re.fullmatch(r"[^\w]+", al))
@@ -102,7 +138,8 @@ _URL_RE = re.compile(r"https?://|www\.|t\.me/", re.IGNORECASE)
 # Необязательная цель перевода после первой пары: «... to AED», «... в шекели», «... eur».
 # Связка необязательна; цель берём только если следом реально стоит валюта.
 _CONNECTOR = r"(?:->|→|=|to|in|в|на)"
-_TARGET_RE = re.compile(rf"^[\s,]*{_CONNECTOR}?\s*(?P<t>{_CUR})", re.IGNORECASE | re.UNICODE)
+_TARGET_RE = re.compile(rf"^[\s,]*(?P<conn>{_CONNECTOR})?\s*(?P<t>{_CUR})",
+                        re.IGNORECASE | re.UNICODE)
 
 
 def _mult(suffix: str) -> int:
@@ -161,12 +198,15 @@ def parse(text: str) -> tuple[float, str, str | None] | None:
     from_code = _match_code(cur)
     if not from_code:
         return None
-    # Необязательная целевая валюта сразу после первой пары
+    # Необязательная целевая валюта сразу после первой пары. Без связки («to»/«в»)
+    # берём цель только если ОБЕ валюты заданы кодом/символом («100 usd eur»), иначе
+    # «50 австралийских долларов» ошибочно превратилось бы в «AUD → USD».
     to_code = None
     tm = _TARGET_RE.match(text[m.end():])
     if tm:
         tc = _match_code(tm.group("t"))
-        if tc and tc != from_code:
+        both_codeish = cur.lower() in _CODEISH and tm.group("t").lower() in _CODEISH
+        if tc and tc != from_code and (tm.group("conn") or both_codeish):
             to_code = tc
     return amount, from_code, to_code
 

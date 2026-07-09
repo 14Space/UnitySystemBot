@@ -14,7 +14,7 @@ from bot.database.repository import (
     get_disabled_features, set_feature, get_slideshow_mode, set_slideshow_mode,
     get_currency_targets, toggle_currency_target, get_audio_track, set_audio_track,
 )
-from bot.features.currency.parser import ORDER as CURRENCY_ORDER
+from bot.features.currency.parser import ORDER as CURRENCY_ORDER, CURRENCIES
 from bot.utils.i18n import t, lang_of
 
 router = Router()
@@ -96,8 +96,10 @@ def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bo
         if cur_on:
             row = []
             for code in CURRENCY_ORDER:
-                mark = "🔘 " if code in targets else ""
-                row.append(InlineKeyboardButton(text=f"{mark}{code}", callback_data=f"cfg:cur:{code}"))
+                flag = CURRENCIES[code]["flag"]
+                mark = " 🔘" if code in targets else ""
+                row.append(InlineKeyboardButton(
+                    text=f"{flag} {code}{mark}", callback_data=f"cfg:cur:{code}"))
                 if len(row) == 3:
                     rows.append(row)
                     row = []
