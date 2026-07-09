@@ -21,6 +21,7 @@ from bot.features.common import start, admin, payment, inline
 from bot.features.download import link
 from bot.features.transcribe import transcribe
 from bot.features.currency import convert as currency
+from bot.features.ai import chat as ai_chat
 from bot.features.config import setconfig
 from bot.features.common.admin import format_stats
 from bot.features.download.maintenance import clean_downloads, update_ytdlp
@@ -34,6 +35,7 @@ DAY_SECONDS = 24 * 60 * 60
 DOWNLOAD = "download"
 TRANSCRIBE = "transcribe"
 CURRENCY = "currency"
+AI = "ai"
 
 
 def _bot_configs() -> list[dict]:
@@ -41,7 +43,7 @@ def _bot_configs() -> list[dict]:
     Пока нет доп. токенов — @viaSaver умеет всё (чтобы не потерять расшифровку).
     Как только появятся остальные — @viaSaver становится «только скачивание»."""
     others = bool(TRANSCRIBE_BOT_TOKEN) or bool(UNITY_BOT_TOKEN) or bool(CURRENCY_BOT_TOKEN)
-    saver_features = {DOWNLOAD} if others else {DOWNLOAD, TRANSCRIBE, CURRENCY}
+    saver_features = {DOWNLOAD} if others else {DOWNLOAD, TRANSCRIBE, CURRENCY, AI}
 
     # «hub» — бот-комбайн: в личке работает как в группе (конвертер + личный /setconfig).
     # В одиночном режиме хабом становится сам viaSaver (он умеет всё).
@@ -55,7 +57,7 @@ def _bot_configs() -> list[dict]:
                      "features": {CURRENCY}, "config": False, "hub": False})
     if UNITY_BOT_TOKEN:
         bots.append({"name": "viaUnity", "token": UNITY_BOT_TOKEN,
-                     "features": {DOWNLOAD, TRANSCRIBE, CURRENCY}, "config": True, "hub": True})
+                     "features": {DOWNLOAD, TRANSCRIBE, CURRENCY, AI}, "config": True, "hub": True})
     return bots
 
 
@@ -70,6 +72,8 @@ def _make_bot(token: str) -> Bot:
 async def _setup_commands(bot: Bot, features: set[str], with_config: bool, is_hub: bool):
     """Меню команд под конкретного бота (у скачивателя — Premium и т.д.)."""
     common = [BotCommand(command="help", description="Справка по командам")]
+    if AI in features:
+        common.append(BotCommand(command="ai", description="Спросить ИИ 🤖"))
     if DOWNLOAD in features:
         common.append(BotCommand(command="premium", description="Купить Premium ✨"))
     await bot.set_my_commands(common, scope=BotCommandScopeDefault())
@@ -159,6 +163,7 @@ async def main():
     dp.include_router(start.router)
     dp.include_router(admin.router)
     dp.include_router(setconfig.router)
+    dp.include_router(ai_chat.router)
     dp.include_router(transcribe.router)
     dp.include_router(payment.router)
     dp.include_router(inline.router)

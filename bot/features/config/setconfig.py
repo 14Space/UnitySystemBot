@@ -26,6 +26,7 @@ GROUP_TYPES = ("group", "supergroup")
 TOGGLEABLE = [
     ("transcribe", "cfg_transcribe"),
     ("download", "cfg_download"),
+    ("ai", "cfg_ai"),
 ]
 
 # Множество callback'ов переключателей функций (для точного матча хендлера).

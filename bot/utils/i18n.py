@@ -307,6 +307,39 @@ TEXTS = {
         "uk": "Транскрибація",
         "en": "Transcription",
     },
+    "cfg_ai": {
+        "ru": "ИИ-ассистент (/ai)",
+        "uk": "ШІ-асистент (/ai)",
+        "en": "AI assistant (/ai)",
+    },
+    "ai_thinking": {
+        "ru": "🤖 Думаю...", "uk": "🤖 Думаю...", "en": "🤖 Thinking...",
+    },
+    "ai_how": {
+        "ru": "🤖 Ответь этой командой на сообщение или напиши вопрос: /ai <вопрос>",
+        "uk": "🤖 Відповідай цією командою на повідомлення або напиши питання: /ai <питання>",
+        "en": "🤖 Reply with this command to a message, or ask directly: /ai <question>",
+    },
+    "ai_limit": {
+        "ru": "🤖 Лимит ИИ на сегодня исчерпан, попробуй завтра.",
+        "uk": "🤖 Ліміт ШІ на сьогодні вичерпано, спробуй завтра.",
+        "en": "🤖 AI limit for today is reached, try again tomorrow.",
+    },
+    "ai_quota": {
+        "ru": "🤖 Бесплатный лимит ИИ на сегодня исчерпан, попробуй позже.",
+        "uk": "🤖 Безкоштовний ліміт ШІ на сьогодні вичерпано, спробуй пізніше.",
+        "en": "🤖 Free AI limit for today is reached, try again later.",
+    },
+    "ai_error": {
+        "ru": "🤖 Не удалось получить ответ, попробуй ещё раз.",
+        "uk": "🤖 Не вдалося отримати відповідь, спробуй ще раз.",
+        "en": "🤖 Couldn't get an answer, try again.",
+    },
+    "ai_not_configured": {
+        "ru": "🤖 ИИ пока не настроен.",
+        "uk": "🤖 ШІ поки не налаштований.",
+        "en": "🤖 AI is not configured yet.",
+    },
     "cfg_currency": {
         "ru": "Конвертер валют",
         "uk": "Конвертер валют",

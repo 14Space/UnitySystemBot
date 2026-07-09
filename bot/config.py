@@ -13,6 +13,18 @@ UNITY_BOT_TOKEN = os.getenv("UNITY_BOT_TOKEN", "")
 # Пусто — конвертер валют живёт внутри @viaUnitySystem. Появится токен — станет
 # отдельным ботом @viaCurrency (по образцу viaVoice), без рефакторинга.
 CURRENCY_BOT_TOKEN = os.getenv("CURRENCY_BOT_TOKEN", "")
+
+# --- ИИ-ассистент (/ai). Бесплатные провайдеры: Gemini (Google AI Studio) и Groq. ---
+# Ключи бесплатные: Gemini — aistudio.google.com/apikey, Groq — console.groq.com/keys.
+# Без ключей команда /ai отвечает «ИИ не настроен». Пробуем провайдеров по очереди.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Свои суточные лимиты — чтобы держаться в бесплатном тире (сброс в полночь UTC).
+AI_DAILY_LIMIT = int(os.getenv("AI_DAILY_LIMIT", "1000"))       # всего запросов в сутки
+AI_USER_DAILY_LIMIT = int(os.getenv("AI_USER_DAILY_LIMIT", "30"))  # на пользователя в сутки
+
 # Локальный Telegram Bot API сервер (лимит файлов 2 ГБ вместо 50 МБ, быстрая отдача)
 TELEGRAM_LOCAL_API_URL = os.getenv("TELEGRAM_LOCAL_API_URL", "http://localhost:8081")
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "data/downloads")
