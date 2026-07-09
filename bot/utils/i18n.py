@@ -91,6 +91,102 @@ TEXTS = {
         ),
     },
 
+    # --- Приветствие /start у viaVoice ---
+    "welcome_voice": {
+        "ru": (
+            "Привет!\n"
+            "Пришли голосовое или видео-кружок – расшифрую его в текст 🙃\n\n"
+            "Что умеет viaVoice:\n"
+            "🎙 Расшифровка голосовых сообщений;\n"
+            "🎥 Расшифровка видео-кружков;\n"
+            "💬 Ответ приходит удобной цитатой.\n\n"
+            "По вопросам: @viaWarrior\n"
+            "Наш канал: @UnitySystem"
+        ),
+        "uk": (
+            "Привіт!\n"
+            "Надішли голосове або відео-кружечок – розшифрую його в текст 🙃\n\n"
+            "Що вміє viaVoice:\n"
+            "🎙 Розшифровка голосових повідомлень;\n"
+            "🎥 Розшифровка відео-кружечків;\n"
+            "💬 Відповідь приходить зручною цитатою.\n\n"
+            "З питань: @viaWarrior\n"
+            "Канал: @UnitySystem"
+        ),
+        "en": (
+            "Hi!\n"
+            "Send a voice message or video note – I'll transcribe it to text 🙃\n\n"
+            "What viaVoice can do:\n"
+            "🎙 Transcribing voice messages;\n"
+            "🎥 Transcribing video notes;\n"
+            "💬 The reply comes as a neat quote.\n\n"
+            "Questions: @viaWarrior\n"
+            "Channel: @UnitySystem"
+        ),
+    },
+
+    # --- Приветствие /start у viaUnity (хаб) ---
+    "welcome_unity": {
+        "ru": (
+            "Привет!\n"
+            "Я умею всё сразу – пришли ссылку, голосовое или спроси у ИИ 🙃\n\n"
+            "Что умеет viaUnity:\n"
+            "📥 Скачивание видео, фото и музыки;\n"
+            "🎙 Расшифровка голосовых и кружков;\n"
+            "💱 Конвертер валют;\n"
+            "🤖 ИИ-ассистент по команде /ai;\n"
+            "⚙️ Настройка функций через /setconfig.\n\n"
+            "По вопросам: @viaWarrior\n"
+            "Наш канал: @UnitySystem"
+        ),
+        "uk": (
+            "Привіт!\n"
+            "Я вмію все одразу – надішли посилання, голосове або запитай у ШІ 🙃\n\n"
+            "Що вміє viaUnity:\n"
+            "📥 Завантаження відео, фото та музики;\n"
+            "🎙 Розшифровка голосових і кружечків;\n"
+            "💱 Конвертер валют;\n"
+            "🤖 ШІ-асистент за командою /ai;\n"
+            "⚙️ Налаштування функцій через /setconfig.\n\n"
+            "З питань: @viaWarrior\n"
+            "Канал: @UnitySystem"
+        ),
+        "en": (
+            "Hi!\n"
+            "I can do it all – send a link, a voice message, or ask the AI 🙃\n\n"
+            "What viaUnity can do:\n"
+            "📥 Downloading video, photo, and music;\n"
+            "🎙 Transcribing voice messages and video notes;\n"
+            "💱 Currency converter;\n"
+            "🤖 AI assistant via /ai;\n"
+            "⚙️ Feature setup via /setconfig.\n\n"
+            "Questions: @viaWarrior\n"
+            "Channel: @UnitySystem"
+        ),
+    },
+
+    # --- Профиль ботов: About (короткое) и Description (экран до Start) ---
+    "about_voice": {
+        "ru": "Расшифрую голосовые и видео-кружки в текст 🙃\nПо вопросам: @viaWarrior\nНаш канал: @UnitySystem",
+        "uk": "Розшифрую голосові та відео-кружечки в текст 🙃\nЗ питань: @viaWarrior\nКанал: @UnitySystem",
+        "en": "I turn voice messages and video notes into text 🙃\nQuestions: @viaWarrior\nChannel: @UnitySystem",
+    },
+    "desc_voice": {
+        "ru": "@viaVoiceBot расшифрует твои голосовые сообщения и видео-кружки в текст 🙃\nПо вопросам: @viaWarrior\nНаш канал: @UnitySystem",
+        "uk": "@viaVoiceBot розшифрує твої голосові повідомлення та відео-кружечки в текст 🙃\nЗ питань: @viaWarrior\nКанал: @UnitySystem",
+        "en": "@viaVoiceBot transcribes your voice messages and video notes into text 🙃\nQuestions: @viaWarrior\nChannel: @UnitySystem",
+    },
+    "about_unity": {
+        "ru": "Скачивание, расшифровка, конвертер валют и ИИ – всё в одном 🙃\nПо вопросам: @viaWarrior\nНаш канал: @UnitySystem",
+        "uk": "Завантаження, розшифровка, конвертер валют і ШІ – все в одному 🙃\nЗ питань: @viaWarrior\nКанал: @UnitySystem",
+        "en": "Downloads, transcription, currency converter and AI – all in one 🙃\nQuestions: @viaWarrior\nChannel: @UnitySystem",
+    },
+    "desc_unity": {
+        "ru": "@UnitySystemBot умеет всё сразу: скачивает видео, фото и музыку, расшифровывает голосовые, конвертирует валюты и отвечает как ИИ по команде /ai 🙃\nПо вопросам: @viaWarrior\nНаш канал: @UnitySystem",
+        "uk": "@UnitySystemBot вміє все одразу: завантажує відео, фото та музику, розшифровує голосові, конвертує валюти та відповідає як ШІ за командою /ai 🙃\nЗ питань: @viaWarrior\nКанал: @UnitySystem",
+        "en": "@UnitySystemBot does it all: downloads video, photo and music, transcribes voice messages, converts currencies and answers as AI via /ai 🙃\nQuestions: @viaWarrior\nChannel: @UnitySystem",
+    },
+
     # --- Справка /help ---
     "help": {
         "ru": (

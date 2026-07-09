@@ -14,6 +14,7 @@ from bot.config import (
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
 from bot.utils import traffic
+from bot.utils.i18n import t
 from bot.middlewares.register_user import RegisterUserMiddleware
 from bot.middlewares.throttle import ThrottleMiddleware
 from bot.middlewares.routing import RoutingMiddleware
@@ -100,6 +101,35 @@ async def _setup_commands(bot: Bot, features: set[str], with_config: bool, is_hu
             logger.info("Не задал админ-команды для %s (админ ещё не писал боту)", bot.id)
 
 
+def _profile_role(features: set[str]) -> str | None:
+    """Какой профиль (About/Description) ставить боту. viaSaver настроен вручную —
+    его не трогаем (None)."""
+    if features == {TRANSCRIBE}:
+        return "voice"
+    if features == {DOWNLOAD}:
+        return None
+    return "unity"
+
+
+async def _setup_profile(bot: Bot, features: set[str]):
+    """Ставит короткое описание (About) и описание (экран до Start) по языкам ru/uk/en,
+    плюс английский по умолчанию. Для viaSaver пропускаем."""
+    role = _profile_role(features)
+    if not role:
+        return
+    for lang in ("ru", "uk", "en"):
+        try:
+            await bot.set_my_short_description(short_description=t(f"about_{role}", lang), language_code=lang)
+            await bot.set_my_description(description=t(f"desc_{role}", lang), language_code=lang)
+        except Exception:
+            logger.exception("Не задал профиль (%s) для %s", lang, bot.id)
+    try:  # дефолт для остальных языков — английский
+        await bot.set_my_short_description(short_description=t(f"about_{role}", "en"))
+        await bot.set_my_description(description=t(f"desc_{role}", "en"))
+    except Exception:
+        logger.exception("Не задал дефолтный профиль для %s", bot.id)
+
+
 async def _daily_tasks(bot: Bot):
     """Раз в сутки: обновляем yt-dlp и шлём админу отчёт по статистике."""
     while True:
@@ -147,6 +177,7 @@ async def main():
             hub_ids.add(bot.id)
         any_transcribe = any_transcribe or (TRANSCRIBE in cfg["features"])
         await _setup_commands(bot, cfg["features"], cfg["config"], cfg.get("hub", False))
+        await _setup_profile(bot, cfg["features"])
         logger.info("Бот %s (id=%s): функции=%s, config=%s, hub=%s",
                     cfg["name"], bot.id, cfg["features"], cfg["config"], cfg.get("hub", False))
 

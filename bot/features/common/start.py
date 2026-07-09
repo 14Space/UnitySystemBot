@@ -20,8 +20,18 @@ async def cmd_help(message: Message):
     await message.answer(text, parse_mode="HTML")
 
 
+def _welcome_key(features: set[str]) -> str:
+    """Какое приветствие показать — под роль конкретного бота."""
+    if features == {"transcribe"}:              # viaVoice
+        return "welcome_voice"
+    if features == {"download"}:                # viaSaver (только скачивание)
+        return "welcome"
+    return "welcome_unity"                      # хаб / одиночный бот «всё в одном»
+
+
 @router.message(CommandStart())
-async def cmd_start(message: Message, command: CommandObject):
+async def cmd_start(message: Message, command: CommandObject,
+                    bot_features: set[str] = frozenset()):
     # Переход из inline («Скачать в боте»): /start dl<id> → качаем ссылку
     payload = command.args or ""
     if payload.startswith("dl"):
@@ -30,7 +40,8 @@ async def cmd_start(message: Message, command: CommandObject):
             await process_link(message, url)
             return
 
+    lang = lang_of(message.from_user)
     await message.answer(
-        t("welcome", lang_of(message.from_user)),
+        t(_welcome_key(bot_features), lang),
         reply_markup=main_menu_keyboard(message.from_user.id),
     )
