@@ -10,6 +10,7 @@ faster-whisper умеет читать аудио прямо из файла (.o
 """
 import logging
 import os
+import re
 import threading
 
 from bot.config import (
@@ -42,7 +43,33 @@ _DECODE_OPTS = dict(
     compression_ratio_threshold=2.4,  # режем повторяющийся «зацикленный» бред
     word_timestamps=True,             # нужно для проверки тишины ниже
     hallucination_silence_threshold=2.0,  # пропускаем подозрительные «фразы» в тишине
+    vad_parameters=dict(min_silence_duration_ms=500),  # чуть агрессивнее режем тишину
 )
+
+# Титры-«галлюцинации»: Whisper на тишине/музыке дописывает заученные из обучающих
+# данных подписи к видео («Субтитры сделал …», «Продолжение следует…», «Спасибо за
+# просмотр», Amara.org и т.п.). Вырезаем их из результата, даже если модель выдала.
+_HALLUCINATION_RE = re.compile(
+    r"\s*(?:"
+    r"субтитр\w*\s+(?:сделал|делал|створ\w*|підготув\w*|подготов\w*|редагув\w*|"
+    r"редактир\w*|правил|предостав\w*|надав\w*|переклав|перевод\w*|от|by)[^\n]*"
+    r"|(?:редактор|корректор)\s+субтитр\w*[^\n]*"
+    r"|dimatorzok[^\n]*"
+    r"|продолжение\s+следует[.!…\s]*"
+    r"|продовження\s+(?:далі|буде)[.!…\s]*"
+    r"|спасибо\s+за\s+просмотр[.!…\s]*"
+    r"|дяку\w*\s+за\s+перегляд[.!…\s]*"
+    r"|subtitles?\s+by[^\n]*"
+    r"|amara\.?\s*org[^\n]*"
+    r")\s*",
+    re.IGNORECASE,
+)
+
+
+def _clean(text: str) -> str:
+    """Убирает фразы-титры и лишние пробелы. Может вернуть пустую строку."""
+    text = _HALLUCINATION_RE.sub(" ", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 # Модель тяжёлая — грузим её один раз и переиспользуем (ленивая инициализация).
 # Блокировка защищает от гонки, если два сообщения придут одновременно.
@@ -148,4 +175,4 @@ def transcribe(file_path: str) -> str:
             segments, info = model.transcribe(file_path, language=primary, **_DECODE_OPTS)
 
     text = " ".join(segment.text.strip() for segment in segments).strip()
-    return text
+    return _clean(text)

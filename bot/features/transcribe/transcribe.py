@@ -44,8 +44,13 @@ async def _handle(message: Message, file_id: str, suffix: str):
         await _fetch_file(message, file_id, file_path)
         text = await asyncio.to_thread(transcribe, file_path)
 
+        # Пусто = тишина/музыка без слов (или остались одни титры-галлюцинации, которые
+        # мы вырезали). В этом случае бот просто молчит — убираем «Расшифровываю…».
         if not text:
-            await _safe_edit(status, t("transcribe_nothing", lang))
+            try:
+                await status.delete()
+            except Exception:
+                pass
             return
 
         # Оформляем расшифровку «цитатой» (как голосовое-первоисточник). Берём с
