@@ -60,4 +60,7 @@ class CachedFile(Base):
     original_url = Column(String, nullable=False)
     file_id = Column(String, nullable=False)
     quality = Column(String, nullable=True)
+    # file_id в Telegram привязан к боту, который отправил файл: чужой id невалиден.
+    # Поэтому кэш храним по каждому боту отдельно.
+    bot_id = Column(Integer, nullable=True)
     cached_at = Column(DateTime, server_default=func.now())

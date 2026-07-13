@@ -12,7 +12,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery, InlineQuery
 
 from bot.database import SessionLocal
-from bot.database.repository import get_disabled_features
+from bot.database.repository import get_disabled_features, current_bot_id
 from bot.features.currency.parser import parse as parse_currency
 
 GROUP_TYPES = ("group", "supergroup")
@@ -41,6 +41,8 @@ class RoutingMiddleware(BaseMiddleware):
     async def __call__(self, handler: Callable, event: Any, data: dict) -> Any:
         bot = getattr(event, "bot", None)
         bot_id = bot.id if bot else None
+        # Кэш file_id ведётся по каждому боту — сообщаем репозиторию текущего бота.
+        current_bot_id.set(bot_id)
         feats = self.features_by_bot.get(bot_id, set())
         is_config = bot_id in self.config_ids
         is_hub = bot_id in self.hub_ids

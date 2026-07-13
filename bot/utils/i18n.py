@@ -18,10 +18,10 @@ DEFAULT_LANG = "en"  # для всех, у кого Telegram не на русс�
 def lang_of(user) -> str:
     """Определяет язык пользователя по настройкам Telegram.
 
-    Если клиент не прислал language_code (бывает у части сборок Telegram) — берём
+    Если клиент не прислал language_code (бывает у части сборок Telegram) – берём
     русский: это основная аудитория, и так же поступает register_user при записи в
     БД. Раньше здесь пустой код уходил в 'en', из-за чего у русских без language_code
-    интерфейс показывался на английском. Явно указанный не-ru/uk язык — на английском."""
+    интерфейс показывался на английском. Явно указанный не-ru/uk язык – на английском."""
     code = (getattr(user, "language_code", None) or "")[:2].lower()
     if not code:
         return "ru"
@@ -130,7 +130,7 @@ TEXTS = {
         "ru": (
             "Привет!\n"
             "Я умею всё сразу – пришли ссылку, голосовое или спроси у ИИ 🙃\n\n"
-            "Что умеет viaUnity:\n"
+            "Что умеет UnitySystem:\n"
             "📥 Скачивание видео, фото и музыки;\n"
             "🎙 Расшифровка голосовых и кружков;\n"
             "💱 Конвертер валют;\n"
@@ -142,7 +142,7 @@ TEXTS = {
         "uk": (
             "Привіт!\n"
             "Я вмію все одразу – надішли посилання, голосове або запитай у ШІ 🙃\n\n"
-            "Що вміє viaUnity:\n"
+            "Що вміє UnitySystem:\n"
             "📥 Завантаження відео, фото та музики;\n"
             "🎙 Розшифровка голосових і кружечків;\n"
             "💱 Конвертер валют;\n"
@@ -154,7 +154,7 @@ TEXTS = {
         "en": (
             "Hi!\n"
             "I can do it all – send a link, a voice message, or ask the AI 🙃\n\n"
-            "What viaUnity can do:\n"
+            "What UnitySystem can do:\n"
             "📥 Downloading video, photo, and music;\n"
             "🎙 Transcribing voice messages and video notes;\n"
             "💱 Currency converter;\n"
@@ -187,48 +187,99 @@ TEXTS = {
         "en": "@UnitySystemBot does it all: downloads video, photo and music, transcribes voice messages, converts currencies and answers as AI via /ai 🙃\nQuestions: @viaWarrior\nChannel: @UnitySystem",
     },
 
-    # --- Справка /help ---
-    "help": {
+    # --- Справка /help: только перечень команд под роль бота ---
+    # viaSaver – только скачивание
+    "help_saver": {
         "ru": (
-            "ℹ️ <b>Как пользоваться viaSaver</b>\n\n"
-            "Просто пришли ссылку — я скачаю видео, фото или музыку из YouTube, TikTok, "
-            "Instagram, Pinterest, Spotify, SoundCloud, PornHub или HDRezka.\n"
-            "А ещё пришли голосовое или видео-кружок — расшифрую его в текст.\n\n"
-            "<b>Команды:</b>\n"
-            "/start — перезапустить бота\n"
-            "/help — эта справка\n"
-            "/premium — оформить Premium ✨"
+            "ℹ️ <b>Команды viaSaver</b>\n\n"
+            "/start – перезапустить бота\n"
+            "/help – эта справка\n"
+            "/premium – оформить Premium ✨"
         ),
         "uk": (
-            "ℹ️ <b>Як користуватися viaSaver</b>\n\n"
-            "Просто надішли посилання — я завантажу відео, фото або музику з YouTube, TikTok, "
-            "Instagram, Pinterest, Spotify, SoundCloud, PornHub чи HDRezka.\n"
-            "А ще надішли голосове або відео-кружечок — розшифрую його в текст.\n\n"
-            "<b>Команди:</b>\n"
-            "/start — перезапустити бота\n"
-            "/help — ця довідка\n"
-            "/premium — оформити Premium ✨"
+            "ℹ️ <b>Команди viaSaver</b>\n\n"
+            "/start – перезапустити бота\n"
+            "/help – ця довідка\n"
+            "/premium – оформити Premium ✨"
         ),
         "en": (
-            "ℹ️ <b>How to use viaSaver</b>\n\n"
-            "Just send a link — I'll download video, photo, or music from YouTube, TikTok, "
-            "Instagram, Pinterest, Spotify, SoundCloud, PornHub, or HDRezka.\n"
-            "You can also send a voice message or video note — I'll transcribe it to text.\n\n"
-            "<b>Commands:</b>\n"
-            "/start — restart the bot\n"
-            "/help — this help\n"
-            "/premium — get Premium ✨"
+            "ℹ️ <b>viaSaver commands</b>\n\n"
+            "/start – restart the bot\n"
+            "/help – this help\n"
+            "/premium – get Premium ✨"
+        ),
+    },
+    # viaVoice – только расшифровка
+    "help_voice": {
+        "ru": (
+            "ℹ️ <b>Команды viaVoice</b>\n\n"
+            "/start – перезапустить бота\n"
+            "/help – эта справка"
+        ),
+        "uk": (
+            "ℹ️ <b>Команди viaVoice</b>\n\n"
+            "/start – перезапустити бота\n"
+            "/help – ця довідка"
+        ),
+        "en": (
+            "ℹ️ <b>viaVoice commands</b>\n\n"
+            "/start – restart the bot\n"
+            "/help – this help"
+        ),
+    },
+    # viaUnity – всё сразу
+    "help_unity": {
+        "ru": (
+            "ℹ️ <b>Команды UnitySystem</b>\n\n"
+            "/start – перезапустить бота\n"
+            "/help – эта справка\n"
+            "/premium – оформить Premium ✨\n"
+            "/ai – спросить ИИ (в ответ на сообщение)\n"
+            "/setconfig – настройка функций"
+        ),
+        "uk": (
+            "ℹ️ <b>Команди UnitySystem</b>\n\n"
+            "/start – перезапустити бота\n"
+            "/help – ця довідка\n"
+            "/premium – оформити Premium ✨\n"
+            "/ai – запитати ШІ (у відповідь на повідомлення)\n"
+            "/setconfig – налаштування функцій"
+        ),
+        "en": (
+            "ℹ️ <b>UnitySystem commands</b>\n\n"
+            "/start – restart the bot\n"
+            "/help – this help\n"
+            "/premium – get Premium ✨\n"
+            "/ai – ask the AI (reply to a message)\n"
+            "/setconfig – feature setup"
         ),
     },
     "help_admin_extra": {
-        "ru": "\n\n<b>Админ:</b>\n/statistics — статистика\n/cleancache — очистить кэш",
-        "uk": "\n\n<b>Адмін:</b>\n/statistics — статистика\n/cleancache — очистити кеш",
-        "en": "\n\n<b>Admin:</b>\n/statistics — statistics\n/cleancache — clear cache",
+        "ru": "\n\n<b>Админ:</b>\n/statistics – статистика\n/cleancache – очистить кэш",
+        "uk": "\n\n<b>Адмін:</b>\n/statistics – статистика\n/cleancache – очистити кеш",
+        "en": "\n\n<b>Admin:</b>\n/statistics – statistics\n/cleancache – clear cache",
     },
     "cache_cleared": {
-        "ru": "🧹 Кэш очищен: удалено записей — <b>{count}</b>.\nФайлы в Telegram не тронуты, бот просто перекачает их заново при следующем запросе.",
-        "uk": "🧹 Кеш очищено: видалено записів — <b>{count}</b>.\nФайли в Telegram не зачеплені, бот просто перезавантажить їх при наступному запиті.",
+        "ru": "🧹 Кэш очищен: удалено записей – <b>{count}</b>.\nФайлы в Telegram не тронуты, бот просто перекачает их заново при следующем запросе.",
+        "uk": "🧹 Кеш очищено: видалено записів – <b>{count}</b>.\nФайли в Telegram не зачеплені, бот просто перезавантажить їх при наступному запиті.",
         "en": "🧹 Cache cleared: <b>{count}</b> entries removed.\nTelegram files are untouched; the bot will just re-download them on next request.",
+    },
+
+    # --- Плейсхолдер поля ввода (Reply-клавиатура), под роль бота ---
+    "kb_placeholder_saver": {
+        "ru": "Пришли ссылку для скачивания",
+        "uk": "Надішли посилання для завантаження",
+        "en": "Send a link to download",
+    },
+    "kb_placeholder_voice": {
+        "ru": "Пришли голосовое или видео-кружок",
+        "uk": "Надішли голосове або відео-кружечок",
+        "en": "Send a voice message or video note",
+    },
+    "kb_placeholder_unity": {
+        "ru": "Ссылка, голосовое, валюта или /ai",
+        "uk": "Посилання, голосове, валюта або /ai",
+        "en": "Link, voice, currency or /ai",
     },
 
     # --- Общие ---
@@ -280,9 +331,9 @@ TEXTS = {
         "en": "{title}\n\nChoose quality:",
     },
     "live_stream": {
-        "ru": "🔴 Это прямой эфир, он ещё идёт — скачать его пока нельзя. Пришли ссылку ещё раз, когда трансляция закончится, и я скачаю запись целиком.",
-        "uk": "🔴 Це прямий ефір, він ще триває — завантажити його поки не можна. Надішли посилання ще раз, коли трансляція завершиться, і я завантажу запис повністю.",
-        "en": "🔴 This is a live stream still in progress — can't download it yet. Send the link again after it ends and I'll download the full recording.",
+        "ru": "🔴 Это прямой эфир, он ещё идёт – скачать его пока нельзя. Пришли ссылку ещё раз, когда трансляция закончится, и я скачаю запись целиком.",
+        "uk": "🔴 Це прямий ефір, він ще триває – завантажити його поки не можна. Надішли посилання ще раз, коли трансляція завершиться, і я завантажу запис повністю.",
+        "en": "🔴 This is a live stream still in progress – can't download it yet. Send the link again after it ends and I'll download the full recording.",
     },
     "video_info_failed": {
         "ru": "Не удалось получить информацию о видео.\nПроверь ссылку или попробуй ещё раз.",
@@ -563,9 +614,9 @@ TEXTS = {
         "ru": "Скачать видео", "uk": "Завантажити відео", "en": "Download video",
     },
     "inline_article_title": {
-        "ru": "Скачать через viaSaver",
-        "uk": "Завантажити через viaSaver",
-        "en": "Download via viaSaver",
+        "ru": "Скачать через бота",
+        "uk": "Завантажити через бота",
+        "en": "Download via the bot",
     },
     "inline_article_desc": {
         "ru": "Нажми кнопку – бот скачает в личке",
@@ -598,9 +649,9 @@ TEXTS = {
         "en": "🔒 Content is restricted (18+ or limited audience) – can't download.",
     },
     "err_login_required": {
-        "ru": "🔒 Это видео доступно только пользователям, вошедшим в аккаунт (ограниченная аудитория). Сейчас скачать не удалось — попробуй позже.",
-        "uk": "🔒 Це відео доступне лише користувачам, які увійшли в акаунт (обмежена аудиторія). Зараз завантажити не вдалося — спробуй пізніше.",
-        "en": "🔒 This video is only available to logged-in users (limited audience). Couldn't download it right now — try again later.",
+        "ru": "🔒 Это видео доступно только пользователям, вошедшим в аккаунт (ограниченная аудитория). Сейчас скачать не удалось – попробуй позже.",
+        "uk": "🔒 Це відео доступне лише користувачам, які увійшли в акаунт (обмежена аудиторія). Зараз завантажити не вдалося – спробуй пізніше.",
+        "en": "🔒 This video is only available to logged-in users (limited audience). Couldn't download it right now – try again later.",
     },
     "err_private": {
         "ru": "🔒 Контент приватный или требует входа в аккаунт.",

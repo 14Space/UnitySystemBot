@@ -1,5 +1,8 @@
+import re
 from enum import Enum
 from urllib.parse import urlparse
+
+_TW_STATUS_RE = re.compile(r"/status/(\d+)")
 
 
 class Platform(Enum):
@@ -85,6 +88,25 @@ def detect_platform(url: str) -> Platform:
         pass
 
     return Platform.UNKNOWN
+
+
+def normalize_cache_url(url: str) -> str:
+    """Приводит ссылку к каноничному виду ДЛЯ КЛЮЧА КЭША (сам URL для скачивания не меняем).
+    Пока нормализуем только X/Twitter: один твит расшаривают с разными хвостами
+    (?s=46, ?t=…), с разных зеркал (fx/vx/fixupx) и с под-путями (/photo/1) — всё это
+    один и тот же пост, и в кэше он должен быть одной записью, а не десятком."""
+    if detect_platform(url) != Platform.TWITTER:
+        return url
+    try:
+        parsed = urlparse(url)
+        m = _TW_STATUS_RE.search(parsed.path)
+        if not m:
+            return url
+        # /<user>/status/<id> — берём путь до id включительно, домен → x.com,
+        # хвосты-параметры и под-пути отбрасываем.
+        return f"https://x.com{parsed.path[:m.end()]}"
+    except Exception:
+        return url
 
 
 def is_supported(url: str) -> bool:

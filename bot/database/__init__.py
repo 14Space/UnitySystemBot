@@ -26,3 +26,11 @@ async def init_db():
             await conn.exec_driver_sql(
                 "ALTER TABLE chat_settings ADD COLUMN audio_track BOOLEAN DEFAULT 0"
             )
+
+        # Кэш file_id теперь по каждому боту (id привязан к отправившему боту).
+        res = await conn.exec_driver_sql("PRAGMA table_info(cached_files)")
+        cf_cols = [r[1] for r in res.fetchall()]
+        if "bot_id" not in cf_cols:
+            await conn.exec_driver_sql(
+                "ALTER TABLE cached_files ADD COLUMN bot_id INTEGER"
+            )

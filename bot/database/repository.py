@@ -1,9 +1,19 @@
 import hashlib
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import User, CachedFile, DownloadStat, MonthlyTraffic, ChatSettings
+
+# id бота, обрабатывающего текущий апдейт. Выставляет RoutingMiddleware на каждый
+# апдейт. file_id в Telegram привязан к отправившему боту, поэтому кэш ведём отдельно
+# по каждому боту — и в ключе (url_hash), и колонкой bot_id.
+current_bot_id: ContextVar[int | None] = ContextVar("current_bot_id", default=None)
+
+
+def _cache_hash(url: str, quality, bot_id: int | None) -> str:
+    return hashlib.md5(f"{bot_id}:{url}:{quality}".encode()).hexdigest()
 
 
 async def get_or_create_user(
@@ -206,17 +216,22 @@ async def set_audio_track(session: AsyncSession, chat_id: int, on: bool) -> None
 
 
 async def get_cached_file_id(session: AsyncSession, url: str, quality: str = None) -> str | None:
-    """Возвращает Telegram file_id для пары URL+качество, если он уже в кэше"""
-    url_hash = hashlib.md5(f"{url}:{quality}".encode()).hexdigest()
+    """Возвращает Telegram file_id для пары URL+качество (для текущего бота), если он в кэше"""
+    bot_id = current_bot_id.get()
+    url_hash = _cache_hash(url, quality, bot_id)
     result = await session.execute(select(CachedFile).where(CachedFile.url_hash == url_hash))
     cached = result.scalar_one_or_none()
     return cached.file_id if cached else None
 
 
 async def get_any_cached_file(session: AsyncSession, url: str) -> dict | None:
-    """Любой готовый файл для этой ссылки (для inline-режима). Возвращает file_id и тип."""
+    """Любой готовый файл этой ссылки для ТЕКУЩЕГО бота (для inline). Возвращает file_id и тип.
+    Фильтруем по bot_id: чужой file_id всё равно невалиден (DOCUMENT_INVALID)."""
+    bot_id = current_bot_id.get()
     result = await session.execute(
-        select(CachedFile).where(CachedFile.original_url == url).limit(1)
+        select(CachedFile)
+        .where(CachedFile.original_url == url, CachedFile.bot_id == bot_id)
+        .limit(1)
     )
     row = result.scalars().first()
     if not row:
@@ -225,22 +240,29 @@ async def get_any_cached_file(session: AsyncSession, url: str) -> dict | None:
 
 
 async def clear_cache(session: AsyncSession) -> int:
-    """Удаляет весь кэш file_id. Возвращает число удалённых записей.
-    Сами файлы не трогаются — они на серверах Telegram; стираются лишь ссылки на них."""
+    """Удаляет кэш file_id ТЕКУЩЕГО бота. Возвращает число удалённых записей.
+    Кэш бот-аварный (file_id привязан к отправившему боту), поэтому чистим только свои
+    записи, чужих ботов не трогаем. Сами файлы на серверах Telegram не тронуты."""
     from sqlalchemy import delete
-    count = (await session.execute(select(func.count(CachedFile.id)))).scalar() or 0
-    await session.execute(delete(CachedFile))
+    bot_id = current_bot_id.get()
+    cond = CachedFile.bot_id == bot_id
+    count = (await session.execute(
+        select(func.count(CachedFile.id)).where(cond))).scalar() or 0
+    await session.execute(delete(CachedFile).where(cond))
     await session.commit()
     return count
 
 
 async def save_cached_file_id(session: AsyncSession, url: str, file_id: str, quality: str = None) -> None:
-    """Сохраняет file_id в кэш (или обновляет, если запись уже есть)"""
-    url_hash = hashlib.md5(f"{url}:{quality}".encode()).hexdigest()
+    """Сохраняет file_id в кэш текущего бота (или обновляет, если запись уже есть)"""
+    bot_id = current_bot_id.get()
+    url_hash = _cache_hash(url, quality, bot_id)
     existing = await session.execute(select(CachedFile).where(CachedFile.url_hash == url_hash))
     row = existing.scalar_one_or_none()
     if row:
         row.file_id = file_id
+        row.bot_id = bot_id
     else:
-        session.add(CachedFile(url_hash=url_hash, original_url=url, file_id=file_id, quality=quality))
+        session.add(CachedFile(url_hash=url_hash, original_url=url,
+                               file_id=file_id, quality=quality, bot_id=bot_id))
     await session.commit()

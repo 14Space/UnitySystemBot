@@ -10,7 +10,7 @@ from aiogram.types import (
     Message, CallbackQuery, FSInputFile, BufferedInputFile,
     InputMediaPhoto, InputMediaVideo,
 )
-from bot.utils.platform_detector import detect_platform, Platform
+from bot.utils.platform_detector import detect_platform, Platform, normalize_cache_url
 from bot.features.download.keyboards.quality import build_quality_keyboard, FREE_LIMIT
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar
@@ -949,6 +949,7 @@ async def _send_twitter(message: Message, items: list[dict], caption: str | None
 
 async def _twitter_cache_get(url: str) -> dict | None:
     """Достаёт сохранённый твит из кэша (или None). Значение — JSON с токенами и подписью."""
+    url = normalize_cache_url(url)   # один твит с разными хвостами → одна запись
     async with SessionLocal() as session:
         raw = await get_cached_file_id(session, url, "x")
     if not raw:
@@ -961,6 +962,7 @@ async def _twitter_cache_get(url: str) -> dict | None:
 
 async def _twitter_cache_save(url: str, tokens: list[dict], caption: str | None,
                               parse_mode: str | None):
+    url = normalize_cache_url(url)   # ключ каноничный: как при чтении
     payload = json.dumps({"items": tokens, "caption": caption, "pm": parse_mode})
     async with SessionLocal() as session:
         await save_cached_file_id(session, url, payload, "x")

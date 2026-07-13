@@ -10,7 +10,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from bot.config import ADMIN_ID
 
 
-def main_menu_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup:
+def main_menu_keyboard(user_id: int = 0, placeholder: str | None = None) -> ReplyKeyboardMarkup:
     """
     Плитки-кнопки команд снизу. Обычным пользователям — только /help; админу — ещё
     /statistics и /cleancache. (Синее «Меню» шире: всем /start, /help, /premium.)
@@ -19,6 +19,9 @@ def main_menu_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup:
     даже когда пользователь её свернул. Прикрепляем её ТОЛЬКО к /start и больше нигде
     не переотправляем — иначе она будет раскрываться сама. Так плитки по умолчанию
     скрыты и появляются лишь по нажатию на квадратик.
+
+    placeholder — подсказка в поле ввода, своя под роль бота и язык пользователя
+    (передаёт вызывающий; см. cmd_start).
     """
     rows = [
         [KeyboardButton(text="/help")],
@@ -29,5 +32,5 @@ def main_menu_keyboard(user_id: int = 0) -> ReplyKeyboardMarkup:
         keyboard=rows,
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Выберите команду или пришлите ссылку",
+        input_field_placeholder=placeholder,
     )

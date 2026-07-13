@@ -60,7 +60,7 @@ async def cmd_stats(message: Message):
 
 @router.message(Command("cleancache"))
 async def cmd_cleancache(message: Message):
-    """Админ: чистит весь кэш file_id (стираются только ссылки, файлы в Telegram целы)."""
+    """Админ: чистит кэш file_id этого бота (стираются только ссылки, файлы в Telegram целы)."""
     if not _is_admin(message):
         return
     async with SessionLocal() as session:

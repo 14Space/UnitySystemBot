@@ -1,27 +1,68 @@
+import json
+
 from aiogram import Router, Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     InlineQuery, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio,
-    InlineQueryResultCachedPhoto, InlineQueryResultArticle, InputTextMessageContent,
+    InlineQueryResultCachedPhoto, InlineQueryResultCachedMpeg4Gif,
+    InlineQueryResultArticle, InputTextMessageContent,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 
 from bot.database import SessionLocal
 from bot.database.repository import get_any_cached_file
 from bot.features.download.link import stash_inline_link
-from bot.utils.platform_detector import detect_platform, Platform
+from bot.utils.platform_detector import detect_platform, Platform, normalize_cache_url
 from bot.utils.i18n import t, lang_of
 
 router = Router()
 
-_bot_username = None
+# Имя бота кэшируем ПО КАЖДОМУ боту: в мульти-бот режиме код общий, и один общий кэш
+# указывал бы кнопку «Скачать в боте» на чужого бота (открыл бы не того).
+_bot_usernames: dict[int, str] = {}
 
 
 async def _username(bot: Bot) -> str:
-    global _bot_username
-    if _bot_username is None:
+    if bot.id not in _bot_usernames:
         me = await bot.get_me()
-        _bot_username = me.username
-    return _bot_username
+        _bot_usernames[bot.id] = me.username
+    return _bot_usernames[bot.id]
+
+
+def _result_from_cache(cached: dict, lang: str):
+    """Строит один инлайн-результат из кэша, или None, если инлайном отдать нельзя
+    (альбом из нескольких медиа — Telegram inline шлёт только одно сообщение)."""
+    fid, quality = cached["file_id"], cached["quality"]
+
+    # X/Twitter: в кэше JSON с медиа-токенами. Одиночный пост можно отдать инлайном,
+    # альбом (2+ медиа) — нет.
+    if quality == "x":
+        try:
+            items = json.loads(fid).get("items", [])
+        except Exception:
+            return None
+        if len(items) != 1:
+            return None
+        it = items[0]
+        k, mid = it.get("k"), it.get("id")
+        if not mid:
+            return None
+        if k == "P":
+            return InlineQueryResultCachedPhoto(id="1", photo_file_id=mid)
+        if k == "G":
+            return InlineQueryResultCachedMpeg4Gif(id="1", mpeg4_file_id=mid)
+        return InlineQueryResultCachedVideo(
+            id="1", video_file_id=mid, title=t("inline_cached_video_title", lang)
+        )
+
+    if quality == "audio":
+        return InlineQueryResultCachedAudio(id="1", audio_file_id=fid)
+    if fid.startswith("P:"):
+        return InlineQueryResultCachedPhoto(id="1", photo_file_id=fid[2:])
+    video_id = fid[2:] if fid.startswith("V:") else fid
+    return InlineQueryResultCachedVideo(
+        id="1", video_file_id=video_id, title=t("inline_cached_video_title", lang)
+    )
 
 
 @router.inline_query()
@@ -34,25 +75,23 @@ async def inline_handler(query: InlineQuery, bot: Bot):
         await query.answer([], cache_time=5, is_personal=True)
         return
 
-    # Уже качали (есть в кэше) — отдаём файл мгновенно прямо в чат
+    # Уже качали (есть в кэше) — отдаём файл мгновенно прямо в чат.
+    # Ключ каноничный (у X одну и ту же ссылку шлют с разными хвостами/зеркалами).
     async with SessionLocal() as session:
-        cached = await get_any_cached_file(session, text)
+        cached = await get_any_cached_file(session, normalize_cache_url(text))
 
-    if cached:
-        fid, quality = cached["file_id"], cached["quality"]
-        if quality == "audio":
-            result = InlineQueryResultCachedAudio(id="1", audio_file_id=fid)
-        elif fid.startswith("P:"):
-            result = InlineQueryResultCachedPhoto(id="1", photo_file_id=fid[2:])
-        else:
-            video_id = fid[2:] if fid.startswith("V:") else fid
-            result = InlineQueryResultCachedVideo(
-                id="1", video_file_id=video_id, title=t("inline_cached_video_title", lang)
-            )
-        await query.answer([result], cache_time=0, is_personal=True)
-        return
+    result = _result_from_cache(cached, lang) if cached else None
+    if result is not None:
+        try:
+            await query.answer([result], cache_time=0, is_personal=True)
+            return
+        except TelegramBadRequest:
+            # file_id привязан к боту, который его сохранил: если файл закэшировал
+            # другой бот, этот id для нас невалиден (DOCUMENT_INVALID). Тогда просто
+            # отдаём обычную карточку-переход, как для незнакомой ссылки.
+            pass
 
-    # Новой ссылки в кэше нет — за пару секунд её не скачать. Даём кнопку-переход в бота.
+    # Ссылки нет в кэше (или чужой file_id) — за пару секунд не скачать. Даём кнопку-переход в бота.
     sid = stash_inline_link(text)
     username = await _username(bot)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
