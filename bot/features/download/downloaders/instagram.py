@@ -1,10 +1,8 @@
-import http.cookiejar
 import logging
 import os
 import re
 import requests
 import yt_dlp
-import instaloader
 from urllib.parse import urlparse
 from bot.features.download.downloaders.ytdlp_wrapper import BASE_OPTS, DOWNLOADS_DIR
 
@@ -18,33 +16,11 @@ logger = logging.getLogger(__name__)
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 VIDEO_EXTS = (".mp4", ".mov", ".webm")
 
-# Один загрузчик на процесс. Если есть cookies.txt залогиненного аккаунта — подгружаем
-# их (доступ к контенту «не для всех»), иначе ходим анонимно (только публичное).
-_loader = None
-
 
 def _cookies_path() -> str | None:
-    """Путь к файлу кук, если он задан и существует."""
+    """Путь к файлу кук, если он задан и существует.
+    Куки залогиненного аккаунта дают доступ к контенту «не для всех»."""
     return INSTAGRAM_COOKIES if INSTAGRAM_COOKIES and os.path.exists(INSTAGRAM_COOKIES) else None
-
-
-def _get_loader():
-    global _loader
-    if _loader is None:
-        _loader = instaloader.Instaloader(
-            download_comments=False, save_metadata=False, quiet=True
-        )
-        path = _cookies_path()
-        if path:
-            try:
-                # instaloader работает через requests.Session — вливаем в неё куки из файла
-                jar = http.cookiejar.MozillaCookieJar(path)
-                jar.load(ignore_discard=True, ignore_expires=True)
-                _loader.context._session.cookies.update(jar)
-                logger.info("Instagram: куки залогиненного аккаунта загружены")
-            except Exception:
-                logger.warning("Instagram: не удалось загрузить cookies.txt", exc_info=True)
-    return _loader
 
 
 def _shortcode(url: str) -> str | None:
@@ -90,31 +66,67 @@ def download_reel(url: str) -> str:
         raise
 
 
+class PostUnavailable(Exception):
+    """Пост не отдаётся: приватный, удалён или недоступен этому аккаунту."""
+
+
+def _best_media(entry: dict) -> tuple[str, bool] | None:
+    """Из элемента поста достаёт (ссылка_на_медиа, это_видео).
+    Видео — лучший из formats; фото — самый крупный thumbnail. None, если пусто."""
+    formats = entry.get("formats") or []
+    if formats:
+        # Берём формат с наибольшим разрешением (у Instagram они уже с прямыми ссылками)
+        best = max(formats, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
+        if best.get("url"):
+            return best["url"], True
+    thumbs = entry.get("thumbnails") or []
+    if thumbs:
+        best = max(thumbs, key=lambda t: (t.get("height") or 0, t.get("width") or 0))
+        if best.get("url"):
+            return best["url"], False
+    return None
+
+
 def download_post(url: str) -> list[str]:
     """
     Скачивает пост Instagram целиком: одно фото/видео или всю карусель.
-    Использует instaloader (yt-dlp умеет только видео). Возвращает список файлов по порядку.
+    Через yt-dlp: instaloader ходил в graphql, который Instagram закрыл (403/400),
+    и посты перестали качаться совсем. Возвращает список файлов по порядку.
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    shortcode = _shortcode(url)
-    if not shortcode:
-        return []
+    shortcode = _shortcode(url) or "ig"
 
-    loader = _get_loader()
-    post = instaloader.Post.from_shortcode(loader.context, shortcode)
+    opts = {
+        **BASE_OPTS,
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        # Фото-элементы не имеют видео-форматов: без этого yt-dlp роняет весь пост
+        "ignoreerrors": True,
+    }
+    cookies = _cookies_path()
+    if cookies:
+        opts["cookiefile"] = cookies
 
-    # Собираем список медиа: (ссылка, это_видео)
-    media = []
-    if post.typename == "GraphSidecar":  # карусель
-        for node in post.get_sidecar_nodes():
-            media.append((node.video_url if node.is_video else node.display_url, node.is_video))
-    elif post.is_video:
-        media.append((post.video_url, True))
-    else:
-        media.append((post.url, False))
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        # process=False — не даём yt-dlp падать на фото («No video formats found»);
+        # ссылки на медиа уже есть в самих элементах.
+        info = ydl.extract_info(url, download=False, process=False)
+
+    if not info:
+        raise PostUnavailable(f"Instagram не отдал пост {shortcode}")
+
+    # Карусель приходит плейлистом, одиночный пост — обычным элементом
+    entries = list(info.get("entries") or [info])
 
     files = []
-    for i, (media_url, is_vid) in enumerate(media, 1):
+    for i, entry in enumerate(entries, 1):
+        if not entry:
+            continue
+        media = _best_media(entry)
+        if not media:
+            continue
+        media_url, is_vid = media
         ext = ".mp4" if is_vid else ".jpg"
         path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{i}_viaSaver{ext}")
         data = requests.get(media_url, timeout=60).content
