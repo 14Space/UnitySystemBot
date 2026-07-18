@@ -5,6 +5,12 @@ import time
 import requests
 from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
 
+try:
+    from bot.config import SLIDE_SEC, SLIDE_AUDIO_FADE_SEC
+except Exception:  # worker может запускаться отдельно от бота
+    SLIDE_SEC = float(os.getenv("SLIDE_SEC", "3.0"))
+    SLIDE_AUDIO_FADE_SEC = float(os.getenv("SLIDE_AUDIO_FADE_SEC", "1.5"))
+
 # Публичный API без авторизации: отдаёт видео без водяного знака и слайдшоу.
 # yt-dlp web-парсинг TikTok нестабилен (анти-бот), поэтому идём через него.
 API = "https://www.tikwm.com/api/"
@@ -67,8 +73,8 @@ def download_music(url: str) -> tuple[str, str] | None:
     return out, (f"{author} – {title}" if author else title)
 
 
-def _audio_duration(path: str) -> float:
-    """Длительность аудио в секундах через ffprobe."""
+def _media_duration(path: str) -> float:
+    """Длительность медиафайла (аудио или видео) в секундах через ffprobe."""
     try:
         out = subprocess.run(
             [_ffbin("ffprobe"), "-v", "error", "-show_entries", "format=duration",
@@ -80,21 +86,33 @@ def _audio_duration(path: str) -> float:
         return 0.0
 
 
+def _audio_tail_filter(video_len: float) -> str:
+    """Фильтр для музыки: обрезаем под длину видео и плавно гасим хвост,
+    чтобы трек не обрывался резко. Длительность затухания — из настроек."""
+    fade = min(SLIDE_AUDIO_FADE_SEC, video_len / 2)
+    trim = f"atrim=0:{video_len:.3f},asetpts=PTS-STARTPTS"
+    if fade <= 0:                                   # затухание отключено настройкой
+        return f"{trim}[a]"
+    start = max(video_len - fade, 0)
+    return f"{trim},afade=t=out:st={start:.3f}:d={fade:.3f}[a]"
+
+
 def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
     """
-    Собирает видео-слайдшоу: каждая картинка показывается равную долю длины музыки,
-    музыка идёт фоном. Картинки приводятся к единому холсту 1080x1920.
+    Собирает видео-слайдшоу: каждая картинка показывается SLIDE_SEC секунд,
+    музыка идёт фоном и гасится в конце. Картинки приводятся к холсту 1080x1920.
     """
     n = len(images)
-    total = _audio_duration(audio) or n * 3.0
-    per = max(total / n, 1.0)
+    per = SLIDE_SEC
+    video_len = per * n
 
     # Каждая картинка — отдельный вход (показывается per секунд), масштабируется
     # независимо к холсту 1080x1920, потом всё склеивается concat-фильтром.
     cmd = [_ffbin("ffmpeg"), "-y"]
     for img in images:
         cmd += ["-loop", "1", "-t", f"{per:.3f}", "-i", img]
-    cmd += ["-i", audio]  # аудио — последний вход (индекс n)
+    # Музыку зацикливаем: если трек короче слайдшоу, звук не оборвётся на полпути
+    cmd += ["-stream_loop", "-1", "-i", audio]  # аудио — последний вход (индекс n)
 
     parts = []
     for i in range(n):
@@ -103,11 +121,12 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
             f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v{i}]"
         )
     concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
-    filtergraph = ";".join(parts) + ";" + concat
+    audio_part = f"[{n}:a]" + _audio_tail_filter(video_len)
+    filtergraph = ";".join(parts) + ";" + concat + ";" + audio_part
 
     cmd += [
         "-filter_complex", filtergraph,
-        "-map", "[v]", "-map", f"{n}:a",
+        "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
         "-shortest", out_path,
     ]
@@ -116,17 +135,20 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
 
 
 def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: str,
-                           still_sec: float = 3.0) -> str:
+                           still_sec: float = SLIDE_SEC) -> str:
     """Собирает видео из смешанных элементов: статичный кадр показывается still_sec
     секунд, «живой» кадр идёт своим коротким видео. Музыка — фоном, зациклена под всю
-    длину. Всё приводится к холсту 1080x1920."""
+    длину и гасится в конце. Всё приводится к холсту 1080x1920."""
     n = len(items)
     cmd = [_ffbin("ffmpeg"), "-y"]
+    video_len = 0.0
     for path, is_video in items:
         if is_video:
             cmd += ["-i", path]                                  # клип своей длины
+            video_len += _media_duration(path) or still_sec
         else:
             cmd += ["-loop", "1", "-t", f"{still_sec:.3f}", "-i", path]
+            video_len += still_sec
     cmd += ["-stream_loop", "-1", "-i", audio]                   # музыка (вход n), зациклена
 
     parts = []
@@ -136,11 +158,12 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
             f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v{i}]"
         )
     concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
-    filtergraph = ";".join(parts) + ";" + concat
+    audio_part = f"[{n}:a]" + _audio_tail_filter(video_len)
+    filtergraph = ";".join(parts) + ";" + concat + ";" + audio_part
 
     cmd += [
         "-filter_complex", filtergraph,
-        "-map", "[v]", "-map", f"{n}:a",
+        "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
         "-shortest", out_path,
     ]

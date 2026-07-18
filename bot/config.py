@@ -54,6 +54,13 @@ MAX_PARALLEL_DOWNLOADS = int(os.getenv("MAX_PARALLEL_DOWNLOADS", "5"))
 # Цена Premium в Telegram Stars (разовый платёж). ~250⭐ ≈ 5$
 PREMIUM_PRICE_STARS = int(os.getenv("PREMIUM_PRICE_STARS", "250"))
 
+# Слайдшоу TikTok: сколько секунд показывается один слайд. Фиксированно, как в самом
+# TikTok (~3с). Делить длину музыки на число картинок нельзя: 3 слайда + трек на 3 минуты
+# давали по минуте на слайд. Музыка обрезается под длину видео и гасится в конце.
+SLIDE_SEC = float(os.getenv("SLIDE_SEC", "3.0"))
+# Длительность затухания музыки в конце слайдшоу (секунды), 0 = без затухания
+SLIDE_AUDIO_FADE_SEC = float(os.getenv("SLIDE_AUDIO_FADE_SEC", "1.5"))
+
 # Куки залогиненного Instagram-аккаунта (формат Netscape, cookies.txt). Нужны, чтобы
 # скачивать Reels/посты с пометкой «доступ не для всех» (видны только вошедшим в аккаунт).
 # Экспортировать можно расширением «Get cookies.txt» из браузера, где выполнен вход в IG.
