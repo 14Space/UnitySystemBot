@@ -101,9 +101,20 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
     """
     Собирает видео-слайдшоу: каждая картинка показывается SLIDE_SEC секунд,
     музыка идёт фоном и гасится в конце. Картинки приводятся к холсту 1080x1920.
+
+    Одна картинка — особый случай: резать нечего, поэтому трек играет целиком,
+    а кадр висит всю его длину (обрезка и затухание не применяются).
     """
     n = len(images)
     per = SLIDE_SEC
+    single_full_audio = False
+
+    if n == 1:
+        audio_len = _media_duration(audio)
+        if audio_len > 0:
+            per = audio_len            # кадр висит столько, сколько звучит трек
+            single_full_audio = True
+
     video_len = per * n
 
     # Каждая картинка — отдельный вход (показывается per секунд), масштабируется
@@ -111,8 +122,11 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
     cmd = [_ffbin("ffmpeg"), "-y"]
     for img in images:
         cmd += ["-loop", "1", "-t", f"{per:.3f}", "-i", img]
-    # Музыку зацикливаем: если трек короче слайдшоу, звук не оборвётся на полпути
-    cmd += ["-stream_loop", "-1", "-i", audio]  # аудио — последний вход (индекс n)
+    if single_full_audio:
+        cmd += ["-i", audio]                    # звук целиком, зацикливать нечего
+    else:
+        # Музыку зацикливаем: если трек короче слайдшоу, звук не оборвётся на полпути
+        cmd += ["-stream_loop", "-1", "-i", audio]  # аудио — последний вход (индекс n)
 
     parts = []
     for i in range(n):
@@ -121,12 +135,15 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
             f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v{i}]"
         )
     concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
-    audio_part = f"[{n}:a]" + _audio_tail_filter(video_len)
-    filtergraph = ";".join(parts) + ";" + concat + ";" + audio_part
+    filtergraph = ";".join(parts) + ";" + concat
+    if not single_full_audio:
+        filtergraph += ";" + f"[{n}:a]" + _audio_tail_filter(video_len)
 
     cmd += [
         "-filter_complex", filtergraph,
-        "-map", "[v]", "-map", "[a]",
+        "-map", "[v]",
+        # при полном звуке берём дорожку как есть, без фильтра обрезки/затухания
+        "-map", f"{n}:a" if single_full_audio else "[a]",
         "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
         "-shortest", out_path,
     ]
@@ -138,8 +155,16 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
                            still_sec: float = SLIDE_SEC) -> str:
     """Собирает видео из смешанных элементов: статичный кадр показывается still_sec
     секунд, «живой» кадр идёт своим коротким видео. Музыка — фоном, зациклена под всю
-    длину и гасится в конце. Всё приводится к холсту 1080x1920."""
+    длину и гасится в конце. Всё приводится к холсту 1080x1920.
+
+    Одно статичное фото — особый случай: трек играет целиком, кадр висит всю его длину."""
     n = len(items)
+
+    # Единственный статичный кадр: резать музыку нечего, показываем под неё целиком
+    single_full_audio = n == 1 and not items[0][1]
+    if single_full_audio:
+        still_sec = _media_duration(audio) or still_sec
+
     cmd = [_ffbin("ffmpeg"), "-y"]
     video_len = 0.0
     for path, is_video in items:
@@ -149,7 +174,10 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
         else:
             cmd += ["-loop", "1", "-t", f"{still_sec:.3f}", "-i", path]
             video_len += still_sec
-    cmd += ["-stream_loop", "-1", "-i", audio]                   # музыка (вход n), зациклена
+    if single_full_audio:
+        cmd += ["-i", audio]                                     # звук целиком
+    else:
+        cmd += ["-stream_loop", "-1", "-i", audio]               # музыка (вход n), зациклена
 
     parts = []
     for i in range(n):
@@ -158,12 +186,15 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
             f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v{i}]"
         )
     concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
-    audio_part = f"[{n}:a]" + _audio_tail_filter(video_len)
-    filtergraph = ";".join(parts) + ";" + concat + ";" + audio_part
+    filtergraph = ";".join(parts) + ";" + concat
+    if not single_full_audio:
+        filtergraph += ";" + f"[{n}:a]" + _audio_tail_filter(video_len)
 
     cmd += [
         "-filter_complex", filtergraph,
-        "-map", "[v]", "-map", "[a]",
+        "-map", "[v]",
+        # при полном звуке берём дорожку как есть, без обрезки/затухания
+        "-map", f"{n}:a" if single_full_audio else "[a]",
         "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
         "-shortest", out_path,
     ]

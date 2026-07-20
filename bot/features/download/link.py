@@ -796,12 +796,17 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     url, info = entry["url"], entry["info"]
     cache_key = "tt_" + mode  # tt_video / tt_photos
 
+    # Отвечаем на исходное сообщение пользователя, а не на своё с кнопками: своё мы
+    # тут же удаляем, и ответ на него повис бы с пометкой «Удалённое сообщение».
+    # Вопрос с кнопками отправлен реплаем, поэтому оригинал лежит в reply_to_message.
+    target = callback.message.reply_to_message or callback.message
+
     # Кэш выбранного формата — отдаём мгновенно
     async with SessionLocal() as session:
         cached = await get_cached_file_id(session, url, cache_key)
     if cached:
         await callback.answer()
-        await _send_cached_post(callback.message, cached)
+        await _send_cached_post(target, cached)
         await _safe_delete(callback.message)
         return
 
@@ -810,7 +815,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     await limits.acquire(limits.LIGHT)
     try:
         files = await asyncio.to_thread(tiktok.download_from, info, mode)
-        tokens = await _send_media_files(callback.message, files, lang)
+        tokens = await _send_media_files(target, files, lang)
         if tokens:
             async with SessionLocal() as session:
                 await save_cached_file_id(session, url, "\n".join(tokens), cache_key)
