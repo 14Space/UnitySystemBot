@@ -1,12 +1,66 @@
+import functools
+import logging
 import os
 import re
 import subprocess
+import time
 import requests
+import HdRezkaApi.api as _hdrezka_api
 from HdRezkaApi import HdRezkaApi
 from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
+from bot.features.download.downloaders import hdrezka_gate
+
+logger = logging.getLogger(__name__)
 
 # Коды языков субтитров → метка для контейнера mp4
 _LANG = {"ru": "rus", "en": "eng", "ua": "ukr", "uk": "ukr"}
+
+
+# --- Заплатка под новую разметку сайта ---------------------------------------
+# HDRezka переехал: атрибут data-translator_id (id озвучки) раньше был на <li>,
+# теперь — на вложенной ссылке <a> внутри <li>. Библиотека HdRezkaApi (11.2.3 —
+# уже последняя) читает его со старого места и падает с KeyError. Подменяем её
+# свойство `translators` на устойчивую версию: ищем ссылки с data-translator_id
+# на любой глубине списка. Остальное (сезоны/серии) сайт не менял.
+def _translators_patched(self):
+    arr = {}
+    tl = self.soup.find(id="translators-list")
+    if tl:
+        # Новое место id — на вложенной ссылке <a data-translator_id="…">
+        for a in tl.find_all(attrs={"data-translator_id": True}):
+            tid = int(a.attrs["data-translator_id"])
+            name = a.text.strip()
+            premium = "b-prem_translator" in (a.get("class") or [])
+            img = a.find("img")
+            if img:
+                lang = img.attrs.get("title")
+                if lang and lang not in name:
+                    name += f" ({lang})"
+            arr[tid] = {"name": name, "premium": premium}
+
+    # Одноголосый фильм/сериал: списка озвучек нет — определяем единственную озвучку
+    # из тела страницы (как в оригинале библиотеки; эту ветку сайт не менял).
+    if not arr:
+        def getTranslationName(s):
+            table = s.find(class_="b-post__info")
+            for tr in table.findAll("tr"):
+                if "переводе" in tr.get_text():
+                    td = tr.find_all("td")[-1]
+                    return td.get_text().strip()
+
+        def getTranslationID(s):
+            initCDNEvents = {"video.tv_series": "initCDNSeriesEvents",
+                             "video.movie": "initCDNMoviesEvents"}
+            tmp = s.text.split(f"sof.tv.{initCDNEvents[f'video.{self.type.name}']}")[-1].split("{")[0]
+            return int(tmp.split(",")[1].strip())
+
+        arr[getTranslationID(self.page)] = {"name": getTranslationName(self.soup), "premium": False}
+    return arr
+
+
+_cp = functools.cached_property(_translators_patched)
+_cp.__set_name__(_hdrezka_api.HdRezkaApi, "translators")
+_hdrezka_api.HdRezkaApi.translators = _cp
 
 
 def parse_season_episode(url: str) -> tuple[int | None, int | None]:
@@ -17,13 +71,48 @@ def parse_season_episode(url: str) -> tuple[int | None, int | None]:
 
 
 def open_media(url: str) -> HdRezkaApi:
-    """Создаёт объект HDRezka (одна загрузка страницы). Переиспользуем на всех шагах."""
-    return HdRezkaApi(url)
+    """Создаёт объект HDRezka (одна загрузка страницы). Переиспользуем на всех шагах.
+
+    Сайт закрыт анти-бот-проверкой Anubis — сначала добываем куки-пропуск через
+    браузер (hdrezka_gate). Если сохранённые куки протухли (страница снова
+    отдаёт заглушку и разбор падает), один раз проходим проверку заново."""
+    headers = {"User-Agent": hdrezka_gate.USER_AGENT}
+    for force in (False, True):
+        cookies = hdrezka_gate.get_cookies(url, force=force)
+        api = HdRezkaApi(url, headers=headers, cookies=cookies)
+        try:
+            _ = api.type      # триггерит разбор страницы; на заглушке кинет ошибку
+            return api
+        except Exception:
+            if force:         # уже перепроходили проверку — не помогло, отдаём ошибку выше
+                raise
+            logger.info("HDRezka: куки не подошли, прохожу проверку заново")
+    return api  # недостижимо, но для наглядности
 
 
-def _clean_name(n: str) -> str:
-    """Убираем «(+субтитры)» — в Telegram мягкие субтитры не видны, не путаем людей."""
+def _clean_name(n: str | None) -> str:
+    """Убираем «(+субтитры)» — в Telegram мягкие субтитры не видны, не путаем людей.
+    У одноголосого контента имя озвучки может отсутствовать (None) — тогда даём
+    нейтральную подпись «Оригинал»."""
+    if not n:
+        return "Оригинал"
     return n.replace(" (+субтитры)", "").replace(" (+subtitles)", "").strip()
+
+
+def _retry(fn, tries: int = 3, delay: float = 1.5):
+    """Повторяет операцию: первый AJAX-запрос к HDRezka после прохождения проверки
+    иногда возвращает заглушку вместо JSON — повтор через паузу обычно проходит."""
+    last = None
+    for attempt in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            if attempt < tries - 1:
+                logger.info("HDRezka: запрос не прошёл (%s), повтор %d/%d",
+                            type(e).__name__, attempt + 2, tries)
+                time.sleep(delay)
+    raise last
 
 
 def get_info(r: HdRezkaApi, url: str) -> dict:
@@ -35,7 +124,8 @@ def get_info(r: HdRezkaApi, url: str) -> dict:
         "thumbnail": getattr(r, "thumbnailHQ", None) or getattr(r, "thumbnail", None),
     }
     if is_series:
-        info["seasons"] = [s["season"] for s in r.episodesInfo]
+        # Список сезонов приходит AJAX-запросом — оборачиваем в повтор (см. _retry)
+        info["seasons"] = [s["season"] for s in _retry(lambda: r.episodesInfo)]
     else:
         info["translators"] = [
             (tid, _clean_name(details["name"]))
@@ -64,7 +154,7 @@ def get_translators(r: HdRezkaApi, season: int, episode: int) -> list:
 
 def get_stream(r: HdRezkaApi, translation: int, season=None, episode=None):
     """Поток для озвучки (одна сетевая операция). Объект потока кэшируем и потом качаем из него."""
-    return r.getStream(season=season, episode=episode, translation=translation)
+    return _retry(lambda: r.getStream(season=season, episode=episode, translation=translation))
 
 
 def stream_qualities(stream) -> list[str]:

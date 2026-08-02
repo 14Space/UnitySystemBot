@@ -15,6 +15,7 @@ from bot.features.download.keyboards.quality import build_quality_keyboard, FREE
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar
 from bot.utils import limits, traffic
+from bot.utils import inflight
 from bot.utils.i18n import t, lang_of, t_kind
 from bot.database import SessionLocal
 from bot.database.repository import (
@@ -201,9 +202,20 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
         if not await get_audio_track(session, message.chat.id):
             return
 
+    # Ключ кэша: для TikTok — по номеру видео (устойчив к разным коротким ссылкам,
+    # как и само видео); для остальных платформ — по ссылке. Номер берём из данных
+    # поста (они уже в памяти после показа видео, повторного запроса к API нет).
+    cache_url = url
+    if platform == Platform.TIKTOK:
+        try:
+            info = await asyncio.to_thread(tiktok.fetch_tiktok, url)
+            cache_url = f"tt:{info['id']}"
+        except Exception:
+            pass  # не смогли определить номер — откатываемся на ссылку
+
     # Кэш аудиодорожки — повторная отправка мгновенная
     async with SessionLocal() as session:
-        cached = await get_cached_file_id(session, url, "audiotrack")
+        cached = await get_cached_file_id(session, cache_url, "audiotrack")
     if cached:
         await message.reply_audio(cached)
         return
@@ -217,7 +229,7 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
         sent = await message.reply_audio(FSInputFile(path), title=title)
         if sent.audio:
             async with SessionLocal() as session:
-                await save_cached_file_id(session, url, sent.audio.file_id, "audiotrack")
+                await save_cached_file_id(session, cache_url, sent.audio.file_id, "audiotrack")
         _cleanup(path)
     except Exception:
         logger.exception("Не удалось отправить аудиодорожку")
@@ -529,69 +541,80 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
 
 
 async def _handle_simple_video(message: Message, url: str, download_fn, cache_key: str, lang: str):
-    """Качает короткое видео сразу (Shorts, Instagram Reel): кэш, лимит, отправка."""
-    async with SessionLocal() as session:
-        cached_id = await get_cached_file_id(session, url, cache_key)
-    if cached_id:
-        await message.reply_video(cached_id, supports_streaming=True)
-        return
+    """Качает короткое видео сразу (Shorts, Instagram Reel): кэш, лимит, отправка.
+    Одну и ту же ссылку качает только один запрос — остальные ждут и берут из кэша
+    (см. bot.utils.inflight)."""
+    async def get_cached():
+        async with SessionLocal() as session:
+            return await get_cached_file_id(session, url, cache_key)
 
-    # Лёгкие задачи не ограничиваем «одна за раз» — можно кидать подряд, общий лимит
-    # (limits.LIGHT) сам поставит лишние в очередь.
-    await limits.acquire(limits.LIGHT)
-    try:
-        file_path = await asyncio.to_thread(download_fn, url)
-        sent = await message.reply_video(FSInputFile(file_path), **await _video_kwargs(file_path))
-        if sent.video:
-            async with SessionLocal() as session:
-                await save_cached_file_id(session, url, sent.video.file_id, cache_key)
-        _cleanup(file_path)
-    except Exception as e:
-        logger.exception("%s download failed", cache_key)
-        await message.reply(limits.friendly_error(e, lang))
-    finally:
-        await limits.release(limits.LIGHT)
+    async def send_cached(cached_id):
+        await message.reply_video(cached_id, supports_streaming=True)
+
+    async def produce():
+        # Лёгкие задачи не ограничиваем «одна за раз» — можно кидать подряд, общий
+        # лимит (limits.LIGHT) сам поставит лишние в очередь.
+        await limits.acquire(limits.LIGHT)
+        try:
+            file_path = await asyncio.to_thread(download_fn, url)
+            sent = await message.reply_video(FSInputFile(file_path), **await _video_kwargs(file_path))
+            if sent.video:
+                async with SessionLocal() as session:
+                    await save_cached_file_id(session, url, sent.video.file_id, cache_key)
+            _cleanup(file_path)
+        except Exception as e:
+            logger.exception("%s download failed", cache_key)
+            await message.reply(limits.friendly_error(e, lang))
+        finally:
+            await limits.release(limits.LIGHT)
+
+    await inflight.deduped(url, cache_key, get_cached, send_cached, produce)
 
 
 async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
-    """Качает одно медиа (TikTok, Pinterest) и шлёт как фото/гиф/видео — по типу файла."""
+    """Качает одно медиа (TikTok, Pinterest) и шлёт как фото/гиф/видео — по типу файла.
+    Дедуп по ссылке: параллельные запросы одной ссылки не качают повторно (inflight)."""
     # Кэш: в file_id храним префикс типа — "P:" фото, "A:" гиф, "V:" видео
-    async with SessionLocal() as session:
-        cached = await get_cached_file_id(session, url, cache_key)
-    if cached:
+    async def get_cached():
+        async with SessionLocal() as session:
+            return await get_cached_file_id(session, url, cache_key)
+
+    async def send_cached(cached):
         if cached.startswith("P:"):
             await message.reply_photo(cached[2:])
         elif cached.startswith("A:"):
             await message.reply_animation(cached[2:])
         else:
             await message.reply_video(cached[2:], supports_streaming=True)
-        return
 
-    await limits.acquire(limits.LIGHT)
-    try:
-        file_path = await asyncio.to_thread(download_media, url)
-        if file_path.lower().endswith(".gif"):
-            # GIF → чистый mp4 (без грубой авто-конвертации Telegram), шлём анимацией
-            mp4 = await asyncio.to_thread(convert_gif_to_mp4, file_path)
-            sent = await message.reply_animation(FSInputFile(mp4))
-            fid = "A:" + sent.animation.file_id if sent.animation else None
-            if mp4 != file_path:
-                _cleanup(mp4)
-        elif is_image(file_path):
-            sent = await message.reply_photo(FSInputFile(file_path))
-            fid = "P:" + sent.photo[-1].file_id if sent.photo else None
-        else:
-            sent = await message.reply_video(FSInputFile(file_path), **await _video_kwargs(file_path))
-            fid = "V:" + sent.video.file_id if sent.video else None
-        if fid:
-            async with SessionLocal() as session:
-                await save_cached_file_id(session, url, fid, cache_key)
-        _cleanup(file_path)
-    except Exception as e:
-        logger.exception("%s download failed", cache_key)
-        await message.reply(limits.friendly_error(e, lang))
-    finally:
-        await limits.release(limits.LIGHT)
+    async def produce():
+        await limits.acquire(limits.LIGHT)
+        try:
+            file_path = await asyncio.to_thread(download_media, url)
+            if file_path.lower().endswith(".gif"):
+                # GIF → чистый mp4 (без грубой авто-конвертации Telegram), шлём анимацией
+                mp4 = await asyncio.to_thread(convert_gif_to_mp4, file_path)
+                sent = await message.reply_animation(FSInputFile(mp4))
+                fid = "A:" + sent.animation.file_id if sent.animation else None
+                if mp4 != file_path:
+                    _cleanup(mp4)
+            elif is_image(file_path):
+                sent = await message.reply_photo(FSInputFile(file_path))
+                fid = "P:" + sent.photo[-1].file_id if sent.photo else None
+            else:
+                sent = await message.reply_video(FSInputFile(file_path), **await _video_kwargs(file_path))
+                fid = "V:" + sent.video.file_id if sent.video else None
+            if fid:
+                async with SessionLocal() as session:
+                    await save_cached_file_id(session, url, fid, cache_key)
+            _cleanup(file_path)
+        except Exception as e:
+            logger.exception("%s download failed", cache_key)
+            await message.reply(limits.friendly_error(e, lang))
+        finally:
+            await limits.release(limits.LIGHT)
+
+    await inflight.deduped(url, cache_key, get_cached, send_cached, produce)
 
 
 async def _send_cached_post(message: Message, cached: str):
@@ -616,67 +639,44 @@ async def _send_cached_post(message: Message, cached: str):
 
 
 async def _handle_files(message: Message, url: str, download_fn, error_key: str, lang: str):
-    """Качает набор файлов (Instagram пост, TikTok) и отдаёт фото/видео или альбомом."""
-    # Кэш: этот пост/карусель уже качали — переотправляем мгновенно, без скачивания
-    async with SessionLocal() as session:
-        cached = await get_cached_file_id(session, url, "post")
-    if cached:
+    """Качает набор файлов (Instagram пост, TikTok) и отдаёт фото/видео или альбомом.
+    Дедуп по ссылке: параллельные запросы одной ссылки не качают повторно (inflight)."""
+    async def get_cached():
+        # Кэш: этот пост/карусель уже качали — переотправляем мгновенно, без скачивания
+        async with SessionLocal() as session:
+            return await get_cached_file_id(session, url, "post")
+
+    async def send_cached(cached):
         await _send_cached_post(message, cached)
-        return
 
-    await limits.acquire(limits.LIGHT)
-    try:
-        files = await asyncio.to_thread(download_fn, url)
-        if not files:
-            await message.reply(t("no_media", lang))
-            return
+    async def produce():
+        await limits.acquire(limits.LIGHT)
+        try:
+            files = await asyncio.to_thread(download_fn, url)
+            if not files:
+                await message.reply(t("no_media", lang))
+                return
 
-        # Собираем file_id'ы отправленного, чтобы потом сохранить в кэш
-        tokens: list[str] = []
+            tokens = await _send_media_files(message, files, lang)
 
-        # Один файл — отправляем напрямую (фото или видео)
-        if len(files) == 1:
-            f = files[0]
-            if is_image(f):
-                sent = await message.reply_photo(FSInputFile(f))
-                if sent.photo:
-                    tokens.append("P:" + sent.photo[-1].file_id)
-            else:
-                sent = await message.reply_video(FSInputFile(f), **await _video_kwargs(f))
-                if sent.video:
-                    tokens.append("V:" + sent.video.file_id)
-        else:
-            # Карусель/слайдшоу — альбомами по 10 (лимит Telegram на media group)
-            for chunk in _chunked(files, 10):
-                media = []
-                for f in chunk:
-                    if is_image(f):
-                        media.append(InputMediaPhoto(media=FSInputFile(f)))
-                    else:
-                        media.append(InputMediaVideo(media=FSInputFile(f), **await _video_kwargs(f)))
-                sent_msgs = await message.reply_media_group(media)
-                for m in sent_msgs:
-                    if m.photo:
-                        tokens.append("P:" + m.photo[-1].file_id)
-                    elif m.video:
-                        tokens.append("V:" + m.video.file_id)
+            # Сохраняем набор в кэш — следующему такой же пост отдадим без скачивания
+            if tokens:
+                async with SessionLocal() as session:
+                    await save_cached_file_id(session, url, "\n".join(tokens), "post")
 
-        # Сохраняем набор в кэш — следующему такой же пост отдадим без скачивания
-        if tokens:
-            async with SessionLocal() as session:
-                await save_cached_file_id(session, url, "\n".join(tokens), "post")
+            for f in files:
+                _cleanup(f)
+        except Exception as e:
+            logger.exception("%s download failed", url)
+            msg = limits.friendly_error(e, lang)
+            # ошибка не распознана — даём платформенную подсказку (напр. про приватность)
+            if msg == t("generic_dl_failed", lang):
+                msg = t(error_key, lang)
+            await message.reply(msg)
+        finally:
+            await limits.release(limits.LIGHT)
 
-        for f in files:
-            _cleanup(f)
-    except Exception as e:
-        logger.exception("%s download failed", url)
-        msg = limits.friendly_error(e, lang)
-        # ошибка не распознана — даём платформенную подсказку (напр. про приватность)
-        if msg == t("generic_dl_failed", lang):
-            msg = t(error_key, lang)
-        await message.reply(msg)
-    finally:
-        await limits.release(limits.LIGHT)
+    await inflight.deduped(url, "post", get_cached, send_cached, produce)
 
 
 async def _send_media_files(message: Message, files: list[str], lang: str) -> list[str]:
@@ -712,19 +712,19 @@ async def _send_media_files(message: Message, files: list[str], lang: str) -> li
 
 async def _handle_tiktok(message: Message, url: str, lang: str):
     """TikTok: обычное видео — сразу; слайдшоу — спрашиваем формат (видео/фото)."""
-    # Быстрый кэш обычного видео (уже качали) — мгновенно, без обращения к API
-    async with SessionLocal() as session:
-        cached = await get_cached_file_id(session, url, "tt_auto")
-    if cached:
-        await _send_cached_post(message, cached)
-        return
-
+    # Сначала узнаём данные поста (лёгкий запрос, к тому же кэшируется в памяти):
+    # из них берём НАСТОЯЩИЙ номер видео — по нему и кэшируем (см. cache_url ниже).
     try:
         info = await asyncio.to_thread(tiktok.fetch_tiktok, url)
     except Exception as e:
         logger.exception("TikTok fetch failed")
         await message.reply(limits.friendly_error(e, lang))
         return
+
+    # Ключ кэша — по номеру видео (info["id"]), а не по тексту ссылки. TikTok на одно
+    # и то же видео выдаёт РАЗНЫЕ короткие ссылки (vt.tiktok.com/…); по тексту они
+    # выглядят разными и раньше качались повторно. По номеру видео — один раз.
+    cache_url = f"tt:{info['id']}"
 
     # Слайдшоу: в личке всегда даём выбор (видео/фото). В группе — по настройке
     # /setconfig: video (сразу видео, по умолчанию), photos (сразу фото) или ask
@@ -739,7 +739,8 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         if ss_mode == "ask":
             sid = uuid.uuid4().hex[:8]
             # запоминаем автора — в группе кнопки слушаются только его
-            _remember(TIKTOK_STORE, sid, {"url": url, "info": info, "owner": message.from_user.id})
+            _remember(TIKTOK_STORE, sid, {"url": url, "cache_url": cache_url,
+                                          "info": info, "owner": message.from_user.id})
             await message.reply(
                 t("tt_slideshow_ask", lang),
                 reply_markup=build_tiktok_slideshow_keyboard(sid, lang),
@@ -752,29 +753,32 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
     else:
         mode, cache_key = "auto", "tt_auto"    # обычное видео / Live
 
-    # Кэш выбранного варианта (обычное видео уже проверено выше по tt_auto;
-    # для группового слайдшоу проверяем tt_video, чтобы повтор был мгновенным)
-    if cache_key != "tt_auto":
+    # Кэш по номеру видео + дедуп: параллельные запросы одного видео (в т.ч. с разными
+    # короткими ссылками) ждут ведущего и берут готовое из кэша.
+    async def get_cached():
         async with SessionLocal() as session:
-            cached = await get_cached_file_id(session, url, cache_key)
-        if cached:
-            await _send_cached_post(message, cached)
-            return
+            return await get_cached_file_id(session, cache_url, cache_key)
 
-    await limits.acquire(limits.LIGHT)
-    try:
-        files = await asyncio.to_thread(tiktok.download_from, info, mode)
-        tokens = await _send_media_files(message, files, lang)
-        if tokens:
-            async with SessionLocal() as session:
-                await save_cached_file_id(session, url, "\n".join(tokens), cache_key)
-        for f in files:
-            _cleanup(f)
-    except Exception as e:
-        logger.exception("TikTok download failed")
-        await message.reply(limits.friendly_error(e, lang))
-    finally:
-        await limits.release(limits.LIGHT)
+    async def send_cached(cached):
+        await _send_cached_post(message, cached)
+
+    async def produce():
+        await limits.acquire(limits.LIGHT)
+        try:
+            files = await asyncio.to_thread(tiktok.download_from, info, mode)
+            tokens = await _send_media_files(message, files, lang)
+            if tokens:
+                async with SessionLocal() as session:
+                    await save_cached_file_id(session, cache_url, "\n".join(tokens), cache_key)
+            for f in files:
+                _cleanup(f)
+        except Exception as e:
+            logger.exception("TikTok download failed")
+            await message.reply(limits.friendly_error(e, lang))
+        finally:
+            await limits.release(limits.LIGHT)
+
+    await inflight.deduped(cache_url, cache_key, get_cached, send_cached, produce)
 
 
 @router.callback_query(F.data.startswith("ttdl:"))
@@ -793,7 +797,9 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         await callback.answer()
         return
 
-    url, info = entry["url"], entry["info"]
+    info = entry["info"]
+    # Ключ по номеру видео (как в _handle_tiktok): устойчив к разным коротким ссылкам.
+    cache_url = entry.get("cache_url") or f"tt:{info['id']}"
     cache_key = "tt_" + mode  # tt_video / tt_photos
 
     # Отвечаем на исходное сообщение пользователя, а не на своё с кнопками: своё мы
@@ -803,7 +809,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
 
     # Кэш выбранного формата — отдаём мгновенно
     async with SessionLocal() as session:
-        cached = await get_cached_file_id(session, url, cache_key)
+        cached = await get_cached_file_id(session, cache_url, cache_key)
     if cached:
         await callback.answer()
         await _send_cached_post(target, cached)
@@ -818,7 +824,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         tokens = await _send_media_files(target, files, lang)
         if tokens:
             async with SessionLocal() as session:
-                await save_cached_file_id(session, url, "\n".join(tokens), cache_key)
+                await save_cached_file_id(session, cache_url, "\n".join(tokens), cache_key)
         await _safe_delete(callback.message)  # убираем сообщение с кнопками
         for f in files:
             _cleanup(f)

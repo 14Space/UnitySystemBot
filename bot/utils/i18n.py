@@ -505,7 +505,7 @@ TEXTS = {
     "cur_head": {
         "ru": "{src} это:",
         "uk": "{src} це:",
-        "en": "{src} =",
+        "en": "{src} equals:",
     },
     "cfg_download": {
         "ru": "Скачивание",

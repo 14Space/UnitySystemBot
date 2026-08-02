@@ -115,7 +115,12 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
             per = audio_len            # кадр висит столько, сколько звучит трек
             single_full_audio = True
 
-    video_len = per * n
+    # Хвост под затухание: каждый слайд идёт per секунд на обычной громкости, а в
+    # самом конце добавляем ещё tail секунд (держим последний кадр), чтобы музыка
+    # успела плавно погаснуть, НЕ «съедая» 3с последнего слайда. При выключенном
+    # затухании или одном фото (звук целиком) хвост не нужен.
+    tail = 0.0 if single_full_audio else max(SLIDE_AUDIO_FADE_SEC, 0.0)
+    video_len = per * n + tail
 
     # Каждая картинка — отдельный вход (показывается per секунд), масштабируется
     # независимо к холсту 1080x1920, потом всё склеивается concat-фильтром.
@@ -134,8 +139,12 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
             f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
             f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v{i}]"
         )
-    concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
+    # При хвосте склеиваем в промежуточный [vcat] и держим последний кадр tail секунд
+    vlabel = "[vcat]" if tail > 0 else "[v]"
+    concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0{vlabel}"
     filtergraph = ";".join(parts) + ";" + concat
+    if tail > 0:
+        filtergraph += f";[vcat]tpad=stop_mode=clone:stop_duration={tail:.3f}[v]"
     if not single_full_audio:
         filtergraph += ";" + f"[{n}:a]" + _audio_tail_filter(video_len)
 
@@ -179,14 +188,22 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
     else:
         cmd += ["-stream_loop", "-1", "-i", audio]               # музыка (вход n), зациклена
 
+    # Хвост под затухание: держим последний кадр ещё tail секунд, чтобы музыка
+    # гасла ПОСЛЕ последнего слайда, не укорачивая его (см. _build_slideshow).
+    tail = 0.0 if single_full_audio else max(SLIDE_AUDIO_FADE_SEC, 0.0)
+    video_len += tail
+
     parts = []
     for i in range(n):
         parts.append(
             f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
             f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v{i}]"
         )
-    concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[v]"
+    vlabel = "[vcat]" if tail > 0 else "[v]"
+    concat = "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0{vlabel}"
     filtergraph = ";".join(parts) + ";" + concat
+    if tail > 0:
+        filtergraph += f";[vcat]tpad=stop_mode=clone:stop_duration={tail:.3f}[v]"
     if not single_full_audio:
         filtergraph += ";" + f"[{n}:a]" + _audio_tail_filter(video_len)
 

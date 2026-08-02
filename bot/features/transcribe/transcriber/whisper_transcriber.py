@@ -141,6 +141,27 @@ def warmup():
         logger.exception("Не удалось прогреть модель Whisper")
 
 
+# «Безопасный» набор опций на случай, если «умный» режим упал. Известный сбой
+# faster-whisper (IndexError: boolean index did not match…) возникает на некоторых
+# записях из-за VAD-фильтра и пословных меток времени. Тут их выключаем: разбор
+# грубее (без вырезания тишины), зато проходит. Опции, требующие word_timestamps
+# (hallucination_silence_threshold), тоже убраны.
+_SAFE_OPTS = dict(
+    vad_filter=False,
+    condition_on_previous_text=False,
+    no_speech_threshold=0.6,
+    log_prob_threshold=-1.0,
+    compression_ratio_threshold=2.4,
+)
+
+
+def _run(model, file_path: str, language, opts) -> tuple[list, object]:
+    """Запускает распознавание и СРАЗУ вычитывает сегменты (генератор ленивый —
+    ошибки библиотеки вылезают именно при чтении). Возвращает список сегментов."""
+    segments, info = model.transcribe(file_path, language=language, **opts)
+    return list(segments), info
+
+
 def transcribe(file_path: str) -> str:
     """
     Расшифровывает речь из файла (голосовое .ogg или кружок .mp4) в текст.
@@ -151,28 +172,34 @@ def transcribe(file_path: str) -> str:
     """
     model = _get_model()
 
-    # Сначала Whisper сам определяет язык (language=None).
-    segments, info = model.transcribe(file_path, language=None, **_DECODE_OPTS)
+    try:
+        # Сначала Whisper сам определяет язык (language=None).
+        segments, info = _run(model, file_path, None, _DECODE_OPTS)
 
-    if _ALLOWED_LANGS:
-        detected = getattr(info, "language", None)
-        prob = getattr(info, "language_probability", 1.0) or 0.0
-        primary = _ALLOWED_LANGS[0]
-        # Когда откатываемся в основной язык (ru):
-        #  • язык не из разрешённых — берём основной;
-        #  • ИЛИ это «кириллический брат» (ru/uk) с низкой уверенностью — лечим путаницу.
-        # Явно другой язык (en) при низкой уверенности НЕ трогаем: насильный перевод
-        # английского в русский даёт мусор ("Продолжение следует...").
-        confusable_doubt = (
-            detected in _CONFUSABLE and primary in _CONFUSABLE
-            and prob < WHISPER_LANG_MIN_PROB
-        )
-        if detected not in _ALLOWED_LANGS or confusable_doubt:
-            logger.info(
-                "Язык '%s' (увер. %.2f) ненадёжен — расшифровываю как '%s'",
-                detected, prob, primary,
+        if _ALLOWED_LANGS:
+            detected = getattr(info, "language", None)
+            prob = getattr(info, "language_probability", 1.0) or 0.0
+            primary = _ALLOWED_LANGS[0]
+            # Когда откатываемся в основной язык (ru):
+            #  • язык не из разрешённых — берём основной;
+            #  • ИЛИ это «кириллический брат» (ru/uk) с низкой уверенностью — лечим путаницу.
+            # Явно другой язык (en) при низкой уверенности НЕ трогаем: насильный перевод
+            # английского в русский даёт мусор ("Продолжение следует...").
+            confusable_doubt = (
+                detected in _CONFUSABLE and primary in _CONFUSABLE
+                and prob < WHISPER_LANG_MIN_PROB
             )
-            segments, info = model.transcribe(file_path, language=primary, **_DECODE_OPTS)
+            if detected not in _ALLOWED_LANGS or confusable_doubt:
+                logger.info(
+                    "Язык '%s' (увер. %.2f) ненадёжен — расшифровываю как '%s'",
+                    detected, prob, primary,
+                )
+                segments, info = _run(model, file_path, primary, _DECODE_OPTS)
+    except Exception:
+        # «Умный» режим упал на этой записи (например, известный IndexError из-за
+        # VAD/пословных меток) — не сдаёмся, повторяем в безопасном режиме.
+        logger.warning("Whisper: сбой в основном режиме, повтор в безопасном", exc_info=True)
+        segments, info = _run(model, file_path, None, _SAFE_OPTS)
 
     text = " ".join(segment.text.strip() for segment in segments).strip()
     return _clean(text)
