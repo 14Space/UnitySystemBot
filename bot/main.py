@@ -74,7 +74,7 @@ async def _setup_commands(bot: Bot, features: set[str], with_config: bool, is_hu
     """Меню команд под конкретного бота (у скачивателя — Premium и т.д.)."""
     common = [BotCommand(command="help", description="Справка по командам")]
     if AI in features:
-        common.append(BotCommand(command="ai", description="Спросить ИИ 🤖"))
+        common.append(BotCommand(command="ai", description="Спросить ИИ"))
     if DOWNLOAD in features:
         common.append(BotCommand(command="premium", description="Купить Premium ✨"))
     await bot.set_my_commands(common, scope=BotCommandScopeDefault())

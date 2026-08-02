@@ -202,23 +202,29 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
         if not await get_audio_track(session, message.chat.id):
             return
 
-    # Ключ кэша: для TikTok — по номеру видео (устойчив к разным коротким ссылкам,
-    # как и само видео); для остальных платформ — по ссылке. Номер берём из данных
-    # поста (они уже в памяти после показа видео, повторного запроса к API нет).
+    # Быстрый кэш по ссылке — мгновенно и БЕЗ запроса к TikTok (частый случай:
+    # та же ссылка; устойчиво к сбоям API TikTok).
+    async with SessionLocal() as session:
+        cached = await get_cached_file_id(session, url, "audiotrack")
+    if cached:
+        await message.reply_audio(cached)
+        return
+
+    # Для TikTok — запасной ключ по номеру видео (дедуп разных коротких ссылок).
+    # Номер берём из данных поста (они уже в памяти после показа видео).
     cache_url = url
     if platform == Platform.TIKTOK:
         try:
             info = await asyncio.to_thread(tiktok.fetch_tiktok, url)
             cache_url = f"tt:{info['id']}"
+            if cache_url != url:
+                async with SessionLocal() as session:
+                    cached = await get_cached_file_id(session, cache_url, "audiotrack")
+                if cached:
+                    await message.reply_audio(cached)
+                    return
         except Exception:
             pass  # не смогли определить номер — откатываемся на ссылку
-
-    # Кэш аудиодорожки — повторная отправка мгновенная
-    async with SessionLocal() as session:
-        cached = await get_cached_file_id(session, cache_url, "audiotrack")
-    if cached:
-        await message.reply_audio(cached)
-        return
 
     await limits.acquire(limits.LIGHT)
     try:
@@ -229,7 +235,7 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
         sent = await message.reply_audio(FSInputFile(path), title=title)
         if sent.audio:
             async with SessionLocal() as session:
-                await save_cached_file_id(session, cache_url, sent.audio.file_id, "audiotrack")
+                await _tt_cache_save(session, url, cache_url, sent.audio.file_id, "audiotrack")
         _cleanup(path)
     except Exception:
         logger.exception("Не удалось отправить аудиодорожку")
@@ -710,10 +716,28 @@ async def _send_media_files(message: Message, files: list[str], lang: str) -> li
     return tokens
 
 
+async def _tt_cache_save(session, url: str, cache_url: str, value: str, cache_key: str):
+    """Сохраняем file_id по ДВУМ ключам: по ссылке (мгновенный повтор той же ссылки
+    без запроса к TikTok) и по номеру видео (дедуп разных коротких ссылок)."""
+    await save_cached_file_id(session, cache_url, value, cache_key)
+    if url != cache_url:
+        await save_cached_file_id(session, url, value, cache_key)
+
+
 async def _handle_tiktok(message: Message, url: str, lang: str):
     """TikTok: обычное видео — сразу; слайдшоу — спрашиваем формат (видео/фото)."""
-    # Сначала узнаём данные поста (лёгкий запрос, к тому же кэшируется в памяти):
-    # из них берём НАСТОЯЩИЙ номер видео — по нему и кэшируем (см. cache_url ниже).
+    # Быстрый кэш ПО ССЫЛКЕ — мгновенно и БЕЗ запроса к TikTok. Частый случай:
+    # переслали ту же ссылку. Устойчиво к сбоям API TikTok (он иногда отвечает
+    # ошибкой на частые запросы). Проверяем все возможные форматы поста.
+    async with SessionLocal() as session:
+        for ck in ("tt_auto", "tt_video", "tt_photos"):
+            cached = await get_cached_file_id(session, url, ck)
+            if cached:
+                await _send_cached_post(message, cached)
+                return
+
+    # По ссылке не нашли — узнаём данные поста (запрос к TikTok, кэшируется в памяти):
+    # из них берём НАСТОЯЩИЙ номер видео — по нему кэшируем как запасной ключ.
     try:
         info = await asyncio.to_thread(tiktok.fetch_tiktok, url)
     except Exception as e:
@@ -769,7 +793,7 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
             tokens = await _send_media_files(message, files, lang)
             if tokens:
                 async with SessionLocal() as session:
-                    await save_cached_file_id(session, cache_url, "\n".join(tokens), cache_key)
+                    await _tt_cache_save(session, url, cache_url, "\n".join(tokens), cache_key)
             for f in files:
                 _cleanup(f)
         except Exception as e:
@@ -797,7 +821,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         await callback.answer()
         return
 
-    info = entry["info"]
+    url, info = entry["url"], entry["info"]
     # Ключ по номеру видео (как в _handle_tiktok): устойчив к разным коротким ссылкам.
     cache_url = entry.get("cache_url") or f"tt:{info['id']}"
     cache_key = "tt_" + mode  # tt_video / tt_photos
@@ -807,9 +831,10 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     # Вопрос с кнопками отправлен реплаем, поэтому оригинал лежит в reply_to_message.
     target = callback.message.reply_to_message or callback.message
 
-    # Кэш выбранного формата — отдаём мгновенно
+    # Кэш выбранного формата — отдаём мгновенно (сначала по ссылке, потом по номеру)
     async with SessionLocal() as session:
-        cached = await get_cached_file_id(session, cache_url, cache_key)
+        cached = (await get_cached_file_id(session, url, cache_key)
+                  or await get_cached_file_id(session, cache_url, cache_key))
     if cached:
         await callback.answer()
         await _send_cached_post(target, cached)
@@ -824,7 +849,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         tokens = await _send_media_files(target, files, lang)
         if tokens:
             async with SessionLocal() as session:
-                await save_cached_file_id(session, cache_url, "\n".join(tokens), cache_key)
+                await _tt_cache_save(session, url, cache_url, "\n".join(tokens), cache_key)
         await _safe_delete(callback.message)  # убираем сообщение с кнопками
         for f in files:
             _cleanup(f)
