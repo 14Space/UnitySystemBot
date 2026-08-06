@@ -23,9 +23,12 @@ spotipy==2.26.0            # метаданные Spotify
 
 # Расшифровка голосовых/кружков (Whisper локально, без API-ключей)
 faster-whisper==1.1.1
-# CUDA-библиотеки для работы Whisper на видеокарте NVIDIA (можно убрать на CPU-серверах)
-nvidia-cublas-cu12
-nvidia-cudnn-cu12
+# CUDA-библиотеки для работы Whisper на видеокарте NVIDIA. Нужны только на обычных
+# x86-процессорах с GPU (Windows/Linux). Маркер platform_machine=="x86_64" делает их
+# необязательными: на ARM-серверах (например, Oracle Ampere A1) pip их просто
+# пропустит — там Whisper работает на CPU, и эти пакеты не нужны (и не собираются).
+nvidia-cublas-cu12; platform_machine == "x86_64"
+nvidia-cudnn-cu12; platform_machine == "x86_64"
 
 # Рендер карточек твитов X (текстовые посты и цитаты) через headless Chromium
 playwright==1.55.0

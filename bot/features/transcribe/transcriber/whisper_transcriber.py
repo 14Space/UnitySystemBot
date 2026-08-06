@@ -15,7 +15,7 @@ import threading
 
 from bot.config import (
     WHISPER_MODEL, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE, WHISPER_LANGUAGES,
-    WHISPER_LANG_MIN_PROB,
+    WHISPER_LANG_MIN_PROB, WHISPER_MIN_SPEECH_PROB,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,6 +180,21 @@ def transcribe(file_path: str) -> str:
             detected = getattr(info, "language", None)
             prob = getattr(info, "language_probability", 1.0) or 0.0
             primary = _ALLOWED_LANGS[0]
+
+            # --- Защита от фантомов на музыке/шуме (нет речи → молчим) ---
+            # Whisper на звуке без речи определяет язык с низкой уверенностью и
+            # ВЫДУМЫВАЕТ фразы. Признаки «речи нет»:
+            #  • очень низкая уверенность определения языка (< порога), ЛИБО
+            #  • определился явно посторонний язык (не разрешённый и не
+            #    «кириллический брат») без высокой уверенности.
+            # В этих случаях НЕ форсим разбор в ru (иначе получим выдумку) — молчим.
+            keep = set(_ALLOWED_LANGS) | _CONFUSABLE
+            if prob < WHISPER_MIN_SPEECH_PROB or (
+                    detected not in keep and prob < WHISPER_LANG_MIN_PROB):
+                logger.info("Речи не распознано (язык '%s', увер. %.2f) — молчу",
+                            detected, prob)
+                return ""
+
             # Когда откатываемся в основной язык (ru):
             #  • язык не из разрешённых — берём основной;
             #  • ИЛИ это «кириллический брат» (ru/uk) с низкой уверенностью — лечим путаницу.
