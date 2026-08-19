@@ -21,13 +21,19 @@ def _find_ffmpeg() -> str | None:
 FFMPEG_DIR = _find_ffmpeg()
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "data/downloads")
 
+# Адрес POT-провайдера («выдаватель пропусков»): контейнер bgutil-ytdlp-pot-provider.
+# Без пропусков (PO-токенов) YouTube отдаёт HTTP 403 на скачивание. В docker бот идёт
+# к нему по имени сервиса; на хосте — задать POT_PROVIDER_URL=http://localhost:4416.
+POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://bgutil-provider:4416")
+
 BASE_OPTS = {
     "quiet": True,
     "no_warnings": True,  # глушим предупреждения yt-dlp (n challenge и т.п.) — лог чистый
-    # android_vr не требует PO-токена, не попадает под SABR и отдаёт полный диапазон до 4K.
-    # web_safari — запасной клиент.
+    # Клиент НЕ переопределяем: набор по умолчанию у ночной сборки yt-dlp сам выбирает
+    # рабочие форматы (в т.ч. через SABR — новый протокол YouTube). Пропуски берём у
+    # POT-провайдера — вместе это снимает 403 на популярных роликах, Shorts и YT Music.
     "extractor_args": {
-        "youtube": {"player_client": ["android_vr", "web_safari"]},
+        "youtubepot-bgutilhttp": {"base_url": [POT_PROVIDER_URL]},
     },
 }
 if FFMPEG_DIR:
@@ -44,6 +50,23 @@ def _proxy_opts(url: str) -> dict:
     return {}
 
 
+# PornHub спрятан за Cloudflare: обычный запрос ловит 403. Маскируемся под настоящий
+# Chrome (yt-dlp impersonate; работает благодаря пакету curl_cffi). Готовим цель один
+# раз; если curl_cffi нет (запуск без Docker) — тихо пропускаем, будет как раньше.
+try:
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+    _CHROME_TARGET = ImpersonateTarget.from_str("chrome")
+except Exception:
+    _CHROME_TARGET = None
+
+
+def _impersonate_opts(url: str) -> dict:
+    """Маскировку под браузер включаем ТОЛЬКО для PornHub (обход Cloudflare 403)."""
+    if _CHROME_TARGET is not None and "pornhub.com" in (url or ""):
+        return {"impersonate": _CHROME_TARGET}
+    return {}
+
+
 def get_video_info(url: str, allow_drm: bool = False) -> dict:
     """Получает информацию о видео без скачивания.
     allow_drm=True — не падать на DRM-треках, а вернуть метаданные (название, длительность)
@@ -52,6 +75,7 @@ def get_video_info(url: str, allow_drm: bool = False) -> dict:
     if allow_drm:
         opts["ignore_no_formats_error"] = True
     opts.update(_proxy_opts(url))  # прокси только для YT Music
+    opts.update(_impersonate_opts(url))  # маскировка под Chrome только для PornHub
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -131,6 +155,7 @@ def download_video(
         # +faststart переносит метаданные в начало файла — видео играется на лету,
         # не дожидаясь полной загрузки на стороне зрителя
         "postprocessor_args": {"merger": ["-movflags", "+faststart"]},
+        **_impersonate_opts(url),  # маскировка под Chrome только для PornHub
     }
 
     try:
@@ -435,6 +460,7 @@ def download_shorts(url: str) -> str:
         "format": fmt,
         "outtmpl": output_path,
         "merge_output_format": "mp4",
+        **_impersonate_opts(url),  # маскировка под Chrome только для PornHub (shorties)
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

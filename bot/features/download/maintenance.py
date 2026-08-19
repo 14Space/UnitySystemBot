@@ -28,15 +28,17 @@ def clean_downloads():
 
 
 def update_ytdlp():
-    """Обновляет yt-dlp до последней версии (сайты часто меняются).
-    Новая версия применяется после перезапуска бота."""
+    """Обновляет yt-dlp до последней НОЧНОЙ сборки (сайты часто меняются, а скачивание
+    через SABR есть только в nightly). Обычная стабильная версия сюда не годится —
+    она откатит SABR и вернёт 403 на YouTube. Применяется после перезапуска бота."""
     try:
         old = meta.version("yt-dlp")
     except Exception:
         old = "?"
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-U", "--quiet", "yt-dlp"],
+            [sys.executable, "-m", "pip", "install", "-U", "--quiet", "--pre", "yt-dlp[default]",
+             "--extra-index-url", "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases"],
             check=True, timeout=300,
         )
         new = meta.version("yt-dlp")

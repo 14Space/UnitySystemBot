@@ -24,6 +24,13 @@ services:
     ports:
       - "8081:8081"
 
+  # «Выдаватель пропусков» (PO-токенов) для YouTube. Без него YouTube отдаёт HTTP 403
+  # на скачивание видео/аудио. Бот ходит к нему по имени сервиса внутри docker-сети
+  # (http://bgutil-provider:4416) — наружу порт не публикуем, он нужен только боту.
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
+
   # Сам бот
   bot:
     build:
@@ -40,6 +47,8 @@ services:
       TELEGRAM_LOCAL_API_URL: http://telegram-bot-api:8081
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
+      # Куда боту ходить за пропусками (PO-токенами) для YouTube.
+      POT_PROVIDER_URL: http://bgutil-provider:4416
     volumes:
       # Монтируем всю папку data: downloads, cookies и база unitysystem.db (data/unitysystem.db).
       - ./data:/app/data
@@ -54,6 +63,7 @@ services:
       - /app/data/downloads:size=10g,mode=1777
     depends_on:
       - telegram-bot-api
+      - bgutil-provider
     # Проброс видеокарты NVIDIA внутрь контейнера — нужен для расшифровки голосовых.
     deploy:
       resources:

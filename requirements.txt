@@ -2,7 +2,13 @@
 aiogram==3.20.0
 
 # Скачивание (YouTube, Pinterest, PornHub и др.)
-yt-dlp>=2025.6.9           # держи свежим: pip install -U yt-dlp (сайты часто меняются)
+# ВНИМАНИЕ: в Docker yt-dlp переустанавливается на НОЧНУЮ сборку (см. Dockerfile) —
+# в ней есть скачивание через SABR, без которого YouTube отдаёт 403 на популярных видео.
+# Здесь — минимальная нижняя граница на случай запуска без Docker (тогда обновить вручную:
+# pip install -U --pre "yt-dlp[default]" --extra-index-url https://github.com/yt-dlp/yt-dlp-nightly-builds/releases).
+yt-dlp>=2025.6.9
+bgutil-ytdlp-pot-provider  # клиент к «выдавателю пропусков» (PO-токенов) для YouTube
+curl_cffi>=0.7             # маскировка под браузер (yt-dlp impersonate) — обход Cloudflare на PornHub
 requests==2.34.2
 
 # База данных (кэш file_id, пользователи)
@@ -11,6 +17,7 @@ aiosqlite==0.21.0
 
 # Конфиг
 python-dotenv==1.1.1
+tzdata==2025.2             # база часовых поясов для zoneinfo (дневной отчёт в 12:00 по Молдове)
 
 # Аудио: теги и обложки mp3, ресайз миниатюр
 mutagen==1.48.0

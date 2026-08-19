@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
@@ -9,7 +11,7 @@ from aiogram.types import (
 )
 from bot.config import (
     BOT_TOKEN, TRANSCRIBE_BOT_TOKEN, UNITY_BOT_TOKEN, CURRENCY_BOT_TOKEN,
-    TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM,
+    TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ, REPORT_HOUR,
 )
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
@@ -25,12 +27,24 @@ from bot.features.currency import convert as currency
 from bot.features.ai import chat as ai_chat
 from bot.features.config import setconfig
 from bot.features.common.admin import format_stats
+from bot.features.common.healthcheck import run_health_checks, format_health
 from bot.features.download.maintenance import clean_downloads, update_ytdlp
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DAY_SECONDS = 24 * 60 * 60
+_ADMIN_ZONE = ZoneInfo(ADMIN_TZ)
+
+
+def _seconds_until_report() -> float:
+    """Сколько секунд до ближайшего REPORT_HOUR:00 по часовому поясу админа.
+    Считаем от локального времени зоны на каждом витке, поэтому переход Молдовы
+    на летнее/зимнее время учитывается автоматически — отчёт всегда в 12:00 по месту."""
+    now = datetime.now(_ADMIN_ZONE)
+    target = now.replace(hour=REPORT_HOUR, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
 
 # Что умеет бот (набор функций). По ним маршрутизатор пускает нужные апдейты.
 DOWNLOAD = "download"
@@ -131,17 +145,21 @@ async def _setup_profile(bot: Bot, features: set[str]):
 
 
 async def _daily_tasks(bot: Bot):
-    """Раз в сутки: обновляем yt-dlp и шлём админу отчёт по статистике."""
+    """Каждый день в REPORT_HOUR:00 по времени админа: обновляем yt-dlp, прогоняем
+    проверку функционала и шлём админу отчёт (статистика + результаты проверки)."""
     while True:
-        await asyncio.sleep(DAY_SECONDS)
+        await asyncio.sleep(_seconds_until_report())
         await asyncio.to_thread(update_ytdlp)
-        if ADMIN_ID:
-            try:
-                async with SessionLocal() as session:
-                    stats = await get_stats(session)
-                await bot.send_message(ADMIN_ID, format_stats(stats), parse_mode="HTML")
-            except Exception:
-                logger.exception("Не удалось отправить дневной отчёт")
+        if not ADMIN_ID:
+            continue
+        try:
+            async with SessionLocal() as session:
+                stats = await get_stats(session)
+            health = await run_health_checks()
+            report = f"{format_stats(stats)}\n\n{format_health(health)}"
+            await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
+        except Exception:
+            logger.exception("Не удалось отправить дневной отчёт")
 
 
 async def _flush_traffic():

@@ -19,8 +19,10 @@ CURRENCY_BOT_TOKEN = os.getenv("CURRENCY_BOT_TOKEN", "")
 # Без ключей команда /ai отвечает «ИИ не настроен». Пробуем провайдеров по очереди.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Модели держим актуальными: провайдеры снимают старые с хостинга без обратной
+# совместимости (gemini-2.0-flash и llama-3.3-70b-versatile отключены — /ai падал в 404).
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 # Свои суточные лимиты — чтобы держаться в бесплатном тире (сброс в полночь UTC).
 AI_DAILY_LIMIT = int(os.getenv("AI_DAILY_LIMIT", "1000"))       # всего запросов в сутки
 AI_USER_DAILY_LIMIT = int(os.getenv("AI_USER_DAILY_LIMIT", "30"))  # на пользователя в сутки
@@ -48,6 +50,13 @@ SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 # Узнать свой ID можно у бота @userinfobot. 0 = выключено.
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
+# Дневной отчёт (статистика + проверка функционала) шлём строго в это время по
+# часовому поясу админа. Молдова дважды в год переводит часы — берём IANA-зону
+# Europe/Chisinau, и zoneinfo сам учитывает переход на летнее/зимнее время
+# (пакет tzdata в requirements гарантирует базу зон на любой ОС/архитектуре).
+ADMIN_TZ = os.getenv("ADMIN_TZ", "Europe/Chisinau")
+REPORT_HOUR = int(os.getenv("REPORT_HOUR", "12"))     # час (0..23) локального времени админа
+
 # Сколько загрузок может идти одновременно на всех (тюнить под мощность сервера)
 MAX_PARALLEL_DOWNLOADS = int(os.getenv("MAX_PARALLEL_DOWNLOADS", "5"))
 
@@ -74,6 +83,14 @@ X_COOKIES = os.getenv("X_COOKIES", "data/x.com_cookies.txt")
 # Прокси для обхода гео-блокировок YouTube/YT Music (http:// или socks5://).
 # Пусто = без прокси. Пример: socks5://127.0.0.1:1080
 PROXY_URL = os.getenv("PROXY_URL", "")
+
+# Прокси ТОЛЬКО для Instagram (http:// или socks5://). Instagram банит по IP: с
+# домашнего (резидентного) IP всё качается напрямую, а с дата-центрового (VPS)
+# прилетает 403/429. Поэтому логика такая: сначала пробуем НАПРЯМУЮ, и лишь если
+# Instagram отказал по анти-боту — повторяем через этот прокси. Пусто = только напрямую
+# (правильно для домашнего ПК; на VPS сюда вписать рабочий прокси). Можно указать тот же,
+# что и PROXY_URL — например: INSTAGRAM_PROXY=${PROXY_URL} в .env.
+INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
 
 # --- Расшифровка голосовых и кружков (faster-whisper, работает локально) ---
 # Размер модели: tiny / base / small / medium / large-v3.
