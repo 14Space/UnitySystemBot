@@ -68,9 +68,7 @@ async def _ai_disabled(chat) -> bool:
 
 
 @router.message(Command("ai"))
-async def cmd_ai(message: Message, command: CommandObject, bot_features: set[str] = frozenset()):
-    if "ai" not in bot_features:          # у этого бота нет ИИ — молчим
-        return
+async def cmd_ai(message: Message, command: CommandObject):
     lang = lang_of(message.from_user)
     if await _ai_disabled(message.chat):
         return

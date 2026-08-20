@@ -24,7 +24,7 @@ def buy_button(lang: str) -> InlineKeyboardMarkup:
 async def _send_invoice(bot: Bot, chat_id: int, lang: str):
     await bot.send_invoice(
         chat_id,
-        title="viaSaver Premium",
+        title="UnitySystem Premium",
         description=t("premium_desc", lang),
         payload="premium",
         currency="XTR",  # Telegram Stars

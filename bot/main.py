@@ -11,9 +11,8 @@ from aiogram.types import (
     ErrorEvent,
 )
 from bot.config import (
-    BOT_TOKEN, TRANSCRIBE_BOT_TOKEN, UNITY_BOT_TOKEN, CURRENCY_BOT_TOKEN,
-    TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ, REPORT_HOUR,
-    HEALTHCHECK_EVERY_HOURS,
+    BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ,
+    REPORT_HOUR, HEALTHCHECK_EVERY_HOURS,
 )
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
@@ -54,35 +53,6 @@ def _seconds_until_report() -> float:
         target += timedelta(days=1)
     return (target - now).total_seconds()
 
-# Что умеет бот (набор функций). По ним маршрутизатор пускает нужные апдейты.
-DOWNLOAD = "download"
-TRANSCRIBE = "transcribe"
-CURRENCY = "currency"
-AI = "ai"
-
-
-def _bot_configs() -> list[dict]:
-    """Список ботов к запуску. Запускаем только тех, у кого задан токен.
-    Пока нет доп. токенов — @viaSaver умеет всё (чтобы не потерять расшифровку).
-    Как только появятся остальные — @viaSaver становится «только скачивание»."""
-    others = bool(TRANSCRIBE_BOT_TOKEN) or bool(UNITY_BOT_TOKEN) or bool(CURRENCY_BOT_TOKEN)
-    saver_features = {DOWNLOAD} if others else {DOWNLOAD, TRANSCRIBE, CURRENCY, AI}
-
-    # «hub» — бот-комбайн: в личке работает как в группе (конвертер + личный /setconfig).
-    # В одиночном режиме хабом становится сам viaSaver (он умеет всё).
-    bots = [{"name": "viaSaver", "token": BOT_TOKEN, "features": saver_features,
-             "config": True, "hub": not others}]
-    if TRANSCRIBE_BOT_TOKEN:
-        bots.append({"name": "viaVoice", "token": TRANSCRIBE_BOT_TOKEN,
-                     "features": {TRANSCRIBE}, "config": False, "hub": False})
-    if CURRENCY_BOT_TOKEN:
-        bots.append({"name": "viaCurrency", "token": CURRENCY_BOT_TOKEN,
-                     "features": {CURRENCY}, "config": False, "hub": False})
-    if UNITY_BOT_TOKEN:
-        bots.append({"name": "viaUnity", "token": UNITY_BOT_TOKEN,
-                     "features": {DOWNLOAD, TRANSCRIBE, CURRENCY, AI}, "config": True, "hub": True})
-    return bots
-
 
 def _make_bot(token: str) -> Bot:
     """Создаёт Bot; если задан локальный API-сервер — с ним (файлы до 2 ГБ)."""
@@ -92,64 +62,49 @@ def _make_bot(token: str) -> Bot:
     return Bot(token=token)
 
 
-async def _setup_commands(bot: Bot, features: set[str], with_config: bool, is_hub: bool):
-    """Меню команд под конкретного бота (у скачивателя — Premium и т.д.)."""
-    common = [BotCommand(command="help", description="Справка по командам")]
-    if AI in features:
-        common.append(BotCommand(command="ai", description="Спросить ИИ"))
-    if DOWNLOAD in features:
-        common.append(BotCommand(command="premium", description="Купить Premium ✨"))
+async def _setup_commands(bot: Bot):
+    """Меню команд бота. /setconfig показываем админам групп и в личке (личные
+    настройки), админ-команды — только в личном чате администратора."""
+    common = [
+        BotCommand(command="help", description="Справка по командам"),
+        BotCommand(command="ai", description="Спросить ИИ"),
+        BotCommand(command="premium", description="Купить Premium ✨"),
+    ]
     await bot.set_my_commands(common, scope=BotCommandScopeDefault())
-    # /setconfig показываем ТОЛЬКО админам групп: этот scope действует лишь в группах
-    # и только для их администраторов. У обычных участников команда в меню не появляется.
-    if with_config:
-        setconfig_cmd = BotCommand(command="setconfig", description="Настроить функции")
-        await bot.set_my_commands(common + [setconfig_cmd],
-                                  scope=BotCommandScopeAllChatAdministrators())
-        # У хаба /setconfig есть и в личке (личные настройки) — показываем в меню лички.
-        if is_hub:
-            await bot.set_my_commands(common + [setconfig_cmd],
-                                      scope=BotCommandScopeAllPrivateChats())
+    # /setconfig в группах видят только их администраторы, а в личке — сам пользователь
+    # (это его чат, там команда настраивает личные предпочтения).
+    setconfig_cmd = BotCommand(command="setconfig", description="Настроить функции")
+    await bot.set_my_commands(common + [setconfig_cmd],
+                              scope=BotCommandScopeAllChatAdministrators())
+    await bot.set_my_commands(common + [setconfig_cmd],
+                              scope=BotCommandScopeAllPrivateChats())
     if ADMIN_ID:
         admin_cmds = common + [
             BotCommand(command="statistics", description="Статистика"),
             BotCommand(command="cleancache", description="Очистить кэш"),
         ]
-        # Личный чат админа с ботом может ещё не существовать (админ не писал этому
-        # боту) — тогда Telegram вернёт «chat not found». Не роняем из-за этого запуск.
+        # Личный чат админа с ботом может ещё не существовать (админ не писал боту) —
+        # тогда Telegram вернёт «chat not found». Не роняем из-за этого запуск.
         try:
             await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
         except Exception:
-            logger.info("Не задал админ-команды для %s (админ ещё не писал боту)", bot.id)
+            logger.info("Не задал админ-команды (админ ещё не писал боту)")
 
 
-def _profile_role(features: set[str]) -> str | None:
-    """Какой профиль (About/Description) ставить боту. viaSaver настроен вручную —
-    его не трогаем (None)."""
-    if features == {TRANSCRIBE}:
-        return "voice"
-    if features == {DOWNLOAD}:
-        return None
-    return "unity"
-
-
-async def _setup_profile(bot: Bot, features: set[str]):
+async def _setup_profile(bot: Bot):
     """Ставит короткое описание (About) и описание (экран до Start) по языкам ru/uk/en,
-    плюс английский по умолчанию. Для viaSaver пропускаем."""
-    role = _profile_role(features)
-    if not role:
-        return
+    плюс английский по умолчанию для остальных языков."""
     for lang in ("ru", "uk", "en"):
         try:
-            await bot.set_my_short_description(short_description=t(f"about_{role}", lang), language_code=lang)
-            await bot.set_my_description(description=t(f"desc_{role}", lang), language_code=lang)
+            await bot.set_my_short_description(short_description=t("about", lang), language_code=lang)
+            await bot.set_my_description(description=t("desc", lang), language_code=lang)
         except Exception:
-            logger.exception("Не задал профиль (%s) для %s", lang, bot.id)
+            logger.exception("Не задал профиль (%s)", lang)
     try:  # дефолт для остальных языков — английский
-        await bot.set_my_short_description(short_description=t(f"about_{role}", "en"))
-        await bot.set_my_description(description=t(f"desc_{role}", "en"))
+        await bot.set_my_short_description(short_description=t("about", "en"))
+        await bot.set_my_description(description=t("desc", "en"))
     except Exception:
-        logger.exception("Не задал дефолтный профиль для %s", bot.id)
+        logger.exception("Не задал дефолтный профиль")
 
 
 async def _daily_tasks(bot: Bot):
@@ -208,36 +163,22 @@ async def main():
     await init_db()
     clean_downloads()  # чистим «хвосты» прошлых сессий
 
-    # Поднимаем всех ботов, у кого есть токен
-    bots: list[Bot] = []
-    features_by_bot: dict[int, set[str]] = {}
-    config_ids: set[int] = set()          # боты с доступом к /setconfig
-    hub_ids: set[int] = set()             # боты-хабы: в личке работают как в группе
-    any_transcribe = False
-    for cfg in _bot_configs():
-        bot = _make_bot(cfg["token"])
-        bots.append(bot)
-        features_by_bot[bot.id] = cfg["features"]
-        if cfg["config"]:
-            config_ids.add(bot.id)
-        if cfg.get("hub"):
-            hub_ids.add(bot.id)
-        any_transcribe = any_transcribe or (TRANSCRIBE in cfg["features"])
-        await _setup_commands(bot, cfg["features"], cfg["config"], cfg.get("hub", False))
-        await _setup_profile(bot, cfg["features"])
-        logger.info("Бот %s (id=%s): функции=%s, config=%s, hub=%s",
-                    cfg["name"], bot.id, cfg["features"], cfg["config"], cfg.get("hub", False))
+    if not BOT_TOKEN:
+        raise SystemExit("Не задан BOT_TOKEN в .env — запускать нечего.")
 
-    # Один диспетчер на всех ботов; маршрутизатор раздаёт функции по ботам/группам
+    bot = _make_bot(BOT_TOKEN)
+    await _setup_commands(bot)
+    await _setup_profile(bot)
+    logger.info("Бот UnitySystem (id=%s) запущен со всеми функциями", bot.id)
+
     dp = Dispatcher()
     dp.message.middleware(ThrottleMiddleware())
     dp.message.middleware(RegisterUserMiddleware())
-    routing = RoutingMiddleware(features_by_bot, config_ids, hub_ids)
+    routing = RoutingMiddleware()
     dp.message.middleware(routing)
     dp.callback_query.middleware(routing)
     dp.inline_query.middleware(routing)
 
-    # Все роутеры подключаем один раз (маршрутизатор отфильтрует лишнее по каждому боту)
     dp.include_router(start.router)
     dp.include_router(admin.router)
     dp.include_router(setconfig.router)
@@ -252,7 +193,6 @@ async def main():
 
     # Глобальный перехват необработанных ошибок: пишем в лог и коротко оповещаем админа
     # (не чаще раза в 10 минут, чтобы всплеск ошибок не превратился в спам).
-    alert_bot = bots[0]
     err_state = {"last": 0.0}
 
     async def _on_error(event: ErrorEvent):
@@ -264,7 +204,7 @@ async def main():
             return
         err_state["last"] = now
         try:
-            await alert_bot.send_message(
+            await bot.send_message(
                 ADMIN_ID,
                 f"⚠️ Ошибка в боте: {type(event.exception).__name__}: {event.exception}"[:400])
         except Exception:
@@ -274,18 +214,18 @@ async def main():
 
     # Уведомлять админа о КАЖДОМ сбое, показанном пользователю (через общую точку
     # limits.friendly_error). Контекст (ссылку) выставляет обработчик ссылок.
-    alerts.configure(alert_bot, ADMIN_ID)
+    alerts.configure(bot, ADMIN_ID)
     limits.set_failure_hook(alerts.note_failure)
 
-    asyncio.create_task(_daily_tasks(bots[0]))
-    asyncio.create_task(_periodic_healthcheck(bots[0]))
+    asyncio.create_task(_daily_tasks(bot))
+    asyncio.create_task(_periodic_healthcheck(bot))
     asyncio.create_task(_flush_traffic())
-    if WHISPER_PREWARM and any_transcribe:
+    if WHISPER_PREWARM:
         from bot.features.transcribe.transcriber import warmup
         asyncio.create_task(asyncio.to_thread(warmup))
 
-    print(f"Запущено ботов: {len(bots)}")
-    await dp.start_polling(*bots)
+    print("Бот запущен")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":

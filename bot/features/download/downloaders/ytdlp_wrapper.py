@@ -30,6 +30,10 @@ POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://bgutil-provider:4416")
 BASE_OPTS = {
     "quiet": True,
     "no_warnings": True,  # глушим предупреждения yt-dlp (n challenge и т.п.) — лог чистый
+    # Гасим текстовую полоску прогресса yt-dlp в stderr (в логах она сыплется сотнями
+    # строк «[download] 45.2% of…», особенно при проверке функционала). Прогресс, который
+    # видит пользователь в Telegram, идёт отдельно через progress_hooks и не затрагивается.
+    "noprogress": True,
     # Клиент НЕ переопределяем: набор по умолчанию у ночной сборки yt-dlp сам выбирает
     # рабочие форматы (в т.ч. через SABR — новый протокол YouTube). Пропуски берём у
     # POT-провайдера — вместе это снимает 403 на популярных роликах, Shorts и YT Music.
@@ -139,7 +143,7 @@ def download_video(
     postprocess_callback() — вызывается когда ffmpeg начинает склейку.
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_%(height)sp_viaSaver.%(ext)s")
+    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_%(height)sp_dl.%(ext)s")
 
     last_reported = [-1]
 
@@ -346,7 +350,7 @@ def download_audio(
         Иначе в mp3 окажутся две обложки и Telegram покажет в кружке не ту.
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(title)s_viaSaver.%(ext)s")
+    output_path = os.path.join(DOWNLOADS_DIR, "%(title)s_dl.%(ext)s")
 
     last_reported = [-1]
 
@@ -402,7 +406,7 @@ def download_media(url: str) -> str:
     Возвращает путь к файлу (ext подскажет тип: mp4 — видео, jpg — фото).
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_viaSaver.%(ext)s")
+    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_dl.%(ext)s")
 
     ydl_opts = {
         **BASE_OPTS,
@@ -436,7 +440,7 @@ def download_media(url: str) -> str:
             ext = os.path.splitext(image_url.split("?")[0])[1].lower()
             if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
                 ext = ".jpg"
-            path = os.path.join(DOWNLOADS_DIR, f"{info.get('id', 'media')}_viaSaver{ext}")
+            path = os.path.join(DOWNLOADS_DIR, f"{info.get('id', 'media')}_dl{ext}")
             content = requests.get(image_url, timeout=60).content
             with open(path, "wb") as f:
                 f.write(content)
@@ -477,7 +481,7 @@ def _best_image_url(info: dict) -> str | None:
 def download_shorts(url: str) -> str:
     """Скачивает Shorts в максимальном качестве"""
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_viaSaver.%(ext)s")
+    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_dl.%(ext)s")
 
     fmt = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
 

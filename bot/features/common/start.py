@@ -18,37 +18,10 @@ _recent_deeplinks: dict[str, float] = {}
 _DEEPLINK_COOLDOWN = 5.0
 
 
-def _welcome_key(features: set[str]) -> str:
-    """Какое приветствие показать — под роль конкретного бота."""
-    if features == {"transcribe"}:              # viaVoice
-        return "welcome_voice"
-    if features == {"download"}:                # viaSaver (только скачивание)
-        return "welcome"
-    return "welcome_unity"                      # хаб / одиночный бот «всё в одном»
-
-
-def _help_key(features: set[str]) -> str:
-    """Какую справку показать — под роль конкретного бота."""
-    if features == {"transcribe"}:              # viaVoice
-        return "help_voice"
-    if features == {"download"}:                # viaSaver (только скачивание)
-        return "help_saver"
-    return "help_unity"                         # хаб / одиночный бот «всё в одном»
-
-
-def _placeholder_key(features: set[str]) -> str:
-    """Подсказка в поле ввода — под роль конкретного бота."""
-    if features == {"transcribe"}:              # viaVoice
-        return "kb_placeholder_voice"
-    if features == {"download"}:                # viaSaver (только скачивание)
-        return "kb_placeholder_saver"
-    return "kb_placeholder_unity"               # хаб / одиночный бот «всё в одном»
-
-
 @router.message(Command("help"))
-async def cmd_help(message: Message, bot_features: set[str] = frozenset()):
+async def cmd_help(message: Message):
     lang = lang_of(message.from_user)
-    text = t(_help_key(bot_features), lang)
+    text = t("help", lang)
     # Админу дописываем его команды (обычным пользователям их не показываем)
     if ADMIN_ID and message.from_user.id == ADMIN_ID:
         text += t("help_admin_extra", lang)
@@ -56,8 +29,7 @@ async def cmd_help(message: Message, bot_features: set[str] = frozenset()):
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, command: CommandObject,
-                    bot_features: set[str] = frozenset()):
+async def cmd_start(message: Message, command: CommandObject):
     # Переход из inline («Скачать в боте»): /start dl<id> → качаем ссылку
     payload = command.args or ""
     if payload.startswith("dl"):
@@ -72,8 +44,8 @@ async def cmd_start(message: Message, command: CommandObject,
             return
 
     lang = lang_of(message.from_user)
-    placeholder = t(_placeholder_key(bot_features), lang)
+    placeholder = t("kb_placeholder", lang)
     await message.answer(
-        t(_welcome_key(bot_features), lang),
+        t("welcome", lang),
         reply_markup=main_menu_keyboard(message.from_user.id, placeholder),
     )

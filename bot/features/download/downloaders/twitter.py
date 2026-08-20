@@ -95,7 +95,7 @@ def download_media(items: list[dict], tweet_id: str) -> list[dict]:
     for i, it in enumerate(items, 1):
         kind = it["kind"]
         ext = ".jpg" if kind == "photo" else ".mp4"
-        path = os.path.join(DOWNLOADS_DIR, f"x_{tweet_id}_{i}_viaSaver{ext}")
+        path = os.path.join(DOWNLOADS_DIR, f"x_{tweet_id}_{i}_dl{ext}")
         content = requests.get(it["url"], headers=HEADERS, timeout=180).content
         with open(path, "wb") as f:
             f.write(content)

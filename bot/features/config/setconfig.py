@@ -1,9 +1,8 @@
 """
 Команда /setconfig: включает/выключает функции бота в этом чате. В группах — только
-админам/владельцу; в личке доступна у бота-хаба (Unity) самому пользователю (это его
-чат, проверка админа не нужна). Клавиатура подстраивается под функции бота и под тип
-чата: у viaSaver нет транскрибации и валют, а в личке скрыты аудиодорожка и режим
-слайдшоу (они там не работают) — см. _keyboard(features=..., personal=...).
+админам/владельцу; в личке доступна самому пользователю (это его чат, проверка админа
+не нужна). Клавиатура подстраивается под тип чата: в личке скрыты аудиодорожка и режим
+слайдшоу (они там не работают) — см. _keyboard(personal=...).
 """
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -60,21 +59,18 @@ SLIDESHOW_MODES = [
 
 
 def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bool,
-              features: set[str], personal: bool, lang: str) -> InlineKeyboardMarkup:
-    """Клавиатура настроек. Показываем только разделы под функции конкретного бота
-    (у viaSaver нет транскрибации и валют). В личке (personal) прячем настройки, которые
-    в личке не работают: аудиодорожку и режим слайдшоу (в личке бот всегда спрашивает)."""
+              personal: bool, lang: str) -> InlineKeyboardMarkup:
+    """Клавиатура настроек. В личке (personal) прячем настройки, которые в личке не
+    работают: аудиодорожку и режим слайдшоу (в личке бот всегда спрашивает)."""
     rows = []
-    # Переключатели функций — только те, что у этого бота есть
+    # Переключатели функций
     for feature, label_key in TOGGLEABLE:
-        if feature not in features:
-            continue
         mark = "❌" if feature in disabled else "✅"
         rows.append([InlineKeyboardButton(
             text=f"{mark} {t(label_key, lang)}", callback_data=f"cfg:{feature}")])
 
-    # Аудиодорожка и слайдшоу — только для скачивания и только в группах
-    if "download" in features and not personal:
+    # Аудиодорожка и слайдшоу — для скачивания и только в группах
+    if not personal:
         rows.append([InlineKeyboardButton(
             text=f"{'✅' if audio_on else '❌'} {t('cfg_audio_track', lang)}",
             callback_data="cfg:audio")])
@@ -87,25 +83,24 @@ def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bo
                 text=f"{mark}{t(label_key, lang)}", callback_data=f"cfg:ss:{mode}"))
         rows.append(ss_row)
 
-    # Блок валют — только если бот умеет конвертацию. Заголовок = переключатель
-    # конвертера: ✅ включён (показываем сетку), ❌ выключен (сетку прячем).
-    if "currency" in features:
-        cur_on = "currency" not in disabled
-        rows.append([InlineKeyboardButton(
-            text=f"{'✅' if cur_on else '❌'} {t('cfg_currency_header', lang)}",
-            callback_data="cfg:currency")])
-        if cur_on:
-            row = []
-            for code in CURRENCY_ORDER:
-                flag = CURRENCIES[code]["flag"]
-                mark = " 🔘" if code in targets else ""
-                row.append(InlineKeyboardButton(
-                    text=f"{flag} {code}{mark}", callback_data=f"cfg:cur:{code}"))
-                if len(row) == 3:
-                    rows.append(row)
-                    row = []
-            if row:
+    # Блок валют. Заголовок = переключатель конвертера: ✅ включён (показываем сетку),
+    # ❌ выключен (сетку прячем).
+    cur_on = "currency" not in disabled
+    rows.append([InlineKeyboardButton(
+        text=f"{'✅' if cur_on else '❌'} {t('cfg_currency_header', lang)}",
+        callback_data="cfg:currency")])
+    if cur_on:
+        row = []
+        for code in CURRENCY_ORDER:
+            flag = CURRENCIES[code]["flag"]
+            mark = " 🔘" if code in targets else ""
+            row.append(InlineKeyboardButton(
+                text=f"{flag} {code}{mark}", callback_data=f"cfg:cur:{code}"))
+            if len(row) == 3:
                 rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
 
     # Кнопка «Готово» — убирает сообщение настроек, чтобы по нему потом не тыкали.
     rows.append([InlineKeyboardButton(text=t("cfg_done", lang), callback_data="cfg:done")])
@@ -113,14 +108,9 @@ def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bo
 
 
 @router.message(Command("setconfig"))
-async def cmd_setconfig(message: Message, bot_features: set[str] = frozenset(),
-                        is_hub: bool = False):
+async def cmd_setconfig(message: Message):
     lang = lang_of(message.from_user)
     personal = message.chat.type not in GROUP_TYPES
-    # В личке /setconfig есть только у хаба (личные настройки). У остальных — только группы.
-    if personal and not is_hub:
-        await message.reply(t("cfg_group_only", lang))
-        return
     # В группе не-админам не отвечаем вообще (команда для них будто не существует).
     if not personal and not await _is_admin(message.bot, message.chat.id, message.from_user.id):
         return
@@ -131,10 +121,10 @@ async def cmd_setconfig(message: Message, bot_features: set[str] = frozenset(),
         audio_on = await get_audio_track(session, message.chat.id)
     await message.reply(t("cfg_title", lang),
                         reply_markup=_keyboard(disabled, ss_mode, targets, audio_on,
-                                               bot_features, personal, lang))
+                                               personal, lang))
 
 
-async def _refresh(callback: CallbackQuery, lang: str, features: set[str]):
+async def _refresh(callback: CallbackQuery, lang: str):
     """Перерисовывает клавиатуру настроек актуальным состоянием."""
     chat = callback.message.chat
     personal = chat.type not in GROUP_TYPES
@@ -144,7 +134,7 @@ async def _refresh(callback: CallbackQuery, lang: str, features: set[str]):
         targets = await get_currency_targets(session, chat.id)
         audio_on = await get_audio_track(session, chat.id)
     await callback.message.edit_reply_markup(
-        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, features, personal, lang))
+        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, personal, lang))
 
 
 @router.callback_query(F.data == "cfg:noop")
@@ -170,7 +160,7 @@ async def cfg_done(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("cfg:ss:"))
-async def set_slideshow(callback: CallbackQuery, bot_features: set[str] = frozenset()):
+async def set_slideshow(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     mode = callback.data.split(":", 2)[2]
@@ -179,12 +169,12 @@ async def set_slideshow(callback: CallbackQuery, bot_features: set[str] = frozen
         return
     async with SessionLocal() as session:
         await set_slideshow_mode(session, chat_id, mode)
-    await _refresh(callback, lang, bot_features)
+    await _refresh(callback, lang)
     await callback.answer()
 
 
 @router.callback_query(F.data == "cfg:audio")
-async def toggle_audio(callback: CallbackQuery, bot_features: set[str] = frozenset()):
+async def toggle_audio(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     if not await _allowed(callback.bot, callback.message.chat, callback.from_user.id):
@@ -193,12 +183,12 @@ async def toggle_audio(callback: CallbackQuery, bot_features: set[str] = frozens
     async with SessionLocal() as session:
         now = await get_audio_track(session, chat_id)
         await set_audio_track(session, chat_id, not now)
-    await _refresh(callback, lang, bot_features)
+    await _refresh(callback, lang)
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("cfg:cur:"))
-async def toggle_currency(callback: CallbackQuery, bot_features: set[str] = frozenset()):
+async def toggle_currency(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     code = callback.data.split(":", 2)[2]
@@ -207,12 +197,12 @@ async def toggle_currency(callback: CallbackQuery, bot_features: set[str] = froz
         return
     async with SessionLocal() as session:
         await toggle_currency_target(session, chat_id, code)
-    await _refresh(callback, lang, bot_features)
+    await _refresh(callback, lang)
     await callback.answer()
 
 
 @router.callback_query(F.data.in_(_FEATURE_CB))
-async def toggle_feature(callback: CallbackQuery, bot_features: set[str] = frozenset()):
+async def toggle_feature(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
     feature = callback.data.split(":", 1)[1]
     chat_id = callback.message.chat.id
@@ -224,5 +214,5 @@ async def toggle_feature(callback: CallbackQuery, bot_features: set[str] = froze
         disabled = await get_disabled_features(session, chat_id)
         # если сейчас выключена — включаем, и наоборот
         await set_feature(session, chat_id, feature, enable=(feature in disabled))
-    await _refresh(callback, lang, bot_features)
+    await _refresh(callback, lang)
     await callback.answer()

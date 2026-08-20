@@ -228,7 +228,7 @@ def download_stream(stream, quality: str, name="video", season=None, episode=Non
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     safe = re.sub(r"[^\w]+", "_", name)[:40] or "video"
     suffix = f"_s{season}e{episode}" if season and episode else ""
-    base = os.path.join(DOWNLOADS_DIR, f"{safe}{suffix}_viaSaver")
+    base = os.path.join(DOWNLOADS_DIR, f"{safe}{suffix}_dl")
     raw = base + "_raw.mp4"
     final = base + ".mp4"
 

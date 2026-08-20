@@ -37,7 +37,7 @@ class MonthlyTraffic(Base):
 
 
 class ChatSettings(Base):
-    """Настройки функций по чату (для /setconfig в @viaUnitySystem).
+    """Настройки функций по чату (управляются командой /setconfig).
     disabled_features — какие функции выключены в этом чате, через запятую."""
     __tablename__ = "chat_settings"
 

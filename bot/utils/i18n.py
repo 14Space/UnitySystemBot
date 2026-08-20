@@ -51,83 +51,6 @@ TEXTS = {
     # --- Приветствие /start ---
     "welcome": {
         "ru": (
-            "Привет! \n"
-            "Отправь ссылку – скачаю видео, фото или музыку из YouTube, TikTok, Instagram, "
-            "Pinterest, Spotify, SoundCloud, PornHub, HDRezka и других площадок 🙃\n\n"
-            "Что умеет viaSaver: \n"
-            "🎬 Выбор качества видео;\n"
-            "🎵 Скачивание музыки с тегами;\n"
-            "🌐 Загрузка с нестандартных ресурсов;\n"
-            "📸 Скачивание фото и каруселей целиком;\n"
-            "⚡️ Reels, Shorts и клипы – мгновенная загрузка в максимальном качестве.\n\n"
-            "По вопросам: @viaWarrior\n"
-            "Наш канал: @UnitySystem"
-        ),
-        "uk": (
-            "Привіт!\n"
-            "Надішли посилання – завантажу відео, фото або музику з YouTube, TikTok, Instagram, "
-            "Pinterest, Spotify, SoundCloud, PornHub, HDRezka та інших платформ 🙃\n\n"
-            "Що вміє viaSaver:\n"
-            "🎬 Вибір якості відео;\n"
-            "🎵 Завантаження музики з тегами;\n"
-            "🌐 Завантаження з нестандартних ресурсів;\n"
-            "📸 Завантаження фото та каруселей повністю;\n"
-            "⚡️ Reels, Shorts та кліпи – миттєве завантаження в максимальній якості.\n\n"
-            "З питань: @viaWarrior\n"
-            "Канал: @UnitySystem"
-        ),
-        "en": (
-            "Hi!\n"
-            "Send a link – I will download video, photo, or music from YouTube, TikTok, Instagram, "
-            "Pinterest, Spotify, SoundCloud, PornHub, HDRezka & more 🙃\n\n"
-            "What viaSaver can do:\n"
-            "🎬 Video quality selection;\n"
-            "🎵 Downloading music with tags;\n"
-            "🌐 Downloading from non-standard resources;\n"
-            "📸 Downloading photos and full carousels;\n"
-            "⚡️ Reels, Shorts, and clips – instant download in maximum quality.\n\n"
-            "Questions: @viaWarrior\n"
-            "Channel: @UnitySystem"
-        ),
-    },
-
-    # --- Приветствие /start у viaVoice ---
-    "welcome_voice": {
-        "ru": (
-            "Привет!\n"
-            "Пришли голосовое или видео-кружок – расшифрую его в текст 🙃\n\n"
-            "Что умеет viaVoice:\n"
-            "🎙 Расшифровка голосовых сообщений;\n"
-            "🎥 Расшифровка видео-кружков;\n"
-            "💬 Ответ приходит удобной цитатой.\n\n"
-            "По вопросам: @viaWarrior\n"
-            "Наш канал: @UnitySystem"
-        ),
-        "uk": (
-            "Привіт!\n"
-            "Надішли голосове або відео-кружечок – розшифрую його в текст 🙃\n\n"
-            "Що вміє viaVoice:\n"
-            "🎙 Розшифровка голосових повідомлень;\n"
-            "🎥 Розшифровка відео-кружечків;\n"
-            "💬 Відповідь приходить зручною цитатою.\n\n"
-            "З питань: @viaWarrior\n"
-            "Канал: @UnitySystem"
-        ),
-        "en": (
-            "Hi!\n"
-            "Send a voice message or video note – I'll transcribe it to text 🙃\n\n"
-            "What viaVoice can do:\n"
-            "🎙 Transcribing voice messages;\n"
-            "🎥 Transcribing video notes;\n"
-            "💬 The reply comes as a neat quote.\n\n"
-            "Questions: @viaWarrior\n"
-            "Channel: @UnitySystem"
-        ),
-    },
-
-    # --- Приветствие /start у viaUnity (хаб) ---
-    "welcome_unity": {
-        "ru": (
             "Привет!\n"
             "Я умею всё сразу – пришли ссылку, голосовое или спроси у ИИ 🙃\n\n"
             "Что умеет UnitySystem:\n"
@@ -165,70 +88,20 @@ TEXTS = {
         ),
     },
 
-    # --- Профиль ботов: About (короткое) и Description (экран до Start) ---
-    "about_voice": {
-        "ru": "Расшифрую голосовые и видео-кружки в текст 🙃\nПо вопросам: @viaWarrior\nНаш канал: @UnitySystem",
-        "uk": "Розшифрую голосові та відео-кружечки в текст 🙃\nЗ питань: @viaWarrior\nКанал: @UnitySystem",
-        "en": "I turn voice messages and video notes into text 🙃\nQuestions: @viaWarrior\nChannel: @UnitySystem",
-    },
-    "desc_voice": {
-        "ru": "@viaVoiceBot расшифрует твои голосовые сообщения и видео-кружки в текст 🙃\nПо вопросам: @viaWarrior\nНаш канал: @UnitySystem",
-        "uk": "@viaVoiceBot розшифрує твої голосові повідомлення та відео-кружечки в текст 🙃\nЗ питань: @viaWarrior\nКанал: @UnitySystem",
-        "en": "@viaVoiceBot transcribes your voice messages and video notes into text 🙃\nQuestions: @viaWarrior\nChannel: @UnitySystem",
-    },
-    "about_unity": {
+    # --- Профиль бота: About (короткое) и Description (экран до Start) ---
+    "about": {
         "ru": "Скачивание, расшифровка, конвертер валют и ИИ – всё в одном 🙃\nПо вопросам: @viaWarrior\nНаш канал: @UnitySystem",
         "uk": "Завантаження, розшифровка, конвертер валют і ШІ – все в одному 🙃\nЗ питань: @viaWarrior\nКанал: @UnitySystem",
         "en": "Downloads, transcription, currency converter and AI – all in one 🙃\nQuestions: @viaWarrior\nChannel: @UnitySystem",
     },
-    "desc_unity": {
+    "desc": {
         "ru": "@UnitySystemBot умеет всё сразу: скачивает видео, фото и музыку, расшифровывает голосовые, конвертирует валюты и отвечает как ИИ по команде /ai 🙃\nПо вопросам: @viaWarrior\nНаш канал: @UnitySystem",
         "uk": "@UnitySystemBot вміє все одразу: завантажує відео, фото та музику, розшифровує голосові, конвертує валюти та відповідає як ШІ за командою /ai 🙃\nЗ питань: @viaWarrior\nКанал: @UnitySystem",
         "en": "@UnitySystemBot does it all: downloads video, photo and music, transcribes voice messages, converts currencies and answers as AI via /ai 🙃\nQuestions: @viaWarrior\nChannel: @UnitySystem",
     },
 
-    # --- Справка /help: только перечень команд под роль бота ---
-    # viaSaver – только скачивание
-    "help_saver": {
-        "ru": (
-            "ℹ️ <b>Команды viaSaver</b>\n\n"
-            "/start – перезапустить бота\n"
-            "/help – эта справка\n"
-            "/premium – оформить Premium ✨"
-        ),
-        "uk": (
-            "ℹ️ <b>Команди viaSaver</b>\n\n"
-            "/start – перезапустити бота\n"
-            "/help – ця довідка\n"
-            "/premium – оформити Premium ✨"
-        ),
-        "en": (
-            "ℹ️ <b>viaSaver commands</b>\n\n"
-            "/start – restart the bot\n"
-            "/help – this help\n"
-            "/premium – get Premium ✨"
-        ),
-    },
-    # viaVoice – только расшифровка
-    "help_voice": {
-        "ru": (
-            "ℹ️ <b>Команды viaVoice</b>\n\n"
-            "/start – перезапустить бота\n"
-            "/help – эта справка"
-        ),
-        "uk": (
-            "ℹ️ <b>Команди viaVoice</b>\n\n"
-            "/start – перезапустити бота\n"
-            "/help – ця довідка"
-        ),
-        "en": (
-            "ℹ️ <b>viaVoice commands</b>\n\n"
-            "/start – restart the bot\n"
-            "/help – this help"
-        ),
-    },
-    # viaUnity – всё сразу
-    "help_unity": {
+    # --- Справка /help: перечень команд ---
+    "help": {
         "ru": (
             "ℹ️ <b>Команды UnitySystem</b>\n\n"
             "/start – перезапустить бота\n"
@@ -265,18 +138,8 @@ TEXTS = {
         "en": "🧹 Cache cleared: <b>{count}</b> entries removed.\nTelegram files are untouched; the bot will just re-download them on next request.",
     },
 
-    # --- Плейсхолдер поля ввода (Reply-клавиатура), под роль бота ---
-    "kb_placeholder_saver": {
-        "ru": "Пришли ссылку для скачивания",
-        "uk": "Надішли посилання для завантаження",
-        "en": "Send a link to download",
-    },
-    "kb_placeholder_voice": {
-        "ru": "Пришли голосовое или видео-кружок",
-        "uk": "Надішли голосове або відео-кружечок",
-        "en": "Send a voice message or video note",
-    },
-    "kb_placeholder_unity": {
+    # --- Плейсхолдер поля ввода (Reply-клавиатура) ---
+    "kb_placeholder": {
         "ru": "Ссылка, голосовое, валюта или /ai",
         "uk": "Посилання, голосове, валюта або /ai",
         "en": "Link, voice, currency or /ai",
@@ -423,11 +286,6 @@ TEXTS = {
         "ru": "⚙️ Функции бота в этой группе (нажмите, чтобы вкл/выкл):",
         "uk": "⚙️ Функції бота в цій групі (натисніть, щоб увімк/вимк):",
         "en": "⚙️ Bot features in this group (tap to toggle):",
-    },
-    "cfg_group_only": {
-        "ru": "Эта команда работает только в группах.",
-        "uk": "Ця команда працює лише в групах.",
-        "en": "This command works only in groups.",
     },
     "cfg_admin_only": {
         "ru": "Настраивать функции могут только администраторы группы.",
@@ -586,9 +444,9 @@ TEXTS = {
         "en": "With Premium ⭐ you can download videos in the highest resolution and music as full albums.",
     },
     "premium_text": {
-        "ru": "✨ <b>viaSaver Premium</b>\n\n{desc}\n\nРазовая покупка, навсегда. Цена: <b>{price} ⭐</b>",
-        "uk": "✨ <b>viaSaver Premium</b>\n\n{desc}\n\nРазова покупка, назавжди. Ціна: <b>{price} ⭐</b>",
-        "en": "✨ <b>viaSaver Premium</b>\n\n{desc}\n\nOne-time purchase, forever. Price: <b>{price} ⭐</b>",
+        "ru": "✨ <b>UnitySystem Premium</b>\n\n{desc}\n\nРазовая покупка, навсегда. Цена: <b>{price} ⭐</b>",
+        "uk": "✨ <b>UnitySystem Premium</b>\n\n{desc}\n\nРазова покупка, назавжди. Ціна: <b>{price} ⭐</b>",
+        "en": "✨ <b>UnitySystem Premium</b>\n\n{desc}\n\nOne-time purchase, forever. Price: <b>{price} ⭐</b>",
     },
     "btn_buy": {
         "ru": "Купить за {price} ⭐", "uk": "Купити за {price} ⭐", "en": "Buy for {price} ⭐",

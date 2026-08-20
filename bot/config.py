@@ -3,16 +3,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Токен единственного бота @UnitySystemBot (умеет всё: скачивание, расшифровка,
+# конвертер валют и ИИ). Без него запускать нечего.
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# Дополнительные боты (общий мотor, ресурсы не дублируются). Пусто = бот не запускается.
-# Пока пусто — @viaSaver умеет всё (скачивание + расшифровка). Как только появятся эти
-# токены — @viaSaver станет «только скачивание», расшифровка уедет в @viaTranscription,
-# а @viaUnitySystem получит все функции + /setconfig по группам.
-TRANSCRIBE_BOT_TOKEN = os.getenv("TRANSCRIBE_BOT_TOKEN", "")
-UNITY_BOT_TOKEN = os.getenv("UNITY_BOT_TOKEN", "")
-# Пусто — конвертер валют живёт внутри @viaUnitySystem. Появится токен — станет
-# отдельным ботом @viaCurrency (по образцу viaVoice), без рефакторинга.
-CURRENCY_BOT_TOKEN = os.getenv("CURRENCY_BOT_TOKEN", "")
 
 # --- ИИ-ассистент (/ai). Бесплатные провайдеры: Gemini (Google AI Studio) и Groq. ---
 # Ключи бесплатные: Gemini — aistudio.google.com/apikey, Groq — console.groq.com/keys.

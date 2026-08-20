@@ -319,7 +319,7 @@ def _download_images(images: list[str], item_id: str) -> list[str]:
     files = []
     for i, img_url in enumerate(images, 1):
         content = requests.get(_abs(img_url), headers=HEADERS, timeout=60).content
-        path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.jpg")
+        path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.jpg")
         with open(path, "wb") as f:
             f.write(content)
         files.append(path)
@@ -337,11 +337,11 @@ def _download_slideshow_items(data: dict, item_id: str) -> list[tuple[str, bool]
         live = lives[i - 1] if i - 1 < len(lives) else None
         if live:
             content = requests.get(_abs(live), headers=HEADERS, timeout=120).content
-            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.mp4")
+            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.mp4")
             is_video = True
         else:
             content = requests.get(_abs(img_url), headers=HEADERS, timeout=60).content
-            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.jpg")
+            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.jpg")
             is_video = False
         with open(path, "wb") as f:
             f.write(content)
@@ -367,7 +367,7 @@ def download_from(info: dict, mode: str = "auto") -> list[str]:
             if not vid_url:
                 continue
             content = requests.get(_abs(vid_url), headers=HEADERS, timeout=120).content
-            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_viaSaver.mp4")
+            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.mp4")
             with open(path, "wb") as f:
                 f.write(content)
             files.append(path)
@@ -393,7 +393,7 @@ def download_from(info: dict, mode: str = "auto") -> list[str]:
                     content = requests.get(_abs(music_url), headers=HEADERS, timeout=60).content
                     with open(audio_path, "wb") as f:
                         f.write(content)
-                    video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_viaSaver.mp4")
+                    video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
                     _build_slideshow_mixed(items, audio_path, video_path)
                     if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
                         for f in all_files:
@@ -412,7 +412,7 @@ def download_from(info: dict, mode: str = "auto") -> list[str]:
                 content = requests.get(_abs(music_url), headers=HEADERS, timeout=60).content
                 with open(audio_path, "wb") as f:
                     f.write(content)
-                video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_viaSaver.mp4")
+                video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
                 _build_slideshow(files, audio_path, video_path)
                 if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
                     for f in files:
@@ -427,7 +427,7 @@ def download_from(info: dict, mode: str = "auto") -> list[str]:
     # Обычное видео
     play = data.get("hdplay") or data.get("play")
     content = requests.get(_abs(play), headers=HEADERS, timeout=120).content
-    path = os.path.join(DOWNLOADS_DIR, f"{item_id}_viaSaver.mp4")
+    path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
     with open(path, "wb") as f:
         f.write(content)
     return [path]

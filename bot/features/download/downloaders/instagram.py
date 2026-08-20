@@ -49,7 +49,7 @@ def _shortcode(url: str) -> str | None:
 def download_reel(url: str) -> str:
     """Скачивает Instagram Reel (видео) в максимальном качестве — как Shorts."""
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_viaSaver.%(ext)s")
+    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_dl.%(ext)s")
 
     fmt = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
 
@@ -175,7 +175,7 @@ def download_post(url: str) -> list[str]:
             continue
         media_url, is_vid = media
         ext = ".mp4" if is_vid else ".jpg"
-        path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{i}_viaSaver{ext}")
+        path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{i}_dl{ext}")
         data = requests.get(media_url, timeout=60, proxies=proxies).content
         with open(path, "wb") as f:
             f.write(data)

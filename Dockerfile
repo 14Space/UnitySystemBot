@@ -11,13 +11,12 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# yt-dlp: ставим НОЧНУЮ сборку — только в ней есть скачивание через SABR (новый
-# протокол YouTube). Стабильная это ещё не умеет и отдаёт 403 на популярных роликах.
-# Плюс плагин bgutil — клиент к «выдавателю пропусков» (PO-токенов), без пропусков
-# YouTube тоже отдаёт 403. Провайдер — отдельный сервис bgutil-provider в compose.
+# yt-dlp: поверх стабильной из requirements ставим НОЧНУЮ сборку — только в ней есть
+# скачивание через SABR (новый протокол YouTube). Стабильная это ещё не умеет и отдаёт
+# 403 на популярных роликах. Плагин bgutil (клиент к «выдавателю пропусков», PO-токенам)
+# уже стоит из requirements.txt — здесь не дублируем.
 RUN pip install --no-cache-dir -U --pre "yt-dlp[default]" \
-        --extra-index-url https://github.com/yt-dlp/yt-dlp-nightly-builds/releases \
-    && pip install --no-cache-dir bgutil-ytdlp-pot-provider
+        --extra-index-url https://github.com/yt-dlp/yt-dlp-nightly-builds/releases
 
 # Браузер Chromium для Playwright (рендер карточек твитов) + его системные зависимости.
 RUN playwright install --with-deps chromium
