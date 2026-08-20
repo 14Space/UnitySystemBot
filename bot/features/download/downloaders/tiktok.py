@@ -231,7 +231,27 @@ def _resolve_short(url: str) -> str:
 
 
 def _api_call(url: str) -> dict:
-    return requests.get(API, params={"url": url, "hd": 1}, headers=HEADERS, timeout=30).json()
+    return _api_call_retry(url)
+
+
+def _api_call_retry(url: str, attempts: int = 3, delay: float = 1.2) -> dict:
+    """Запрос к API TikTok (tikwm) с ПОВТОРАМИ. Под нагрузкой сервис иногда отдаёт
+    пустой/битый ответ (тогда падает .json()), таймаут или ошибочный код — всё это
+    временно. Пробуем до `attempts` раз с паузой. Если все попытки мимо — возвращаем
+    словарь с code=-1 (msg=причина), чтобы верхний уровень пошёл в запасной сервис."""
+    last = None
+    for i in range(attempts):
+        try:
+            data = requests.get(API, params={"url": url, "hd": 1},
+                                headers=HEADERS, timeout=30).json()
+            if data.get("code") == 0:
+                return data                      # успех
+            last = data.get("msg") or f"code={data.get('code')}"
+        except Exception as e:                   # пустой/битый ответ, сеть, таймаут
+            last = f"{type(e).__name__}: {e}"
+        if i < attempts - 1:
+            time.sleep(delay)
+    return {"code": -1, "msg": last or "TikTok API error"}
 
 
 def _fetch_backup(url: str) -> dict | None:
@@ -273,12 +293,7 @@ def _fetch_tiktok_api(url: str) -> dict:
     'video' — обычное видео, 'slideshow' — набор фото (+ возможно музыка),
     'live' — Live Photo (короткие видео). Возвращает {'id','kind','data'}."""
     url = _resolve_short(url)
-    payload = _api_call(url)
-    # Отказ бывает из-за мелочей: временный сбой сервиса или лимит «1 запрос/сек».
-    # Ждём секунду и пробуем ещё раз — пользователь заминки не замечает.
-    if payload.get("code") != 0:
-        time.sleep(1.2)
-        payload = _api_call(url)
+    payload = _api_call(url)     # внутри уже до 3 попыток с паузой (см. _api_call_retry)
     if payload.get("code") == 0:
         data = payload["data"]
         # Фото-посты (photo mode) содержат images. У «живых фото» вдобавок бывает

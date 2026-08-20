@@ -18,9 +18,15 @@
 import asyncio
 import logging
 import os
+import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+# Часовой пояс админа — для отметки времени последней проверки в /statistics.
+_ADMIN_ZONE = ZoneInfo(os.getenv("ADMIN_TZ", "Europe/Chisinau"))
 
 # Потолок времени на одну проверку (сек) — чтобы зависшая площадка не тормозила отчёт.
 _PROBE_TIMEOUT = int(os.getenv("HEALTHCHECK_TIMEOUT", "120"))
@@ -58,6 +64,7 @@ U_TWITTER_TEXT = _url("TWITTER_TEXT", "https://x.com/jack/status/20")
 U_PORNHUB    = _url("PORNHUB", "https://www.pornhub.com/view_video.php?viewkey=6a757d85f1e87")
 U_PORNHUB_SHORT = _url("PORNHUB_SHORT", "https://www.pornhub.com/shorties/6a16e8fcbb7ec")
 U_HDREZKA    = _url("HDREZKA", "https://rezka.ag/films/fiction/45140-tron-sleduyuschiy-den-2011-latest.html")
+U_HDREZKA_SERIES = _url("HDREZKA_SERIES", "https://rezka.ag/cartoons/comedy/13469-multachki-bayki-metra-2008.html#t:56-s:1-e:1")
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +95,7 @@ def _cleanup(paths):
 
 
 def _kb(nbytes: int) -> str:
-    return f"{nbytes // 1024} КБ" if nbytes < 1024 * 1024 else f"{nbytes / 1024 / 1024:.1f} МБ"
+    return f"{nbytes // 1024}КБ" if nbytes < 1024 * 1024 else f"{nbytes / 1024 / 1024:.1f}МБ"
 
 
 # ---------------------------------------------------------------------------
@@ -126,15 +133,13 @@ async def _check_whisper():
 # ---------------------------------------------------------------------------
 # Проверки скачивания (реальными функциями бота)
 # ---------------------------------------------------------------------------
-async def _dl_quality_video(url):
-    """YouTube-видео и PornHub: путь «выбор качества» — берём самое лёгкое качество."""
-    from bot.features.download.downloaders.ytdlp_wrapper import (
-        get_video_info, get_available_qualities, download_video)
+async def _dl_probe(url, audio_only=False):
+    """Универсальная лёгкая проверка скачивания: качаем САМЫЙ ЛЁГКИЙ формат тем же
+    боевым путём (POT/маскировка/прокси), но без траты трафика на полное качество."""
+    from bot.features.download.downloaders.ytdlp_wrapper import download_probe
 
     def work():
-        info = get_video_info(url)
-        quals = get_available_qualities(info)
-        path = download_video(url, min(quals) if quals else 144)
+        path = download_probe(url, audio_only=audio_only)
         try:
             size = _size_of(path)
             return size > 0, _kb(size) if size else "файл пуст"
@@ -160,29 +165,14 @@ async def _dl_shorts(url):
 
 async def _dl_pornhub_short(url):
     """PornHub shorties — это обычное видео с другим URL. Переписываем в стандартный
-    (как это делает боевой обработчик) и качаем лучшим качеством, как Shorts."""
+    (как это делает боевой обработчик) и качаем самый лёгкий формат."""
     from urllib.parse import urlparse
-    from bot.features.download.downloaders.ytdlp_wrapper import download_shorts
+    from bot.features.download.downloaders.ytdlp_wrapper import download_probe
 
     def work():
         vid = urlparse(url).path.rstrip("/").split("/")[-1]
         std = f"https://www.pornhub.com/view_video.php?viewkey={vid}"
-        path = download_shorts(std)
-        try:
-            size = _size_of(path)
-            return size > 0, _kb(size) if size else "файл пуст"
-        finally:
-            _cleanup(path)
-
-    return await asyncio.to_thread(work)
-
-
-async def _dl_audio(url):
-    """YT Music и SoundCloud-трек: скачиваем аудио."""
-    from bot.features.download.downloaders.ytdlp_wrapper import download_audio
-
-    def work():
-        path = download_audio(url, embed_thumbnail=False)
+        path = download_probe(std)
         try:
             size = _size_of(path)
             return size > 0, _kb(size) if size else "файл пуст"
@@ -212,7 +202,7 @@ async def _check_spotify():
     """Трек Spotify целиком: метаданные (ключи API) → поиск источника → скачивание."""
     from bot.features.download.downloaders.spotify import get_track_info
     from bot.features.download.downloaders.music_search import find_track_source
-    from bot.features.download.downloaders.ytdlp_wrapper import download_audio
+    from bot.features.download.downloaders.ytdlp_wrapper import download_probe
 
     def work():
         info = get_track_info(U_SPOTIFY)
@@ -222,10 +212,10 @@ async def _check_spotify():
         src = find_track_source(info["artist"].split(",")[0], info["title"], info["duration"])
         if not src:
             return False, f"источник не найден ({label})"
-        path = download_audio(src, embed_thumbnail=False)
+        path = download_probe(src, audio_only=True)
         try:
             size = _size_of(path)
-            return size > 0, f"{label} — {_kb(size)}" if size else f"скачивание пусто ({label})"
+            return size > 0, f"{label} – {_kb(size)}" if size else f"скачивание пусто ({label})"
         finally:
             _cleanup(path)
 
@@ -332,13 +322,13 @@ async def _check_twitter(url, expect_text=False):
     return await asyncio.to_thread(work)
 
 
-async def _check_hdrezka():
-    """HDRezka: открываем страницу и читаем инфо (озвучки/сезоны). Сам фильм не качаем."""
+async def _check_hdrezka(url):
+    """HDRezka: открываем страницу и читаем инфо (озвучки/сезоны). Само видео не качаем."""
     from bot.features.download.downloaders import hdrezka
 
     def work():
-        api = hdrezka.open_media(U_HDREZKA)
-        info = hdrezka.get_info(api, U_HDREZKA)
+        api = hdrezka.open_media(url)
+        info = hdrezka.get_info(api, url)
         title = info.get("title") or info.get("name") or "?"
         return True, f"открыт: {title}"
 
@@ -349,45 +339,48 @@ async def _check_hdrezka():
 # Реестр проверок. Порядок = порядок в отчёте. url="" → проверка пропускается (⚪).
 # ---------------------------------------------------------------------------
 _CHECKS = [
-    # Скачивание
-    ("YouTube — видео",        lambda: _dl_quality_video(U_YT_VIDEO),        U_YT_VIDEO),
-    ("YouTube — Shorts",       lambda: _dl_shorts(U_YT_SHORTS),             U_YT_SHORTS),
-    ("YouTube — YT Music",     lambda: _dl_audio(U_YT_MUSIC),               U_YT_MUSIC),
-    ("Spotify — трек",         _check_spotify,                               U_SPOTIFY),
-    ("Spotify — альбом/плейлист", _check_spotify_collection,                U_SPOTIFY_COL),
-    ("SoundCloud — трек",      lambda: _dl_audio(U_SOUNDCLOUD),             U_SOUNDCLOUD),
-    ("SoundCloud — сет",       _check_soundcloud_set,                        U_SOUNDCLOUD_SET),
-    ("Instagram — Reels",      lambda: _dl_reel(U_IG_REEL),                 U_IG_REEL),
-    ("Instagram — фото-пост",  lambda: _dl_ig_post(U_IG_PHOTO),             U_IG_PHOTO),
-    ("Instagram — карусель",   lambda: _dl_ig_post(U_IG_CAROUSEL, True),    U_IG_CAROUSEL),
-    ("TikTok — видео",         lambda: _check_tiktok(U_TIKTOK),             U_TIKTOK),
-    ("TikTok — слайдшоу",      lambda: _check_tiktok(U_TIKTOK_SLIDE, True), U_TIKTOK_SLIDE),
-    ("Pinterest — фото",       lambda: _dl_media(U_PINTEREST_IMG),          U_PINTEREST_IMG),
-    ("Pinterest — видео",      lambda: _dl_media(U_PINTEREST_VID),          U_PINTEREST_VID),
-    ("X (Twitter) — видео",    lambda: _check_twitter(U_TWITTER_VIDEO),     U_TWITTER_VIDEO),
-    ("X (Twitter) — фото",     lambda: _check_twitter(U_TWITTER_PHOTO),     U_TWITTER_PHOTO),
-    ("X (Twitter) — текст",    lambda: _check_twitter(U_TWITTER_TEXT, True), U_TWITTER_TEXT),
-    ("PornHub — видео",        lambda: _dl_quality_video(U_PORNHUB),        U_PORNHUB),
-    ("PornHub — shorties",     lambda: _dl_pornhub_short(U_PORNHUB_SHORT),  U_PORNHUB_SHORT),
-    ("HDRezka — фильм/сериал", _check_hdrezka,                              U_HDREZKA),
-    # Функции
-    ("ИИ-ассистент",           _check_ai,                                    "x"),
-    ("Конвертер валют",        _check_currency,                              "x"),
-    ("Расшифровка (Whisper)",  _check_whisper,                               "x"),
+    # (название, платформа-для-порядка, проверка, тестовая ссылка). Платформа=None —
+    # это функция (не площадка): такие всегда идут в конце.
+    ("YouTube видео",           "YouTube",    lambda: _dl_probe(U_YT_VIDEO),               U_YT_VIDEO),
+    ("YouTube Shorts",          "YouTube",    lambda: _dl_shorts(U_YT_SHORTS),             U_YT_SHORTS),
+    ("YT Music",                "YT Music",   lambda: _dl_probe(U_YT_MUSIC, True),         U_YT_MUSIC),
+    ("Spotify трек",            "Spotify",    _check_spotify,                               U_SPOTIFY),
+    ("Spotify альбом/плейлист", "Spotify",    _check_spotify_collection,                    U_SPOTIFY_COL),
+    ("SoundCloud трек",         "SoundCloud", lambda: _dl_probe(U_SOUNDCLOUD, True),        U_SOUNDCLOUD),
+    ("SoundCloud сет",          "SoundCloud", _check_soundcloud_set,                        U_SOUNDCLOUD_SET),
+    ("Instagram Reels",         "Instagram",  lambda: _dl_reel(U_IG_REEL),                 U_IG_REEL),
+    ("Instagram фото-пост",     "Instagram",  lambda: _dl_ig_post(U_IG_PHOTO),             U_IG_PHOTO),
+    ("Instagram карусель",      "Instagram",  lambda: _dl_ig_post(U_IG_CAROUSEL, True),    U_IG_CAROUSEL),
+    ("TikTok видео",            "TikTok",     lambda: _check_tiktok(U_TIKTOK),             U_TIKTOK),
+    ("TikTok слайдшоу",         "TikTok",     lambda: _check_tiktok(U_TIKTOK_SLIDE, True), U_TIKTOK_SLIDE),
+    ("Pinterest фото",          "Pinterest",  lambda: _dl_media(U_PINTEREST_IMG),          U_PINTEREST_IMG),
+    ("Pinterest видео",         "Pinterest",  lambda: _dl_media(U_PINTEREST_VID),          U_PINTEREST_VID),
+    ("Twitter видео",           "Twitter",    lambda: _check_twitter(U_TWITTER_VIDEO),     U_TWITTER_VIDEO),
+    ("Twitter фото",            "Twitter",    lambda: _check_twitter(U_TWITTER_PHOTO),     U_TWITTER_PHOTO),
+    ("Twitter текст",           "Twitter",    lambda: _check_twitter(U_TWITTER_TEXT, True),U_TWITTER_TEXT),
+    ("PornHub видео",           "PornHub",    lambda: _dl_probe(U_PORNHUB),                U_PORNHUB),
+    ("PornHub Shorties",        "PornHub",    lambda: _dl_pornhub_short(U_PORNHUB_SHORT),  U_PORNHUB_SHORT),
+    ("HDRezka фильм",           "HDRezka",    lambda: _check_hdrezka(U_HDREZKA),           U_HDREZKA),
+    ("HDRezka сериал",          "HDRezka",    lambda: _check_hdrezka(U_HDREZKA_SERIES),    U_HDREZKA_SERIES),
+    # Функции (не площадки) — всегда в конце
+    ("ИИ-ассистент",            None,         _check_ai,                                    "x"),
+    ("Конвертер валют",         None,         _check_currency,                              "x"),
+    ("Расшифровка Whisper",     None,         _check_whisper,                               "x"),
 ]
 
 
 # Проверки с Playwright (headless-браузер) гоняем строго по очереди через общий замок:
 # синхронный Playwright не любит параллельный запуск. Сейчас такая одна — HDRezka
 # (обход анти-бота); замок оставлен на случай появления новых.
-_PLAYWRIGHT_CHECKS = {"HDRezka — фильм/сериал"}
+_PLAYWRIGHT_CHECKS = {"HDRezka фильм", "HDRezka сериал"}
 
 
-async def _run(name: str, coro_fn, url: str, sem: asyncio.Semaphore,
-               pw_lock: asyncio.Lock) -> dict:
+async def _run(name: str, platform: str | None, coro_fn, url: str, idx: int,
+               sem: asyncio.Semaphore, pw_lock: asyncio.Lock) -> dict:
     """Запускает одну проверку с таймаутом и перехватом ошибок. url=="" → пропуск."""
+    base = {"name": name, "platform": platform, "idx": idx}
     if not url:
-        return {"name": name, "state": "skip", "detail": "нет тестовой ссылки", "sec": 0.0}
+        return {**base, "state": "skip", "detail": "нет тестовой ссылки", "sec": 0.0}
     async with sem:
         start = time.monotonic()
         try:
@@ -402,7 +395,7 @@ async def _run(name: str, coro_fn, url: str, sem: asyncio.Semaphore,
         except Exception as e:                       # noqa: BLE001 — отчёт важнее типа
             state, detail = "fail", f"{type(e).__name__}: {e}"[:140]
             logger.warning("Проверка «%s» упала", name, exc_info=True)
-    return {"name": name, "state": state, "detail": detail,
+    return {**base, "state": state, "detail": detail,
             "sec": round(time.monotonic() - start, 1)}
 
 
@@ -411,16 +404,88 @@ async def run_health_checks() -> list[dict]:
     sem = asyncio.Semaphore(_CONCURRENCY)
     pw_lock = asyncio.Lock()
     return list(await asyncio.gather(
-        *(_run(n, fn, url, sem, pw_lock) for n, fn, url in _CHECKS)))
+        *(_run(name, platform, fn, url, idx, sem, pw_lock)
+          for idx, (name, platform, fn, url) in enumerate(_CHECKS))))
 
 
-def format_health(results: list[dict]) -> str:
-    """Блок «проверка функционала» для дневного отчёта (HTML)."""
+# Кэш последней проверки: заполняется периодической проверкой (каждые N часов) и дневным
+# отчётом. /statistics берёт результат отсюда и показывает время, КОГДА он был снят, —
+# чтобы не гонять тяжёлую проверку на каждое нажатие.
+_LAST: dict = {"results": [], "at": None}
+
+
+async def run_and_cache() -> list[dict]:
+    """Прогоняет проверку и запоминает результат + время (для /statistics)."""
+    results = await run_health_checks()
+    _LAST["results"] = results
+    _LAST["at"] = datetime.now(_ADMIN_ZONE)
+    return results
+
+
+def last_results() -> tuple[list[dict], "datetime | None"]:
+    """Последний закэшированный результат проверки и время его снятия (или [], None)."""
+    return _LAST["results"], _LAST["at"]
+
+
+def _display_order(results: list[dict], platform_order: list[str] | None) -> list[dict]:
+    """Порядок вывода: платформы — по убыванию использования (platform_order), внутри
+    платформы — по алфавиту; функции (platform=None) — в самом конце. Без platform_order
+    (например, в тревоге) — оставляем порядок реестра."""
+    if not platform_order:
+        return results
+    rank = {p: i for i, p in enumerate(platform_order)}
+
+    def key(r):
+        p = r.get("platform")
+        if p is None:
+            return (2, r.get("idx", 0), "")               # функции — в конце, в порядке реестра
+        if p not in rank:
+            return (1, 0, r["name"].lower())              # платформа без статистики — следом
+        return (0, rank[p], r["name"].lower())            # по использованию, внутри — алфавит
+
+    return sorted(results, key=key)
+
+
+def format_health(results: list[dict], platform_order: list[str] | None = None,
+                  at: "datetime | None" = None) -> str:
+    """Блок «проверка функционала» для отчёта (HTML). platform_order — платформы по
+    убыванию использования (порядок как в «По платформам»). at — время, когда проверка
+    была снята: если задано, в заголовок добавляется «(была в ЧЧ:ММ)» (для /statistics)."""
     icons = {"ok": "✅", "fail": "❌", "skip": "⚪"}
     ok_n = sum(1 for r in results if r["state"] == "ok")
     tested = sum(1 for r in results if r["state"] != "skip")
-    lines = [f"🩺 <b>Проверка функционала: {ok_n}/{tested}</b>"]
-    for r in results:
-        tail = f" ({r['sec']}с)" if r["state"] != "skip" else ""
-        lines.append(f"{icons[r['state']]} {r['name']} — {r['detail']}{tail}")
+    head = "Проверка функционала"
+    if at is not None:
+        head += f" (была в {at.strftime('%H:%M')})"
+    lines = [f"<b>{head}: {ok_n}/{tested}</b>"]
+    for r in _display_order(results, platform_order):
+        # Рабочие — чисто (только галочка + название). У сломанных/пропущенных оставляем
+        # короткую причину (это не размер/время, а «что не так»), без времени.
+        if r["state"] == "ok":
+            lines.append(f"✅ {r['name']}")
+        else:
+            lines.append(f"{icons[r['state']]} {r['name']} – {r['detail']}")
+    return "\n".join(lines)
+
+
+def _short_reason(detail: str) -> str:
+    """Короткая причина сбоя для тревоги: вытаскиваем «HTTP Error NNN» или обрезаем."""
+    m = re.search(r"HTTP Error \d+(?:: [\w ]+?)?(?= \(|$|\.)", detail)
+    if m:
+        return m.group(0).strip()
+    s = detail.split(" (caused by")[0].strip()
+    if len(s) > 70 and ": " in s:
+        s = s.split(": ")[-1]
+    return s[:80]
+
+
+def format_alert(results: list[dict]) -> str:
+    """Короткая тревога — ТОЛЬКО про сломанное. Пусто, если всё работает (тогда не шлём)."""
+    failed = [r for r in results if r["state"] == "fail"]
+    if not failed:
+        return ""
+    ok_n = sum(1 for r in results if r["state"] == "ok")
+    tested = sum(1 for r in results if r["state"] != "skip")
+    lines = [f"❌ {r['name']} - {_short_reason(r['detail'])}" for r in failed]
+    lines.append(f"Остальное работает ({ok_n}/{tested})")
     return "\n".join(lines)

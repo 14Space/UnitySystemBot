@@ -16,6 +16,7 @@ from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar
 from bot.utils import limits, traffic
 from bot.utils import inflight
+from bot.features.common import alerts
 from bot.utils.i18n import t, lang_of, t_kind
 from bot.database import SessionLocal
 from bot.database.repository import (
@@ -100,6 +101,10 @@ async def process_link(message: Message, url: str):
     # на чужие/сторонние ссылки, чтобы не спамить и не отвечать невпопад).
     if platform == Platform.UNKNOWN:
         return
+
+    # Контекст для уведомления админу о сбое (какая площадка и ссылка). Выставляем ДО
+    # запуска обработки, чтобы дочерние задачи скачивания его унаследовали.
+    alerts.current_request.set(f"{platform.value}: {url}")
 
     # Статистика популярности платформ
     async with SessionLocal() as session:

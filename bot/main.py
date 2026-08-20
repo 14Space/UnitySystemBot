@@ -8,14 +8,17 @@ from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import (
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
     BotCommandScopeAllChatAdministrators, BotCommandScopeAllPrivateChats,
+    ErrorEvent,
 )
 from bot.config import (
     BOT_TOKEN, TRANSCRIBE_BOT_TOKEN, UNITY_BOT_TOKEN, CURRENCY_BOT_TOKEN,
     TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ, REPORT_HOUR,
+    HEALTHCHECK_EVERY_HOURS,
 )
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
-from bot.utils import traffic
+from bot.utils import traffic, limits
+from bot.features.common import alerts
 from bot.utils.i18n import t
 from bot.middlewares.register_user import RegisterUserMiddleware
 from bot.middlewares.throttle import ThrottleMiddleware
@@ -26,12 +29,17 @@ from bot.features.transcribe import transcribe
 from bot.features.currency import convert as currency
 from bot.features.ai import chat as ai_chat
 from bot.features.config import setconfig
-from bot.features.common.admin import format_stats
-from bot.features.common.healthcheck import run_health_checks, format_health
+from bot.features.common.admin import format_stats, platform_ranking
+from bot.features.common.healthcheck import run_and_cache, format_health, format_alert
 from bot.features.download.maintenance import clean_downloads, update_ytdlp
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+# Приглушаем «болтовню»: aiogram пишет строку на КАЖДОЕ сообщение пользователя
+# («Update … is handled»), а httpx — на каждый HTTP-запрос. В логе от этого тонут
+# реальные ошибки, а файл растёт гигабайтами. Оставляем от них только предупреждения.
+logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 _ADMIN_ZONE = ZoneInfo(ADMIN_TZ)
 
@@ -155,11 +163,32 @@ async def _daily_tasks(bot: Bot):
         try:
             async with SessionLocal() as session:
                 stats = await get_stats(session)
-            health = await run_health_checks()
-            report = f"{format_stats(stats)}\n\n{format_health(health)}"
+            health = await run_and_cache()
+            # Проверку выводим в том же порядке, что и «По платформам» (по использованию).
+            report = f"{format_stats(stats)}\n\n{format_health(health, platform_ranking(stats))}"
             await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
         except Exception:
             logger.exception("Не удалось отправить дневной отчёт")
+
+
+async def _periodic_healthcheck(bot: Bot):
+    """Раннее оповещение: раз в HEALTHCHECK_EVERY_HOURS часов гоняем проверку и, если
+    что-то сломалось, сразу шлём админу короткую тревогу. Всё ок — молчим (не спамим).
+    Результат кэшируется — его показывает /statistics. Первый прогон — вскоре после
+    старта (наполнить кэш). Полный отчёт со статистикой всё равно приходит раз в сутки."""
+    await asyncio.sleep(120)  # не грузим проверкой сам момент запуска
+    while True:
+        try:
+            results = await run_and_cache()
+            if ADMIN_ID:
+                alert = format_alert(results)
+                if alert:
+                    await bot.send_message(ADMIN_ID, alert)
+        except Exception:
+            logger.exception("Периодическая проверка функционала упала")
+        if HEALTHCHECK_EVERY_HOURS <= 0:
+            return  # периодику выключили — но кэш для /statistics мы уже наполнили
+        await asyncio.sleep(HEALTHCHECK_EVERY_HOURS * 3600)
 
 
 async def _flush_traffic():
@@ -221,7 +250,35 @@ async def main():
     dp.include_router(currency.router)
     dp.include_router(link.router)
 
+    # Глобальный перехват необработанных ошибок: пишем в лог и коротко оповещаем админа
+    # (не чаще раза в 10 минут, чтобы всплеск ошибок не превратился в спам).
+    alert_bot = bots[0]
+    err_state = {"last": 0.0}
+
+    async def _on_error(event: ErrorEvent):
+        logger.error("Необработанная ошибка при обработке апдейта", exc_info=event.exception)
+        if not ADMIN_ID:
+            return
+        now = asyncio.get_event_loop().time()
+        if now - err_state["last"] < 600:
+            return
+        err_state["last"] = now
+        try:
+            await alert_bot.send_message(
+                ADMIN_ID,
+                f"⚠️ Ошибка в боте: {type(event.exception).__name__}: {event.exception}"[:400])
+        except Exception:
+            logger.exception("Не удалось отправить тревогу об ошибке")
+
+    dp.errors.register(_on_error)
+
+    # Уведомлять админа о КАЖДОМ сбое, показанном пользователю (через общую точку
+    # limits.friendly_error). Контекст (ссылку) выставляет обработчик ссылок.
+    alerts.configure(alert_bot, ADMIN_ID)
+    limits.set_failure_hook(alerts.note_failure)
+
     asyncio.create_task(_daily_tasks(bots[0]))
+    asyncio.create_task(_periodic_healthcheck(bots[0]))
     asyncio.create_task(_flush_traffic())
     if WHISPER_PREWARM and any_transcribe:
         from bot.features.transcribe.transcriber import warmup

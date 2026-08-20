@@ -82,8 +82,24 @@ def queue_is_full(category: str = LIGHT) -> bool:
     return _limiter.is_full(category)
 
 
+# Хук уведомления о сбое: main подключает сюда alerts.note_failure, чтобы КАЖДЫЙ
+# показанный пользователю сбой заодно уведомлял админа. Держим необязательным, чтобы
+# limits не зависел от бота (и тесты/воркеры работали без него).
+_failure_hook = None
+
+
+def set_failure_hook(hook) -> None:
+    global _failure_hook
+    _failure_hook = hook
+
+
 def friendly_error(exc: Exception, lang: str = "ru") -> str:
     """Понятное пользователю сообщение по тексту ошибки (на языке пользователя)."""
+    if _failure_hook is not None:
+        try:
+            _failure_hook(exc)          # уведомить админа (не роняем ответ пользователю)
+        except Exception:
+            pass
     text = str(exc).lower()
 
     if isinstance(exc, FileTooLargeError) or "too large" in text or "file is too big" in text \

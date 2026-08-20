@@ -1,5 +1,6 @@
 import os
 import time
+import uuid
 import shutil
 import glob
 import subprocess
@@ -65,6 +66,31 @@ def _impersonate_opts(url: str) -> dict:
     if _CHROME_TARGET is not None and "pornhub.com" in (url or ""):
         return {"impersonate": _CHROME_TARGET}
     return {}
+
+
+def download_probe(url: str, audio_only: bool = False) -> str:
+    """Качает САМЫЙ ЛЁГКИЙ формат ролика — для проверки «скачивание работает» без траты
+    трафика на полное качество. Проходит тот же реальный путь, что и боевое скачивание
+    (POT-токены, маскировка под браузер, прокси), поэтому ловит те же поломки. Никакой
+    пост-обработки (перекодирование/теги) — только байты. Возвращает путь к файлу."""
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    tag = uuid.uuid4().hex[:8]
+    # Видео: «worstvideo*+worstaudio/worst» — самое лёгкое видео+звук, иначе самый лёгкий
+    # единый формат. Просто «worst» у YouTube ловит SABR («формат недоступен»), поэтому так.
+    fmt = "worstaudio/worst" if audio_only else "worstvideo*+worstaudio/worst"
+    opts = {
+        **BASE_OPTS,
+        "format": fmt,
+        "outtmpl": os.path.join(DOWNLOADS_DIR, f"probe_{tag}_%(id)s.%(ext)s"),
+        "postprocessors": [],
+        "noplaylist": True,
+        **_proxy_opts(url),
+        **_impersonate_opts(url),
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+    files = glob.glob(os.path.join(DOWNLOADS_DIR, f"probe_{tag}_*"))
+    return files[0] if files else ""
 
 
 def get_video_info(url: str, allow_drm: bool = False) -> dict:

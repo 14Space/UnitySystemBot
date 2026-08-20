@@ -57,6 +57,11 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 ADMIN_TZ = os.getenv("ADMIN_TZ", "Europe/Chisinau")
 REPORT_HOUR = int(os.getenv("REPORT_HOUR", "12"))     # час (0..23) локального времени админа
 
+# Как часто (в часах) гонять проверку функционала для РАННЕГО оповещения: если что-то
+# сломалось — сразу шлём админу короткую тревогу, если всё ок — молчим. Полный отчёт со
+# статистикой всё равно приходит раз в сутки в REPORT_HOUR. 0 = раннее оповещение выкл.
+HEALTHCHECK_EVERY_HOURS = int(os.getenv("HEALTHCHECK_EVERY_HOURS", "6"))
+
 # Сколько загрузок может идти одновременно на всех (тюнить под мощность сервера)
 MAX_PARALLEL_DOWNLOADS = int(os.getenv("MAX_PARALLEL_DOWNLOADS", "5"))
 

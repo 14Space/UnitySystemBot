@@ -2,12 +2,22 @@
 # Закреплено явно, чтобы не зависеть от имени папки.
 name: unitysystem
 
+# Лимит логов: держим максимум 3 файла по 10 МБ на каждый контейнер (=30 МБ), старое
+# Docker стирает сам. Без этого лог-файлы растут без предела и со временем забивают
+# диск. Подключаем шаблон к каждому сервису ниже через «logging: *default-logging».
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
 
   # Локальный Telegram Bot API сервер — снимает лимит файлов с 50MB до 2GB
   telegram-bot-api:
     image: aiogram/telegram-bot-api:latest
     restart: unless-stopped
+    logging: *default-logging
     environment:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
@@ -30,6 +40,7 @@ services:
   bgutil-provider:
     image: brainicism/bgutil-ytdlp-pot-provider:latest
     restart: unless-stopped
+    logging: *default-logging
 
   # Сам бот
   bot:
@@ -37,6 +48,7 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     # Все настройки (WHISPER_*, ADMIN_ID, PROXY_URL, ключи и т.д.) берём из .env —
     # как при запуске на хосте. То, что ниже в environment, имеет приоритет.
     env_file:
