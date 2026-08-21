@@ -3,9 +3,12 @@ import time
 import uuid
 import shutil
 import glob
+import logging
 import subprocess
 import requests
 import yt_dlp
+
+logger = logging.getLogger(__name__)
 
 
 def _find_ffmpeg() -> str | None:
@@ -44,15 +47,30 @@ BASE_OPTS = {
 if FFMPEG_DIR:
     BASE_OPTS["ffmpeg_location"] = FFMPEG_DIR
 
-# Прокси (из .env → PROXY_URL) применяем ТОЛЬКО к YT Music — она чаще всего под гео-блоком.
-# Остальные загрузки идут напрямую, через обычную сеть.
+# Прокси (из .env → PROXY_URL) нужен ТОЛЬКО для YT Music: часть треков под гео-блоком
+# (в Молдове, например). Но сам прокси, особенно бесплатный, часто нестабилен, поэтому
+# логика «умная»: СНАЧАЛА пробуем YT Music напрямую (быстро и надёжно — большинство
+# треков доступны), и лишь если прямой заход упал (гео-блок/сеть) — повторяем через
+# прокси. Так падения из-за тупящего прокси не задевают доступные треки, а прокси
+# работает как запасной путь только для реально заблокированных. По образцу Instagram.
 _PROXY = os.getenv("PROXY_URL", "")
 
 
-def _proxy_opts(url: str) -> dict:
+def _with_music_fallback(url: str, op):
+    """op(proxy_opts: dict) -> результат. Для YT Music: сначала прямой заход (proxy_opts
+    пустой), при ошибке — повтор через {"proxy": PROXY}. Для остальных ссылок — один
+    прямой вызов без прокси (как и было)."""
+    attempts: list[dict] = [{}]
     if _PROXY and "music.youtube.com" in (url or ""):
-        return {"proxy": _PROXY}
-    return {}
+        attempts.append({"proxy": _PROXY})
+    for i, proxy_opts in enumerate(attempts):
+        try:
+            return op(proxy_opts)
+        except Exception:
+            if i < len(attempts) - 1:      # был прямой заход и есть запасной прокси
+                logger.info("YT Music напрямую не вышло — пробую через прокси")
+                continue
+            raise
 
 
 # PornHub спрятан за Cloudflare: обычный запрос ловит 403. Маскируемся под настоящий
@@ -82,32 +100,39 @@ def download_probe(url: str, audio_only: bool = False) -> str:
     # Видео: «worstvideo*+worstaudio/worst» — самое лёгкое видео+звук, иначе самый лёгкий
     # единый формат. Просто «worst» у YouTube ловит SABR («формат недоступен»), поэтому так.
     fmt = "worstaudio/worst" if audio_only else "worstvideo*+worstaudio/worst"
-    opts = {
-        **BASE_OPTS,
-        "format": fmt,
-        "outtmpl": os.path.join(DOWNLOADS_DIR, f"probe_{tag}_%(id)s.%(ext)s"),
-        "postprocessors": [],
-        "noplaylist": True,
-        **_proxy_opts(url),
-        **_impersonate_opts(url),
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([url])
-    files = glob.glob(os.path.join(DOWNLOADS_DIR, f"probe_{tag}_*"))
-    return files[0] if files else ""
+
+    def _op(proxy_opts: dict) -> str:
+        opts = {
+            **BASE_OPTS,
+            "format": fmt,
+            "outtmpl": os.path.join(DOWNLOADS_DIR, f"probe_{tag}_%(id)s.%(ext)s"),
+            "postprocessors": [],
+            "noplaylist": True,
+            **proxy_opts,
+            **_impersonate_opts(url),
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+        files = glob.glob(os.path.join(DOWNLOADS_DIR, f"probe_{tag}_*"))
+        return files[0] if files else ""
+
+    return _with_music_fallback(url, _op)
 
 
 def get_video_info(url: str, allow_drm: bool = False) -> dict:
     """Получает информацию о видео без скачивания.
     allow_drm=True — не падать на DRM-треках, а вернуть метаданные (название, длительность)
     без самих форматов. Нужно, чтобы по названию найти трек на YouTube."""
-    opts = dict(BASE_OPTS)
-    if allow_drm:
-        opts["ignore_no_formats_error"] = True
-    opts.update(_proxy_opts(url))  # прокси только для YT Music
-    opts.update(_impersonate_opts(url))  # маскировка под Chrome только для PornHub
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False)
+    def _op(proxy_opts: dict) -> dict:
+        opts = dict(BASE_OPTS)
+        if allow_drm:
+            opts["ignore_no_formats_error"] = True
+        opts.update(proxy_opts)  # для YT Music: пусто напрямую, затем прокси при неудаче
+        opts.update(_impersonate_opts(url))  # маскировка под Chrome только для PornHub
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    return _with_music_fallback(url, _op)
 
 
 STANDARD_QUALITIES = [144, 240, 360, 480, 720, 1080, 1440, 2160]
@@ -377,27 +402,29 @@ def download_audio(
         postprocessors.insert(1, {"key": "FFmpegThumbnailsConvertor", "format": "jpg"})
         postprocessors.append({"key": "EmbedThumbnail"})
 
-    ydl_opts = {
-        **BASE_OPTS,
-        "format": "bestaudio/best",
-        "outtmpl": output_path,
-        "progress_hooks": [progress_hook],
-        "writethumbnail": embed_thumbnail,  # обложку источника качаем только если вшиваем
-        "postprocessors": postprocessors,
-        **_proxy_opts(url),  # прокси только для YT Music
-    }
+    def _op(proxy_opts: dict) -> str:
+        ydl_opts = {
+            **BASE_OPTS,
+            "format": "bestaudio/best",
+            "outtmpl": output_path,
+            "progress_hooks": [progress_hook],
+            "writethumbnail": embed_thumbnail,  # обложку источника качаем только если вшиваем
+            "postprocessors": postprocessors,
+            **proxy_opts,  # для YT Music: пусто напрямую, затем прокси при неудаче
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            extracted = ydl.extract_info(url, download=True)
+            # ytsearch (Spotify) возвращает "плейлист" — берём первый реальный трек
+            if "entries" in extracted:
+                extracted = extracted["entries"][0]
+            filename = ydl.prepare_filename(extracted)
+            # после конвертации исходное расширение (webm/m4a) заменяется на mp3
+            mp3_path = filename.rsplit(".", 1)[0] + ".mp3"
+            if os.path.exists(mp3_path):
+                return mp3_path
+            return filename
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        extracted = ydl.extract_info(url, download=True)
-        # ytsearch (Spotify) возвращает "плейлист" — берём первый реальный трек
-        if "entries" in extracted:
-            extracted = extracted["entries"][0]
-        filename = ydl.prepare_filename(extracted)
-        # после конвертации исходное расширение (webm/m4a) заменяется на mp3
-        mp3_path = filename.rsplit(".", 1)[0] + ".mp3"
-        if os.path.exists(mp3_path):
-            return mp3_path
-        return filename
+    return _with_music_fallback(url, _op)
 
 
 def download_media(url: str) -> str:
