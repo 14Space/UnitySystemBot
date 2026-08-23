@@ -260,7 +260,20 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
             return
         available = await asyncio.to_thread(get_available_qualities, info)
 
-        title = info.get("title", "Без названия")
+        # «Мягкая» деградация источника: ответ пришёл, но данные неполные — исключения
+        # нет, поэтому раньше такой сбой не попадал НИ в логи, НИ в алерты (слепое пятно).
+        # Пустой список качеств = кнопки не покажутся, пользователь упрётся в тупик
+        # «Выбери качество» без кнопок. Ловим явно: лог + тревога админу + честная ошибка.
+        if not available:
+            logger.warning("Пустой список качеств (деградация источника): %s", url)
+            alerts.note_failure(RuntimeError(f"нет доступных качеств: {url}"))
+            await _safe_edit(status, t("video_info_failed", lang))
+            return
+
+        title = info.get("title")
+        if not title:                     # заголовок не извлёкся — тоже сигнал деградации
+            logger.warning("Метаданные без заголовка (деградация источника): %s", url)
+            title = "Без названия"
         thumbnail = info.get("thumbnail")
 
         async with SessionLocal() as session:
@@ -285,8 +298,9 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
         else:
             await message.answer(caption, reply_markup=keyboard)
 
-    except Exception:
+    except Exception as e:
         logger.exception("Failed to get video info")
+        alerts.note_failure(e)            # раньше этот путь молчал в алертах — теперь нет
         await _safe_edit(status, t("video_info_failed", lang))
 
 
@@ -296,8 +310,9 @@ async def _handle_hdrezka(message: Message, url: str, lang: str):
     try:
         api = await asyncio.to_thread(hdrezka.open_media, url)
         info = hdrezka.get_info(api, url)
-    except Exception:
+    except Exception as e:
         logger.exception("HDRezka info failed")
+        alerts.note_failure(e)            # fetch-ошибки тоже должны доходить до админа
         await _safe_edit(status, t("hdrezka_open_failed", lang))
         return
 
@@ -427,6 +442,11 @@ async def _show_hdrezka_quality(message, entry, sid, tid, lang):
     """Показывает кнопки качества для выбранной озвучки."""
     tname = dict(entry["translators"]).get(tid, "")
     qualities = hdrezka.stream_qualities(entry["streams"][tid])
+    if not qualities:                 # поток без качеств — раньше был молчаливый тупик
+        logger.warning("HDRezka: пустой список качеств (деградация): %s", entry.get("name"))
+        alerts.note_failure(RuntimeError(f"HDRezka без качеств: {entry.get('name')}"))
+        await _edit_or_caption(message, t("translation_failed", lang), None)
+        return
     keyboard = build_hdrezka_quality_keyboard(sid, tid, qualities, entry.get("premium", False))
     text = (f"{_hdrezka_head(entry, lang)}\n{t('label_translation', lang, name=tname)}"
             f"\n\n{t('label_choose_quality', lang)}")
@@ -456,8 +476,9 @@ async def handle_hdrezka_translator(callback: CallbackQuery):
         stream = await asyncio.to_thread(
             hdrezka.get_stream, entry["api"], tid, entry["season"], entry["episode"]
         )
-    except Exception:
+    except Exception as e:
         logger.exception("HDRezka stream failed")
+        alerts.note_failure(e)
         await _edit_or_caption(callback.message, t("translation_failed", lang), None)
         return
 
@@ -665,6 +686,10 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
         try:
             files = await asyncio.to_thread(download_fn, url)
             if not files:
+                # Пустой результат у поста/карусели = обычно деградация источника, а не
+                # реально пустой пост. Раньше молчали — теперь видно в логах и в алерте.
+                logger.warning("%s: пустой результат (нет медиа) — %s", error_key, url)
+                alerts.note_failure(RuntimeError(f"пустой результат ({error_key}): {url}"))
                 await message.reply(t("no_media", lang))
                 return
 
@@ -1054,8 +1079,9 @@ async def _handle_spotify(message: Message, url: str):
     """Читает данные трека Spotify и качает его аудио через поиск на YouTube"""
     try:
         track = await asyncio.to_thread(get_track_info, url)
-    except Exception:
+    except Exception as e:
         logger.exception("Spotify metadata failed")
+        alerts.note_failure(e)
         await message.reply(t("track_read_failed", lang_of(message.from_user)))
         return
 
@@ -1081,6 +1107,7 @@ async def _handle_spotify_collection(message: Message, url: str, lang: str):
         if "404" in str(e) or "Not Found" in str(e):
             await message.reply(t("spotify_no_playlist", lang))
         else:
+            alerts.note_failure(e)    # 404 редакционных плейлистов — норма, остальное — сбой
             await message.reply(t("collection_read_failed", lang))
         return
 
@@ -1111,8 +1138,9 @@ async def _handle_soundcloud_set(message: Message, url: str, lang: str):
     """Читает сет (альбом/плейлист) SoundCloud и показывает список треков"""
     try:
         data = await asyncio.to_thread(get_soundcloud_set, url)
-    except Exception:
+    except Exception as e:
         logger.exception("SoundCloud set failed")
+        alerts.note_failure(e)
         await message.reply(t("soundcloud_set_failed", lang))
         return
 
