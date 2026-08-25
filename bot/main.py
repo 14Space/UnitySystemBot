@@ -54,6 +54,20 @@ def _seconds_until_report() -> float:
     return (target - now).total_seconds()
 
 
+def _seconds_until_slot(every_hours: int, skip_hour: int | None = None) -> float:
+    """Сколько секунд до ближайшего будущего часа, кратного every_hours, на нулевой
+    минуте по времени админа (при every_hours=2 — это 00:00, 02:00, 04:00 …). Сетка
+    фиксированная и не зависит от момента запуска бота. skip_hour — час, который НЕ
+    выбираем (например час суточного отчёта: его проверку делает сам отчёт, чтобы не
+    было двойного прогона). Считаем от локального времени зоны, поэтому переход на
+    летнее/зимнее время учитывается автоматически."""
+    now = datetime.now(_ADMIN_ZONE)
+    slot = now.replace(minute=0, second=0, microsecond=0)
+    while slot <= now or slot.hour % every_hours != 0 or slot.hour == skip_hour:
+        slot += timedelta(hours=1)
+    return (slot - now).total_seconds()
+
+
 def _make_bot(token: str) -> Bot:
     """Создаёт Bot; если задан локальный API-сервер — с ним (файлы до 2 ГБ)."""
     if TELEGRAM_LOCAL_API_URL:
@@ -127,12 +141,25 @@ async def _daily_tasks(bot: Bot):
 
 
 async def _periodic_healthcheck(bot: Bot):
-    """Раннее оповещение: раз в HEALTHCHECK_EVERY_HOURS часов гоняем проверку и, если
-    что-то сломалось, сразу шлём админу короткую тревогу. Всё ок — молчим (не спамим).
-    Результат кэшируется — его показывает /statistics. Первый прогон — вскоре после
-    старта (наполнить кэш). Полный отчёт со статистикой всё равно приходит раз в сутки."""
+    """Раннее оповещение: гоняем проверку по ФИКСИРОВАННОЙ сетке часов (кратных
+    HEALTHCHECK_EVERY_HOURS, по времени админа — при 2 это 00:00, 02:00, 04:00 …),
+    независимо от момента запуска. Если что-то сломалось — сразу шлём админу короткую
+    тревогу, всё ок — молчим (не спамим). Час суточного отчёта (REPORT_HOUR) пропускаем:
+    его проверку делает _daily_tasks. Первый прогон — вскоре после старта (наполнить кэш
+    для /statistics и поймать поломку сразу), дальше — строго по слотам."""
     await asyncio.sleep(120)  # не грузим проверкой сам момент запуска
+    startup = True
     while True:
+        if not startup:
+            # Следующий слот сетки, но НЕ час суточного отчёта — его проверку делает
+            # _daily_tasks. Пропуск заложен прямо в расчёт слота (детерминированно),
+            # иначе два прогона могли столкнуться в 12:00 (двойная нагрузка → ложные сбои).
+            await asyncio.sleep(_seconds_until_slot(HEALTHCHECK_EVERY_HOURS, skip_hour=REPORT_HOUR))
+        # Стартовый прогон в час отчёта тоже пропускаем — иначе столкнётся с _daily_tasks.
+        if startup and datetime.now(_ADMIN_ZONE).hour == REPORT_HOUR:
+            startup = False
+            continue
+        startup = False
         try:
             results = await run_and_cache()
             if ADMIN_ID:
@@ -143,7 +170,6 @@ async def _periodic_healthcheck(bot: Bot):
             logger.exception("Периодическая проверка функционала упала")
         if HEALTHCHECK_EVERY_HOURS <= 0:
             return  # периодику выключили — но кэш для /statistics мы уже наполнили
-        await asyncio.sleep(HEALTHCHECK_EVERY_HOURS * 3600)
 
 
 async def _flush_traffic():

@@ -373,10 +373,17 @@ _CHECKS = [
 # синхронный Playwright не любит параллельный запуск. Сейчас такая одна — HDRezka
 # (обход анти-бота); замок оставлен на случай появления новых.
 _PLAYWRIGHT_CHECKS = {"HDRezka фильм", "HDRezka сериал"}
+# TikTok API (tikwm) держит лимит «1 запрос/сек» — гоняем TikTok-чеки строго по одному
+# с паузой между ними, иначе видео+слайдшоу сталкиваются и ловят «Free Api Limit».
+_TIKTOK_CHECKS = {"TikTok видео", "TikTok слайдшоу"}
+# Instagram-чеки читают ОДИН файл кук; при параллельном доступе yt-dlp может писать его
+# обратно и портить — ловится как «failed to load cookies». Поэтому тоже по одному.
+_INSTAGRAM_CHECKS = {"Instagram Reels", "Instagram фото-пост", "Instagram карусель"}
 
 
 async def _run(name: str, platform: str | None, coro_fn, url: str, idx: int,
-               sem: asyncio.Semaphore, pw_lock: asyncio.Lock) -> dict:
+               sem: asyncio.Semaphore, pw_lock: asyncio.Lock,
+               tiktok_lock: asyncio.Lock, ig_lock: asyncio.Lock) -> dict:
     """Запускает одну проверку с таймаутом и перехватом ошибок. url=="" → пропуск."""
     base = {"name": name, "platform": platform, "idx": idx}
     if not url:
@@ -386,6 +393,13 @@ async def _run(name: str, platform: str | None, coro_fn, url: str, idx: int,
         try:
             if name in _PLAYWRIGHT_CHECKS:
                 async with pw_lock:                  # Playwright-проверки — строго по одной
+                    ok, detail = await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
+            elif name in _TIKTOK_CHECKS:
+                async with tiktok_lock:              # tikwm: не больше 1 запроса/сек
+                    ok, detail = await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
+                    await asyncio.sleep(1.2)         # пауза перед следующим TikTok-чеком
+            elif name in _INSTAGRAM_CHECKS:
+                async with ig_lock:                  # общий файл кук — без гонок записи
                     ok, detail = await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
             else:
                 ok, detail = await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
@@ -403,8 +417,10 @@ async def run_health_checks() -> list[dict]:
     """Гоняет все проверки (ограничивая одновременность) и возвращает результаты по порядку."""
     sem = asyncio.Semaphore(_CONCURRENCY)
     pw_lock = asyncio.Lock()
+    tiktok_lock = asyncio.Lock()
+    ig_lock = asyncio.Lock()
     return list(await asyncio.gather(
-        *(_run(name, platform, fn, url, idx, sem, pw_lock)
+        *(_run(name, platform, fn, url, idx, sem, pw_lock, tiktok_lock, ig_lock)
           for idx, (name, platform, fn, url) in enumerate(_CHECKS))))
 
 
