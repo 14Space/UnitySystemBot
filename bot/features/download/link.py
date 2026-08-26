@@ -112,18 +112,6 @@ async def process_link(message: Message, url: str):
 
     await _dispatch_platform(message, url, platform, lang)
 
-    # Аудиодорожка к видео «лёгких» платформ — если включена в этой группе
-    if platform in AUDIO_TRACK_PLATFORMS:
-        await _maybe_send_audio_track(message, url, platform, lang)
-
-
-# «Лёгкие» платформы, для которых можно отдать отдельную аудиодорожку (тумблер в
-# /setconfig). Для остальных (YouTube, HDRezka, музыка, коллекции) — не применяем.
-AUDIO_TRACK_PLATFORMS = {
-    Platform.INSTAGRAM_REEL, Platform.INSTAGRAM_POST, Platform.TIKTOK,
-    Platform.TWITTER, Platform.PINTEREST, Platform.PORNHUB_SHORT,
-}
-
 
 async def _dispatch_platform(message: Message, url: str, platform, lang: str):
     """Отправляет контент по платформе; каждая ветка сама завершает работу."""
@@ -199,10 +187,9 @@ async def _dispatch_platform(message: Message, url: str, platform, lang: str):
 
 
 async def _maybe_send_audio_track(message: Message, url: str, platform, lang: str):
-    """Если в группе включён тумблер «Скачивать аудио с видео» — шлём отдельным аудио
-    дорожку поста. Работает только в группах; в личке функция всегда выключена."""
-    if message.chat.type not in ("group", "supergroup"):
-        return
+    """Если в этом чате включён тумблер «Присылать аудио к слайдшоу» — шлём отдельным
+    сообщением музыку поста. Вызывается ТОЛЬКО когда слайдшоу отдано как ФОТО (у фото нет
+    звука, поэтому музыку докладываем); к видео не применяется — там звук уже внутри."""
     async with SessionLocal() as session:
         if not await get_audio_track(session, message.chat.id):
             return
@@ -782,15 +769,13 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
     # выглядят разными и раньше качались повторно. По номеру видео — один раз.
     cache_url = f"tt:{info['id']}"
 
-    # Слайдшоу: в личке всегда даём выбор (видео/фото). В группе — по настройке
-    # /setconfig: video (сразу видео, по умолчанию), photos (сразу фото) или ask
-    # (кнопки выбора; их слушает только приславший ссылку — см. handle_tiktok_slideshow).
+    # Слайдшоу — по настройке /setconfig этого чата: video (сразу видео), photos (сразу
+    # фото) или ask (кнопки выбора; их слушает только приславший ссылку). Дефолт зависит
+    # от типа чата: в группе — video, в личке — ask (там выбор удобнее по умолчанию).
     if info["kind"] == "slideshow":
-        if message.chat.type == "private":
-            ss_mode = "ask"
-        else:
-            async with SessionLocal() as session:
-                ss_mode = await get_slideshow_mode(session, message.chat.id)
+        default_mode = "ask" if message.chat.type == "private" else "video"
+        async with SessionLocal() as session:
+            ss_mode = await get_slideshow_mode(session, message.chat.id, default=default_mode)
 
         if ss_mode == "ask":
             sid = uuid.uuid4().hex[:8]
@@ -826,6 +811,8 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
             if tokens:
                 async with SessionLocal() as session:
                     await _tt_cache_save(session, url, cache_url, "\n".join(tokens), cache_key)
+            if mode == "photos":     # у фото нет звука — доложим музыку слайдшоу (если вкл)
+                await _maybe_send_audio_track(message, url, Platform.TIKTOK, lang)
             for f in files:
                 _cleanup(f)
         except Exception as e:
@@ -884,6 +871,8 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
             async with SessionLocal() as session:
                 await _tt_cache_save(session, url, cache_url, "\n".join(tokens), cache_key)
         await _safe_delete(callback.message)  # убираем сообщение с кнопками
+        if mode == "photos":     # выбрали «Фото» — у них нет звука, доложим музыку (если вкл)
+            await _maybe_send_audio_track(target, url, Platform.TIKTOK, lang)
         for f in files:
             _cleanup(f)
     except Exception as e:

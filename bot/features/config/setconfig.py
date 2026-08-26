@@ -1,8 +1,8 @@
 """
 Команда /setconfig: включает/выключает функции бота в этом чате. В группах — только
 админам/владельцу; в личке доступна самому пользователю (это его чат, проверка админа
-не нужна). Клавиатура подстраивается под тип чата: в личке скрыты аудиодорожка и режим
-слайдшоу (они там не работают) — см. _keyboard(personal=...).
+не нужна). Клавиатура ОДИНАКОВАЯ в группе и в личке; отличается лишь дефолт режима
+слайдшоу (в личке — «Выбор», в группе — «Видео»).
 """
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -59,9 +59,9 @@ SLIDESHOW_MODES = [
 
 
 def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bool,
-              personal: bool, lang: str) -> InlineKeyboardMarkup:
-    """Клавиатура настроек. В личке (personal) прячем настройки, которые в личке не
-    работают: аудиодорожку и режим слайдшоу (в личке бот всегда спрашивает)."""
+              lang: str) -> InlineKeyboardMarkup:
+    """Клавиатура настроек — одинаковая в группе и в личке. Разница только в дефолте
+    режима слайдшоу (в личке — «Выбор») и её задаёт вызывающий код через ss_mode."""
     rows = []
     # Переключатели функций
     for feature, label_key in TOGGLEABLE:
@@ -69,19 +69,18 @@ def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bo
         rows.append([InlineKeyboardButton(
             text=f"{mark} {t(label_key, lang)}", callback_data=f"cfg:{feature}")])
 
-    # Аудиодорожка и слайдшоу — для скачивания и только в группах
-    if not personal:
-        rows.append([InlineKeyboardButton(
-            text=f"{'✅' if audio_on else '❌'} {t('cfg_audio_track', lang)}",
-            callback_data="cfg:audio")])
-        rows.append([InlineKeyboardButton(
-            text=t("cfg_slideshow_header", lang), callback_data="cfg:noop")])
-        ss_row = []
-        for mode, label_key in SLIDESHOW_MODES:
-            mark = "✅ " if ss_mode == mode else ""
-            ss_row.append(InlineKeyboardButton(
-                text=f"{mark}{t(label_key, lang)}", callback_data=f"cfg:ss:{mode}"))
-        rows.append(ss_row)
+    # Отдельное аудио и режим слайдшоу
+    rows.append([InlineKeyboardButton(
+        text=f"{'✅' if audio_on else '❌'} {t('cfg_audio_track', lang)}",
+        callback_data="cfg:audio")])
+    rows.append([InlineKeyboardButton(
+        text=t("cfg_slideshow_header", lang), callback_data="cfg:noop")])
+    ss_row = []
+    for mode, label_key in SLIDESHOW_MODES:
+        mark = "✅ " if ss_mode == mode else ""
+        ss_row.append(InlineKeyboardButton(
+            text=f"{mark}{t(label_key, lang)}", callback_data=f"cfg:ss:{mode}"))
+    rows.append(ss_row)
 
     # Блок валют. Заголовок = переключатель конвертера: ✅ включён (показываем сетку),
     # ❌ выключен (сетку прячем).
@@ -114,27 +113,27 @@ async def cmd_setconfig(message: Message):
     # В группе не-админам не отвечаем вообще (команда для них будто не существует).
     if not personal and not await _is_admin(message.bot, message.chat.id, message.from_user.id):
         return
+    ss_default = "ask" if personal else "video"   # в личке по умолчанию «Выбор»
     async with SessionLocal() as session:
         disabled = await get_disabled_features(session, message.chat.id)
-        ss_mode = await get_slideshow_mode(session, message.chat.id)
+        ss_mode = await get_slideshow_mode(session, message.chat.id, default=ss_default)
         targets = await get_currency_targets(session, message.chat.id)
         audio_on = await get_audio_track(session, message.chat.id)
     await message.reply(t("cfg_title", lang),
-                        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on,
-                                               personal, lang))
+                        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, lang))
 
 
 async def _refresh(callback: CallbackQuery, lang: str):
     """Перерисовывает клавиатуру настроек актуальным состоянием."""
     chat = callback.message.chat
-    personal = chat.type not in GROUP_TYPES
+    ss_default = "ask" if chat.type not in GROUP_TYPES else "video"   # в личке — «Выбор»
     async with SessionLocal() as session:
         disabled = await get_disabled_features(session, chat.id)
-        ss_mode = await get_slideshow_mode(session, chat.id)
+        ss_mode = await get_slideshow_mode(session, chat.id, default=ss_default)
         targets = await get_currency_targets(session, chat.id)
         audio_on = await get_audio_track(session, chat.id)
     await callback.message.edit_reply_markup(
-        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, personal, lang))
+        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, lang))
 
 
 @router.callback_query(F.data == "cfg:noop")

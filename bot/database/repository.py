@@ -139,12 +139,13 @@ async def set_feature(session: AsyncSession, chat_id: int, feature: str, enable:
     await session.commit()
 
 
-async def get_slideshow_mode(session: AsyncSession, chat_id: int) -> str:
-    """Режим слайдшоу TikTok в этой группе: video | photos | ask (по умолчанию video)."""
+async def get_slideshow_mode(session: AsyncSession, chat_id: int, default: str = "video") -> str:
+    """Режим слайдшоу TikTok в этом чате: video | photos | ask. Дефолт зависит от типа
+    чата: в группах — video, в личке — ask (передаётся вызывающим кодом)."""
     row = (await session.execute(
         select(ChatSettings).where(ChatSettings.chat_id == chat_id)
     )).scalar_one_or_none()
-    return row.slideshow_mode if row and row.slideshow_mode else "video"
+    return row.slideshow_mode if row and row.slideshow_mode else default
 
 
 async def set_slideshow_mode(session: AsyncSession, chat_id: int, mode: str) -> None:
@@ -196,11 +197,12 @@ async def toggle_currency_target(session: AsyncSession, chat_id: int, code: str)
 
 
 async def get_audio_track(session: AsyncSession, chat_id: int) -> bool:
-    """Включена ли отправка аудиодорожки к видео в этой группе (по умолчанию нет)."""
+    """Слать ли музыку к фото-слайдшоу. По умолчанию ДА: если у чата ещё нет записи
+    настроек — считаем включённым (безопасно, срабатывает только для фото-слайдшоу)."""
     row = (await session.execute(
         select(ChatSettings).where(ChatSettings.chat_id == chat_id)
     )).scalar_one_or_none()
-    return bool(row and row.audio_track)
+    return True if row is None else bool(row.audio_track)
 
 
 async def set_audio_track(session: AsyncSession, chat_id: int, on: bool) -> None:

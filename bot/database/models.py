@@ -47,8 +47,9 @@ class ChatSettings(Base):
     slideshow_mode = Column(String, default="video")
     # Валюты, в которые конвертер переводит в этой группе (коды через запятую)
     currency_targets = Column(String, default="USD,EUR")
-    # Слать ли отдельным аудио дорожку к видео «лёгких» платформ (по умолчанию нет)
-    audio_track = Column(Boolean, default=False)
+    # Слать ли музыку слайдшоу отдельным аудио, когда слайдшоу отдаётся как фото
+    # (по умолчанию ДА — срабатывает только для фото-слайдшоу, к видео не применяется)
+    audio_track = Column(Boolean, default=True)
 
 
 class CachedFile(Base):

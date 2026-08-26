@@ -351,9 +351,9 @@ TEXTS = {
         "en": "Currency converter",
     },
     "cfg_audio_track": {
-        "ru": "Скачивать аудио с видео",
-        "uk": "Завантажувати аудіо з відео",
-        "en": "Download audio from video",
+        "ru": "Присылать аудио к слайдшоу",
+        "uk": "Надсилати аудіо до слайдшоу",
+        "en": "Send audio with slideshow",
     },
     "cfg_currency_header": {
         "ru": "Валюты для конвертации:",
