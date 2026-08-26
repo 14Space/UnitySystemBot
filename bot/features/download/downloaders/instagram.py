@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import uuid
 import requests
 import yt_dlp
 from urllib.parse import urlparse
@@ -175,7 +176,9 @@ def download_post(url: str) -> list[str]:
             continue
         media_url, is_vid = media
         ext = ".mp4" if is_vid else ".jpg"
-        path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{i}_dl{ext}")
+        # Уникальный суффикс на каждый файл: два запроса одной карусели иначе пишут одни
+        # и те же имена, и очистка одного удаляет файлы другого во время отправки альбома.
+        path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{i}_{uuid.uuid4().hex[:8]}_dl{ext}")
         data = requests.get(media_url, timeout=60, proxies=proxies).content
         with open(path, "wb") as f:
             f.write(data)

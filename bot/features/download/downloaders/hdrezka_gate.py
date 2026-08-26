@@ -18,6 +18,8 @@ import logging
 import threading
 import time
 
+from bot.utils import pw_thread
+
 logger = logging.getLogger(__name__)
 
 # Один и тот же User-Agent и в браузере (который проходит проверку), и в запросах
@@ -79,7 +81,9 @@ def get_cookies(url: str, force: bool = False) -> dict:
         fresh = _cookies is not None and (time.time() - _cookies_ts) < _TTL
         if force or not fresh:
             try:
-                _cookies = _solve(url)
+                # Playwright — строго на выделенном потоке (иначе greenlet-ошибка при
+                # обращении к общему браузеру с другого потока пула asyncio.to_thread).
+                _cookies = pw_thread.run(_solve, url)
                 _cookies_ts = time.time()
                 logger.info("HDRezka: проверка пройдена, куки обновлены (%d шт.)", len(_cookies))
             except Exception:

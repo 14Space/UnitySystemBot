@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 import requests
 from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
 
@@ -357,7 +358,12 @@ def download_from(info: dict, mode: str = "auto") -> list[str]:
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     data = info["data"]
-    item_id = info["id"]
+    # Уникальный на КАЖДЫЙ вызов префикс имён файлов. Раньше имя было по номеру поста,
+    # и два запроса одного слайдшоу (двойной тап по кнопке формата, «Видео»+«Фото»)
+    # писали одни и те же файлы: один запрос доотправлял альбом и удалял файлы, пока
+    # второй ещё грузил их в Telegram → FileNotFoundError на sendMediaGroup. item_id тут
+    # используется ТОЛЬКО как имя файла, поэтому добавить случайный суффикс безопасно.
+    item_id = f"{info['id']}_{uuid.uuid4().hex[:8]}"
 
     # Live Photo: набор коротких видео — отдаём альбомом видео. Часть элементов
     # live_images бывает null (для статичных кадров) — их пропускаем.

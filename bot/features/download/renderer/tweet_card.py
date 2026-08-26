@@ -21,6 +21,7 @@ import time
 import requests
 
 from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
+from bot.utils import pw_thread
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,13 @@ def _esc(text: str) -> str:
 
 
 def render_tweet_card(tweet: dict) -> str:
-    """Рисует карточку твита и возвращает путь к PNG.
-    Сначала пробуем настоящий виджет X, при неудаче — свою карточку.
+    """Рисует карточку твита и возвращает путь к PNG. Весь Playwright-рендер уводим на
+    единый выделенный поток (общий браузер нельзя дёргать с разных потоков пула)."""
+    return pw_thread.run(_render_card, tweet)
+
+
+def _render_card(tweet: dict) -> str:
+    """Сначала пробуем настоящий виджет X, при неудаче — свою карточку.
     Бросает исключение, только если не вышло вообще ничего."""
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     out_path = os.path.join(DOWNLOADS_DIR, f"x_card_{tweet['id']}.png")

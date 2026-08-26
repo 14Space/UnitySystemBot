@@ -8,6 +8,7 @@ yt-dlp умеет из X только видео (фото вообще не о�
 """
 import os
 import re
+import uuid
 
 import requests
 
@@ -95,7 +96,9 @@ def download_media(items: list[dict], tweet_id: str) -> list[dict]:
     for i, it in enumerate(items, 1):
         kind = it["kind"]
         ext = ".jpg" if kind == "photo" else ".mp4"
-        path = os.path.join(DOWNLOADS_DIR, f"x_{tweet_id}_{i}_dl{ext}")
+        # Уникальный суффикс на каждый файл: два запроса одного твита-альбома иначе пишут
+        # одни и те же имена, и очистка одного удаляет файлы другого при отправке альбома.
+        path = os.path.join(DOWNLOADS_DIR, f"x_{tweet_id}_{i}_{uuid.uuid4().hex[:8]}_dl{ext}")
         content = requests.get(it["url"], headers=HEADERS, timeout=180).content
         with open(path, "wb") as f:
             f.write(content)

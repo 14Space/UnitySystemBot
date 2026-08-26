@@ -463,6 +463,7 @@ async def handle_hdrezka_translator(callback: CallbackQuery):
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
+    alerts.current_request.set(f"hdrezka: {entry.get('name','')} — {entry.get('url','')}")
     tid = int(tid)
     await callback.answer()
     tname = dict(entry["translators"]).get(tid, "")
@@ -496,6 +497,7 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
+    alerts.current_request.set(f"hdrezka: {entry.get('name','')} — {entry.get('url','')}")
     tid = int(tid)
     stream = entry["streams"].get(tid)
     qualities = hdrezka.stream_qualities(stream) if stream else []
@@ -852,6 +854,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         return
 
     url, info = entry["url"], entry["info"]
+    alerts.current_request.set(f"tiktok слайдшоу [{mode}]: {url}")  # контекст для тревог
     # Ключ по номеру видео (как в _handle_tiktok): устойчив к разным коротким ссылкам.
     cache_url = entry.get("cache_url") or f"tt:{info['id']}"
     cache_key = "tt_" + mode  # tt_video / tt_photos
@@ -1350,6 +1353,9 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     url = entry["url"]
     info = entry.get("info")
     user_id = callback.from_user.id
+    # Контекст для тревог о сбоях: этот сбой пришёл из колбэка (кнопки), а не из входящей
+    # ссылки, поэтому ставим контекст здесь — иначе в алерте был бы прочерк «—».
+    alerts.current_request.set(f"видео {quality}p: {url}")
 
     # Защита: качество выше 720p — только для Premium
     if quality > FREE_LIMIT and not entry.get("premium"):
@@ -1506,6 +1512,7 @@ async def handle_collection_track(callback: CallbackQuery, bot: Bot):
         return
 
     track = coll["tracks"][int(idx_str)]
+    alerts.current_request.set(f"трек из коллекции: {track['cache_url']}")  # контекст для тревог
     await callback.answer()
 
     await _download_and_send_audio(
@@ -1548,6 +1555,7 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
     try:
         for i, track in enumerate(tracks, 1):
             await _safe_edit(status, f"{t('downloading_all', lang, i=i, total=total)}\n{track['title']}")
+            alerts.current_request.set(f"трек из коллекции [все]: {track['cache_url']}")
             try:
                 await _do_download_audio(
                     bot, chat_id, reply_to,
