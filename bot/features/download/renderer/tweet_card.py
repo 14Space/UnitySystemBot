@@ -15,7 +15,6 @@
 import html
 import logging
 import os
-import threading
 import time
 
 import requests
@@ -28,50 +27,32 @@ logger = logging.getLogger(__name__)
 OEMBED = "https://publish.twitter.com/oembed"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-_pw = None
-_browser = None
-_lock = threading.Lock()
-
-
-def _get_browser():
-    """Лениво запускает один общий headless-Chromium и переиспользует его."""
-    global _pw, _browser
-    if _browser is None or not _browser.is_connected():
-        with _lock:
-            if _browser is None or not _browser.is_connected():
-                from playwright.sync_api import sync_playwright
-                if _pw is None:
-                    _pw = sync_playwright().start()
-                # --no-sandbox обязателен под root в контейнере
-                _browser = _pw.chromium.launch(args=["--no-sandbox"])
-    return _browser
-
-
 def _esc(text: str) -> str:
     return html.escape(text or "")
 
 
 def render_tweet_card(tweet: dict) -> str:
     """Рисует карточку твита и возвращает путь к PNG. Весь Playwright-рендер уводим на
-    единый выделенный поток (общий браузер нельзя дёргать с разных потоков пула)."""
-    return pw_thread.run(_render_card, tweet)
+    единый выделенный поток с ОБЩИМ браузером (нельзя дёргать с разных потоков пула, и
+    нельзя поднимать второй sync_playwright() на том же потоке)."""
+    return pw_thread.run_with_browser(_render_card, tweet)
 
 
-def _render_card(tweet: dict) -> str:
+def _render_card(browser, tweet: dict) -> str:
     """Сначала пробуем настоящий виджет X, при неудаче — свою карточку.
     Бросает исключение, только если не вышло вообще ничего."""
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     out_path = os.path.join(DOWNLOADS_DIR, f"x_card_{tweet['id']}.png")
     try:
-        return _render_embed(tweet, out_path)
+        return _render_embed(browser, tweet, out_path)
     except Exception:
         logger.warning("Виджет X не отрисовался, рисую свою карточку", exc_info=True)
-        return _render_own(tweet, out_path)
+        return _render_own(browser, tweet, out_path)
 
 
 # --- Основной путь: настоящий виджет X (oEmbed) ------------------------------
 
-def _render_embed(tweet: dict, out_path: str) -> str:
+def _render_embed(browser, tweet: dict, out_path: str) -> str:
     o = requests.get(
         OEMBED,
         params={"url": tweet["url"], "theme": "dark", "dnt": "true",
@@ -87,7 +68,6 @@ def _render_embed(tweet: dict, out_path: str) -> str:
                  "<style>body{margin:0;background:#000;}</style></head>"
                  "<body>" + embed_html + "</body></html>")
 
-    browser = _get_browser()
     page = browser.new_page(device_scale_factor=2, viewport={"width": 600, "height": 1400})
     page.set_default_timeout(20000)
     try:
@@ -165,8 +145,7 @@ def _build_html(tweet: dict) -> str:
 </body></html>"""
 
 
-def _render_own(tweet: dict, out_path: str) -> str:
-    browser = _get_browser()
+def _render_own(browser, tweet: dict, out_path: str) -> str:
     page = browser.new_page(device_scale_factor=2, viewport={"width": 650, "height": 800})
     page.set_default_timeout(8000)
     try:

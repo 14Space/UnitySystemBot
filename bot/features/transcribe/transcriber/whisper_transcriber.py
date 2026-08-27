@@ -75,6 +75,16 @@ def _clean(text: str) -> str:
 # Блокировка защищает от гонки, если два сообщения придут одновременно.
 _model = None
 _model_lock = threading.Lock()
+# GPU может «отвалиться» уже ПОСЛЕ загрузки модели (на Windows+WSL2 частая причина —
+# ПК ушёл в сон/гибернацию, и контекст CUDA протух). Тогда каждая расшифровка падает
+# с «CUDA failed…». Ловим это на лету и перегружаем модель на CPU: медленнее, но работает
+# без ручного перезапуска. Флаг держит нас на CPU до перезапуска бота (там снова пробуем GPU).
+_forced_cpu = False
+
+
+def _is_cuda_error(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return any(k in s for k in ("cuda", "cublas", "cudnn", "gpu", "cufft", "nvrtc"))
 
 
 def _add_cuda_dll_dirs():
@@ -108,6 +118,8 @@ def _load_model():
 
     device = WHISPER_DEVICE
     compute_type = WHISPER_COMPUTE_TYPE
+    if _forced_cpu:                       # GPU уже подвёл на лету — грузим сразу на CPU
+        device, compute_type = "cpu", "int8"
     if device == "cuda":
         _add_cuda_dll_dirs()
         try:
@@ -169,7 +181,24 @@ def transcribe(file_path: str) -> str:
     Возвращает распознанный текст или пустую строку, если ничего не распознано
     (тишина, музыка без слов, неразборчивый звук). Вызывать в отдельном потоке
     через asyncio.to_thread — функция синхронная и долгая.
+
+    Если GPU отвалился на лету (CUDA-сбой) — один раз перегружаем модель на CPU и
+    повторяем, чтобы расшифровка продолжала работать без перезапуска бота.
     """
+    global _model, _forced_cpu
+    try:
+        return _transcribe_once(file_path)
+    except Exception as e:
+        if _forced_cpu or not _is_cuda_error(e):
+            raise                         # уже на CPU или сбой не про GPU — не наш случай
+        logger.error("Whisper: сбой GPU (CUDA) на лету — перегружаю модель на CPU", exc_info=True)
+        with _model_lock:
+            _forced_cpu = True
+            _model = None                 # выбрасываем битую GPU-модель, следующий _get_model даст CPU
+        return _transcribe_once(file_path)
+
+
+def _transcribe_once(file_path: str) -> str:
     model = _get_model()
 
     try:

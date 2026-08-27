@@ -18,6 +18,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir -U --pre "yt-dlp[default]" \
         --extra-index-url https://github.com/yt-dlp/yt-dlp-nightly-builds/releases
 
+# Убираем неиспользуемый SCRIPT-вариант POT-плагина bgutil: мы ходим к провайдеру по HTTP
+# (сервис bgutil-provider), а script-вариант требует node и к тому же рассинхронён с ночным
+# yt-dlp (ImportError: BgUtilPTPBase) — из-за него в лог сыпался шум при каждом запуске.
+# HTTP-вариант это не задевает (он импортирует из нового API самого yt-dlp), YouTube работает.
+RUN P=/usr/local/lib/python3.12/site-packages/yt_dlp_plugins/extractor \
+    && rm -f "$P/getpot_bgutil_script.py" \
+    && rm -rf "$P/__pycache__/getpot_bgutil_script"*
+
 # Браузер Chromium для Playwright (рендер карточек твитов) + его системные зависимости.
 RUN playwright install --with-deps chromium
 

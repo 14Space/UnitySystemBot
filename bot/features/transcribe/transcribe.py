@@ -22,6 +22,7 @@ from bot.config import (
 )
 from bot.utils import limits, traffic
 from bot.utils.i18n import t, lang_of
+from bot.features.common import alerts
 from bot.features.transcribe.transcriber import transcribe
 
 router = Router()
@@ -39,6 +40,7 @@ async def _handle(message: Message, file_id: str, suffix: str):
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     file_path = os.path.join(DOWNLOADS_DIR, f"{uuid.uuid4().hex}{suffix}")
 
+    alerts.current_request.set("расшифровка (голосовое/кружок)")  # контекст для тревог
     await limits.acquire(limits.TRANSCRIBE)
     try:
         await _fetch_file(message, file_id, file_path)
@@ -59,8 +61,9 @@ async def _handle(message: Message, file_id: str, suffix: str):
             text = text[:MAX_TEXT - 100] + "…"
         quoted = f"<blockquote expandable>{html.escape(text)}</blockquote>"
         await _safe_edit(status, quoted, parse_mode="HTML")
-    except Exception:
+    except Exception as e:
         logger.exception("Transcription failed")
+        alerts.note_failure(e)            # раньше сбои расшифровки молчали в алертах
         await _safe_edit(status, t("transcribe_nothing", lang))
     finally:
         await limits.release(limits.TRANSCRIBE)

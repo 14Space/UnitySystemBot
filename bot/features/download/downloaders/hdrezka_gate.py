@@ -34,27 +34,12 @@ _TTL = 30 * 60
 _SOLVE_TIMEOUT = 30
 
 _lock = threading.Lock()
-_pw = None
-_browser = None
 _cookies: dict | None = None
 _cookies_ts = 0.0
 
 
-def _get_browser():
-    """Лениво запускает один общий headless-Chromium и переиспользует его."""
-    global _pw, _browser
-    if _browser is None or not _browser.is_connected():
-        from playwright.sync_api import sync_playwright
-        if _pw is None:
-            _pw = sync_playwright().start()
-        # --no-sandbox обязателен под root в контейнере
-        _browser = _pw.chromium.launch(args=["--no-sandbox"])
-    return _browser
-
-
-def _solve(url: str) -> dict:
-    """Открывает страницу браузером, ждёт прохождения проверки и возвращает куки."""
-    browser = _get_browser()
+def _solve(browser, url: str) -> dict:
+    """Открывает страницу общим браузером, ждёт прохождения проверки и возвращает куки."""
     context = browser.new_context(user_agent=USER_AGENT)
     try:
         page = context.new_page()
@@ -81,9 +66,10 @@ def get_cookies(url: str, force: bool = False) -> dict:
         fresh = _cookies is not None and (time.time() - _cookies_ts) < _TTL
         if force or not fresh:
             try:
-                # Playwright — строго на выделенном потоке (иначе greenlet-ошибка при
-                # обращении к общему браузеру с другого потока пула asyncio.to_thread).
-                _cookies = pw_thread.run(_solve, url)
+                # Playwright — строго на выделенном потоке с ОБЩИМ браузером (иначе
+                # greenlet-ошибка при обращении с другого потока, либо конфликт event loop
+                # при втором sync_playwright() на том же потоке).
+                _cookies = pw_thread.run_with_browser(_solve, url)
                 _cookies_ts = time.time()
                 logger.info("HDRezka: проверка пройдена, куки обновлены (%d шт.)", len(_cookies))
             except Exception:

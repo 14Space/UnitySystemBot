@@ -1,3 +1,4 @@
+import http.cookiejar
 import logging
 import os
 import re
@@ -6,6 +7,10 @@ import requests
 import yt_dlp
 from urllib.parse import urlparse
 from bot.features.download.downloaders.ytdlp_wrapper import BASE_OPTS, DOWNLOADS_DIR
+from bot.utils import pw_thread
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
 try:
     from bot.config import INSTAGRAM_COOKIES, INSTAGRAM_PROXY
@@ -33,6 +38,62 @@ def _proxy_attempts() -> list[str]:
     """Сначала прямое соединение (''), затем — прокси, если он задан. На домашнем IP
     хватает прямого; прокси включается запасным путём для дата-центрового IP (VPS)."""
     return ["", INSTAGRAM_PROXY] if INSTAGRAM_PROXY else [""]
+
+
+# --- Запасной путь для одиночного ФОТО через браузер (Playwright) -------------
+# yt-dlp Instagram-экстрактор на посте без видео падает («There is no video in this
+# post»), а HTML Instagram теперь пустой JS-каркас (ни og:image, ни display_url).
+# Поэтому одиночное фото добываем рендером страницы-эмбеда настоящим браузером. Весь
+# Playwright гоняем на выделенном потоке (pw_thread) — общий браузер нельзя дёргать с
+# разных потоков пула asyncio.to_thread (иначе «greenlet: cannot switch to a different
+# thread» или конфликт event loop). Карусели/видео сюда не доходят — берутся через yt-dlp.
+
+
+def _pw_cookies() -> list[dict]:
+    """Куки Instagram в формате Playwright (из того же cookies.txt, что и у yt-dlp)."""
+    path = _cookies_path()
+    if not path:
+        return []
+    cj = http.cookiejar.MozillaCookieJar(path)
+    try:
+        cj.load(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return []
+    return [{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path or "/"}
+            for c in cj]
+
+
+def _embed_image_src(browser, shortcode: str) -> str | None:
+    """Рендерит страницу-эмбед поста общим браузером и возвращает ссылку на картинку из
+    DOM (или None). Выполняется строго на выделенном Playwright-потоке (см. pw_thread)."""
+    ctx = browser.new_context(user_agent=_UA)
+    try:
+        cookies = _pw_cookies()
+        if cookies:
+            ctx.add_cookies(cookies)
+        page = ctx.new_page()
+        page.goto(f"https://www.instagram.com/p/{shortcode}/embed/captioned/",
+                  wait_until="networkidle", timeout=45000)
+        if not page.query_selector("img"):
+            return None
+        return page.eval_on_selector(
+            "img.EmbeddedMediaImage, article img, img[decoding]",
+            "e => e.currentSrc || e.src",
+        )
+    finally:
+        ctx.close()
+
+
+def _photo_via_browser(shortcode: str, proxies=None) -> list[str]:
+    """Одиночное фото Instagram: добываем картинку рендером эмбеда браузером и качаем."""
+    src = pw_thread.run_with_browser(_embed_image_src, shortcode)
+    if not src:
+        return []
+    path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{uuid.uuid4().hex[:8]}_dl.jpg")
+    data = requests.get(src, timeout=60, proxies=proxies, headers={"User-Agent": _UA}).content
+    with open(path, "wb") as f:
+        f.write(data)
+    return [path]
 
 
 def _cookies_path() -> str | None:
@@ -158,6 +219,14 @@ def download_post(url: str) -> list[str]:
             logger.info("Instagram: пост не отдался напрямую — пробуем через прокси")
 
     if not info:
+        # Частый случай — одиночное ФОТО: yt-dlp падает («There is no video in this post»).
+        # Пробуем добыть картинку рендером эмбеда браузером (карусели/видео сюда не доходят).
+        try:
+            photo = _photo_via_browser(shortcode)
+            if photo:
+                return photo
+        except Exception:
+            logger.info("Instagram: браузерный фолбэк для фото не сработал", exc_info=True)
         raise PostUnavailable(f"Instagram не отдал пост {shortcode}"
                               + (f": {last_err}" if last_err else ""))
 

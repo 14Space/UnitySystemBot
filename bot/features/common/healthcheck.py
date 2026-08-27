@@ -118,14 +118,39 @@ async def _check_currency():
     return True, f"1 USD = {res['EUR']:.2f} EUR"
 
 
+_WHISPER_SAMPLE = None
+
+
+def _whisper_sample() -> str:
+    """Крошечный 1-сек wav-тон для проверки расшифровки (генерим один раз через ffmpeg)."""
+    global _WHISPER_SAMPLE
+    if _WHISPER_SAMPLE and os.path.exists(_WHISPER_SAMPLE):
+        return _WHISPER_SAMPLE
+    import subprocess
+    from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    path = os.path.join(DOWNLOADS_DIR, "whisper_probe.wav")
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=1",
+         "-ar", "16000", "-ac", "1", path],
+        check=True, capture_output=True, timeout=30,
+    )
+    _WHISPER_SAMPLE = path
+    return path
+
+
 async def _check_whisper():
     from bot.config import WHISPER_DEVICE
 
     def work():
         import bot.features.transcribe.transcriber.whisper_transcriber as w
-        import faster_whisper  # noqa: F401 — важен сам факт импорта зависимости
-        loaded = getattr(w, "_model", None) is not None
-        return True, f"{WHISPER_DEVICE}, {'прогрета' if loaded else 'готова (не прогрета)'}"
+        # РЕАЛЬНО прогоняем расшифровку крошечного тона: тон → пустой текст, но это честно
+        # нагружает модель и GPU. Если CUDA отвалилась (ПК уснул и т.п.) — упадёт здесь, и
+        # проверка это поймает (раньше только импортировали модуль и сбой GPU не ловили).
+        # _transcribe_once не откатывается на CPU — значит проверяем ИМЕННО текущее устройство.
+        w._transcribe_once(_whisper_sample())
+        dev = "cpu (откат с GPU!)" if getattr(w, "_forced_cpu", False) else WHISPER_DEVICE
+        return True, dev
 
     return await asyncio.to_thread(work)
 
