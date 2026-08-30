@@ -32,6 +32,10 @@ _ADMIN_ZONE = ZoneInfo(os.getenv("ADMIN_TZ", "Europe/Chisinau"))
 _PROBE_TIMEOUT = int(os.getenv("HEALTHCHECK_TIMEOUT", "120"))
 # Сколько проверок гоняем одновременно (чтобы не перегружать сеть и не ловить лимиты).
 _CONCURRENCY = int(os.getenv("HEALTHCHECK_CONCURRENCY", "4"))
+# Пауза перед ПОВТОРНОЙ проверкой упавшего пункта. Внешние сервисы иногда икают (разовая
+# 500/таймаут/анти-бот) — чтобы не слать ложную тревогу, упавший пункт перепроверяем один
+# раз через эту паузу и считаем сбоем, только если он упал дважды подряд.
+_RETRY_DELAY = int(os.getenv("HEALTHCHECK_RETRY_DELAY", "8"))
 
 
 def _url(key: str, default: str = "") -> str:
@@ -409,31 +413,42 @@ _INSTAGRAM_CHECKS = {"Instagram Reels", "Instagram фото-пост", "Instagra
 async def _run(name: str, platform: str | None, coro_fn, url: str, idx: int,
                sem: asyncio.Semaphore, pw_lock: asyncio.Lock,
                tiktok_lock: asyncio.Lock, ig_lock: asyncio.Lock) -> dict:
-    """Запускает одну проверку с таймаутом и перехватом ошибок. url=="" → пропуск."""
+    """Запускает одну проверку с таймаутом и перехватом ошибок. url=="" → пропуск.
+    Упавший пункт перепроверяем один раз через паузу — тревога только при двойном сбое."""
     base = {"name": name, "platform": platform, "idx": idx}
     if not url:
         return {**base, "state": "skip", "detail": "нет тестовой ссылки", "sec": 0.0}
+
+    async def _attempt() -> tuple[bool, str]:
+        if name in _PLAYWRIGHT_CHECKS:
+            async with pw_lock:                      # Playwright-проверки — строго по одной
+                return await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
+        if name in _TIKTOK_CHECKS:
+            async with tiktok_lock:                  # tikwm: не больше 1 запроса/сек
+                res = await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
+                await asyncio.sleep(1.2)             # пауза перед следующим TikTok-чеком
+                return res
+        if name in _INSTAGRAM_CHECKS:
+            async with ig_lock:                      # общий файл кук — без гонок записи
+                return await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
+        return await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
+
     async with sem:
         start = time.monotonic()
-        try:
-            if name in _PLAYWRIGHT_CHECKS:
-                async with pw_lock:                  # Playwright-проверки — строго по одной
-                    ok, detail = await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
-            elif name in _TIKTOK_CHECKS:
-                async with tiktok_lock:              # tikwm: не больше 1 запроса/сек
-                    ok, detail = await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
-                    await asyncio.sleep(1.2)         # пауза перед следующим TikTok-чеком
-            elif name in _INSTAGRAM_CHECKS:
-                async with ig_lock:                  # общий файл кук — без гонок записи
-                    ok, detail = await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
-            else:
-                ok, detail = await asyncio.wait_for(coro_fn(), _PROBE_TIMEOUT)
-            state = "ok" if ok else "fail"
-        except asyncio.TimeoutError:
-            state, detail = "fail", f"таймаут > {_PROBE_TIMEOUT}с"
-        except Exception as e:                       # noqa: BLE001 — отчёт важнее типа
-            state, detail = "fail", f"{type(e).__name__}: {e}"[:140]
-            logger.warning("Проверка «%s» упала", name, exc_info=True)
+        for attempt in (1, 2):                       # первая попытка + один повтор
+            try:
+                ok, detail = await _attempt()
+                state = "ok" if ok else "fail"
+            except asyncio.TimeoutError:
+                state, detail = "fail", f"таймаут > {_PROBE_TIMEOUT}с"
+            except Exception as e:                   # noqa: BLE001 — отчёт важнее типа
+                state, detail = "fail", f"{type(e).__name__}: {e}"[:140]
+                if attempt == 2:
+                    logger.warning("Проверка «%s» упала (после повтора)", name, exc_info=True)
+            if state == "ok" or attempt == 2:
+                break
+            logger.info("Проверка «%s» упала (%s) — повтор через %dс", name, detail, _RETRY_DELAY)
+            await asyncio.sleep(_RETRY_DELAY)
     return {**base, "state": state, "detail": detail,
             "sec": round(time.monotonic() - start, 1)}
 
