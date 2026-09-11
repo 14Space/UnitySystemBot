@@ -119,6 +119,9 @@ TEXTS = {
     "bench_full":    {"ru": "без сжатия", "uk": "без стиснення", "en": "no compression"},
     "bench_cap":     {"ru": "со сжатием ({cap}p)", "uk": "зі стисненням ({cap}p)", "en": "compressed ({cap}p)"},
     "bench_note":    {"ru": "<i>Кэш не участвует, качалось заново. Отправка в Telegram не учтена.</i>", "uk": "<i>Кеш не брав участі, завантажувалось наново. Надсилання в Telegram не враховано.</i>", "en": "<i>Cache not used, downloaded fresh. Telegram upload not included.</i>"},
+    # Проверка расшифровки
+    "hc_wh_nosample": {"ru": "нет образца речи ({path})", "uk": "немає зразка мовлення ({path})", "en": "no speech sample ({path})"},
+    "hc_wh_garbled":  {"ru": "речь не распознаётся: совпало {hits} слов из нужных {need}, услышал: {text}", "uk": "мовлення не розпізнається: збіглося {hits} слів із потрібних {need}, почув: {text}", "en": "speech not recognized: {hits} words matched of {need} required, heard: {text}"},
     # Проверка кук площадок
     "hc_ck_missing": {"ru": "файла кук нет ({path})", "uk": "файлу кук немає ({path})", "en": "no cookie file ({path})"},
     "hc_ck_nokey":   {"ru": "в файле нет ключа входа ({key})", "uk": "у файлі немає ключа входу ({key})", "en": "login key missing in file ({key})"},

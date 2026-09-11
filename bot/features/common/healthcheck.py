@@ -250,39 +250,38 @@ async def _check_currency():
     return True, f"1 USD = {res['EUR']:.2f} EUR"
 
 
-_WHISPER_SAMPLE = None
-
-
-def _whisper_sample() -> str:
-    """Крошечный 1-сек wav-тон для проверки расшифровки (генерим один раз через ffmpeg)."""
-    global _WHISPER_SAMPLE
-    if _WHISPER_SAMPLE and os.path.exists(_WHISPER_SAMPLE):
-        return _WHISPER_SAMPLE
-    import subprocess
-    from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
-    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    path = os.path.join(DOWNLOADS_DIR, "whisper_probe.wav")
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=1",
-         "-ar", "16000", "-ac", "1", path],
-        check=True, capture_output=True, timeout=30,
-    )
-    _WHISPER_SAMPLE = path
-    return path
-
-
 async def _check_whisper():
-    from bot.config import WHISPER_DEVICE
+    """Проверяет, что расшифровка не просто запускается, а РАСПОЗНАЁТ речь.
+
+    Раньше здесь прогонялся синтетический тон: он честно нагружал модель и ловил смерть
+    видеокарты, но слов в нём нет, поэтому пустой ответ считался нормой. Значит любая
+    поломка самого распознавания (модель поехала, защита от фантомов начала съедать речь,
+    сломалось определение языка) оставалась невидимой — галочка горела зелёным.
+
+    Теперь расшифровываем короткое настоящее голосовое из репозитория и сверяем, что в
+    тексте прозвучали нужные слова. Не все: одно слово модель может расслышать иначе, и
+    ронять проверку из-за этого незачем.
+    """
+    from bot.config import (
+        WHISPER_DEVICE, WHISPER_PROBE, WHISPER_PROBE_WORDS, WHISPER_PROBE_MIN_HITS,
+    )
+
+    if not os.path.exists(WHISPER_PROBE):
+        return False, t("hc_wh_nosample", _admin_lang(), path=WHISPER_PROBE)
 
     def work():
         import bot.features.transcribe.transcriber.whisper_transcriber as w
-        # РЕАЛЬНО прогоняем расшифровку крошечного тона: тон → пустой текст, но это честно
-        # нагружает модель и GPU. Если CUDA отвалилась (ПК уснул и т.п.) — упадёт здесь, и
-        # проверка это поймает (раньше только импортировали модуль и сбой GPU не ловили).
-        # _transcribe_once не откатывается на CPU — значит проверяем ИМЕННО текущее устройство.
-        w._transcribe_once(_whisper_sample())
+        # _transcribe_once НЕ откатывается на CPU — значит проверяем именно то
+        # устройство, на котором бот работает сейчас.
+        text = (w._transcribe_once(WHISPER_PROBE) or "").lower()
         dev = "cpu (откат с GPU!)" if getattr(w, "_forced_cpu", False) else WHISPER_DEVICE
-        return True, dev
+
+        hits = [word for word in WHISPER_PROBE_WORDS if word in text]
+        if len(hits) < WHISPER_PROBE_MIN_HITS:
+            return False, t("hc_wh_garbled", _admin_lang(),
+                            hits=len(hits), need=WHISPER_PROBE_MIN_HITS,
+                            text=(text[:60] or "—"))
+        return True, f"{dev}, {len(hits)}/{len(WHISPER_PROBE_WORDS)}"
 
     return await asyncio.to_thread(work)
 
