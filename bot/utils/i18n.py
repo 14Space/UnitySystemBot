@@ -74,7 +74,8 @@ _CHECK_NAMES = {
     "HDRezka сериал":           {"ru": "HDRezka сериал", "uk": "HDRezka серіал", "en": "HDRezka series"},
     "ИИ-ассистент":             {"ru": "ИИ-ассистент", "uk": "ШІ-асистент", "en": "AI assistant"},
     "Конвертер валют":          {"ru": "Конвертер валют", "uk": "Конвертер валют", "en": "Currency converter"},
-    "Расшифровка Whisper":      {"ru": "Расшифровка Whisper", "uk": "Розшифровка Whisper", "en": "Whisper transcription"},
+    "Расшифровка (Groq)":       {"ru": "Расшифровка (Groq)", "uk": "Розшифровка (Groq)", "en": "Transcription (Groq)"},
+    "Расшифровка (запасная)":   {"ru": "Расшифровка (запасная)", "uk": "Розшифровка (запасна)", "en": "Transcription (fallback)"},
     "yt-dlp последний":         {"ru": "yt-dlp последний", "uk": "yt-dlp останній", "en": "yt-dlp up to date"},
     "Куки Instagram":           {"ru": "Куки Instagram", "uk": "Куки Instagram", "en": "Instagram cookies"},
     "Куки X (Twitter)":         {"ru": "Куки X (Twitter)", "uk": "Куки X (Twitter)", "en": "X (Twitter) cookies"},
@@ -122,6 +123,7 @@ TEXTS = {
     # Проверка расшифровки
     "hc_wh_nosample": {"ru": "нет образца речи ({path})", "uk": "немає зразка мовлення ({path})", "en": "no speech sample ({path})"},
     "hc_wh_garbled":  {"ru": "речь не распознаётся: совпало {hits} слов из нужных {need}, услышал: {text}", "uk": "мовлення не розпізнається: збіглося {hits} слів із потрібних {need}, почув: {text}", "en": "speech not recognized: {hits} words matched of {need} required, heard: {text}"},
+    "hc_stt_nokey":   {"ru": "нет ключа Groq", "uk": "немає ключа Groq", "en": "no Groq key"},
     # Проверка кук площадок
     "hc_ck_missing": {"ru": "файла кук нет ({path})", "uk": "файлу кук немає ({path})", "en": "no cookie file ({path})"},
     "hc_ck_nokey":   {"ru": "в файле нет ключа входа ({key})", "uk": "у файлі немає ключа входу ({key})", "en": "login key missing in file ({key})"},

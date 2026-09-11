@@ -44,3 +44,4 @@ playwright==1.55.0
 HdRezkaApi==11.2.3
 beautifulsoup4==4.15.0
 lxml==6.1.1
+telethon

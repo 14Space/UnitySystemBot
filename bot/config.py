@@ -125,10 +125,31 @@ WHISPER_MIN_SPEECH_PROB = float(os.getenv("WHISPER_MIN_SPEECH_PROB", "0.5"))
 # Прогревать модель при старте бота (грузит её в видеопамять сразу, ~3 ГБ).
 # true – первое голосовое не тормозит, но видеопамять занята всё время работы.
 # false – видеопамять свободна, пока никто не прислал голосовое (как было раньше).
-WHISPER_PREWARM = os.getenv("WHISPER_PREWARM", "true").lower() in ("1", "true", "yes")
+# Прогрев локальной модели на старте. По умолчанию ВЫКЛЮЧЕН: с тех пор как основной
+# способ расшифровки — облако, видеокарта стала запасной, и держать под неё 3.6 ГБ
+# видеопамяти с первой секунды незачем. Понадобится — загрузится сама, это ~5 секунд
+# один раз.
+WHISPER_PREWARM = os.getenv("WHISPER_PREWARM", "false").lower() in ("1", "true", "yes")
 # Образец речи для проверки расшифровки: короткое голосовое админа, лежит в репозитории
 # и едет вместе с кодом. Нужен настоящий голос, а не синтезатор: робо-речь на русском
 # Whisper не разбирает вовсе (проверено), и проверка на ней ничего бы не значила.
+# --- Расшифровка: порядок способов ---
+# Основной — Groq (та же модель whisper-large-v3, но вдвое быстрее нашей видеокарты:
+# 0.45с против 1.12с на одном файле). Запасной — локальная модель. Последний рубеж —
+# чужой бот в Telegram через аккаунт-посредник; он самый медленный (2.2с) и требует
+# живой пользовательской сессии, поэтому включается только явно.
+STT_ORDER = tuple(x.strip() for x in os.getenv("STT_ORDER", "groq,local,relay").split(",") if x.strip())
+GROQ_STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3")
+GROQ_STT_TIMEOUT = int(os.getenv("GROQ_STT_TIMEOUT", "60"))
+# Чужой бот-расшифровщик и сессия аккаунта, от чьего имени ему пишем. Сессия — это
+# полный доступ к аккаунту, поэтому лежит в data/ и закрыта в .gitignore.
+RELAY_STT_BOT = os.getenv("RELAY_STT_BOT", "@smartspeech_sber_bot")
+RELAY_STT_SESSION = os.getenv("RELAY_STT_SESSION", "data/relay.session")
+# Те же API_ID/HASH, что и у локального Bot API-сервера: они от аккаунта, а не от бота.
+TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID", "")
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+RELAY_STT_TIMEOUT = int(os.getenv("RELAY_STT_TIMEOUT", "90"))
+
 WHISPER_PROBE = os.getenv("WHISPER_PROBE", "data/samples/whisper_probe.ogg")
 # Корни слов, которые ОБЯЗАНЫ прозвучать в расшифровке образца. Корни, а не слова
 # целиком: окончания могут разойтись между версиями модели, смысл — нет.

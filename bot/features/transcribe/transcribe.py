@@ -23,7 +23,7 @@ from bot.config import (
 from bot.utils import limits, traffic
 from bot.utils.i18n import t, lang_of
 from bot.features.common import alerts
-from bot.features.transcribe.transcriber import transcribe
+from bot.features.transcribe.transcriber import transcribe_audio
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ async def _handle(message: Message, file_id: str, suffix: str):
     await limits.acquire(limits.TRANSCRIBE)
     try:
         await _fetch_file(message, file_id, file_path)
-        text = await asyncio.to_thread(transcribe, file_path)
+        text = await transcribe_audio(file_path)
 
         # Пусто = тишина/музыка без слов (или остались одни титры-галлюцинации, которые
         # мы вырезали). В этом случае бот просто молчит — убираем «Расшифровываю…».

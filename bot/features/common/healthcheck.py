@@ -250,38 +250,65 @@ async def _check_currency():
     return True, f"1 USD = {res['EUR']:.2f} EUR"
 
 
-async def _check_whisper():
-    """Проверяет, что расшифровка не просто запускается, а РАСПОЗНАЁТ речь.
+def _judge_speech(text: str, where: str) -> tuple[bool, str]:
+    """Сверяет расшифровку образца с ожидаемыми словами.
 
-    Раньше здесь прогонялся синтетический тон: он честно нагружал модель и ловил смерть
-    видеокарты, но слов в нём нет, поэтому пустой ответ считался нормой. Значит любая
-    поломка самого распознавания (модель поехала, защита от фантомов начала съедать речь,
-    сломалось определение языка) оставалась невидимой — галочка горела зелёным.
+    Смысл: проверять сам факт запуска модели мало. Раньше здесь прогонялся синтетический
+    тон — он ловил смерть видеокарты, но слов в нём нет, и пустой ответ считался нормой,
+    поэтому поломка самого распознавания оставалась невидимой.
 
-    Теперь расшифровываем короткое настоящее голосовое из репозитория и сверяем, что в
-    тексте прозвучали нужные слова. Не все: одно слово модель может расслышать иначе, и
-    ронять проверку из-за этого незачем.
+    Совпасть должны не все слова, а большинство: одно слово движок может расслышать
+    иначе, и ронять проверку из-за этого незачем.
     """
-    from bot.config import (
-        WHISPER_DEVICE, WHISPER_PROBE, WHISPER_PROBE_WORDS, WHISPER_PROBE_MIN_HITS,
-    )
+    from bot.config import WHISPER_PROBE_WORDS, WHISPER_PROBE_MIN_HITS
 
-    if not os.path.exists(WHISPER_PROBE):
+    low = (text or "").lower()
+    hits = [w for w in WHISPER_PROBE_WORDS if w in low]
+    if len(hits) < WHISPER_PROBE_MIN_HITS:
+        return False, t("hc_wh_garbled", _admin_lang(), hits=len(hits),
+                        need=WHISPER_PROBE_MIN_HITS, text=(low[:60] or "—"))
+    return True, f"{where}, {len(hits)}/{len(WHISPER_PROBE_WORDS)}"
+
+
+def _probe_path() -> str | None:
+    from bot.config import WHISPER_PROBE
+    return WHISPER_PROBE if os.path.exists(WHISPER_PROBE) else None
+
+
+async def _check_stt_groq():
+    """Основной способ расшифровки: облако Groq. Именно его получают пользователи."""
+    from bot.config import WHISPER_PROBE, GROQ_STT_MODEL
+    from bot.features.transcribe.transcriber import groq_stt
+
+    if not _probe_path():
+        return False, t("hc_wh_nosample", _admin_lang(), path=WHISPER_PROBE)
+    if not groq_stt.available():
+        return False, t("hc_stt_nokey", _admin_lang())
+    text = await asyncio.to_thread(groq_stt.transcribe, WHISPER_PROBE)
+    return _judge_speech(text, GROQ_STT_MODEL)
+
+
+async def _check_stt_local():
+    """Запасной способ: наша видеокарта. Пользователи его не видят, пока жив Groq, —
+    тем важнее проверять отдельно, иначе страховка тихо сгниёт."""
+    from bot.config import WHISPER_PROBE, WHISPER_DEVICE
+
+    if not _probe_path():
         return False, t("hc_wh_nosample", _admin_lang(), path=WHISPER_PROBE)
 
     def work():
         import bot.features.transcribe.transcriber.whisper_transcriber as w
-        # _transcribe_once НЕ откатывается на CPU — значит проверяем именно то
-        # устройство, на котором бот работает сейчас.
-        text = (w._transcribe_once(WHISPER_PROBE) or "").lower()
-        dev = "cpu (откат с GPU!)" if getattr(w, "_forced_cpu", False) else WHISPER_DEVICE
-
-        hits = [word for word in WHISPER_PROBE_WORDS if word in text]
-        if len(hits) < WHISPER_PROBE_MIN_HITS:
-            return False, t("hc_wh_garbled", _admin_lang(),
-                            hits=len(hits), need=WHISPER_PROBE_MIN_HITS,
-                            text=(text[:60] or "—"))
-        return True, f"{dev}, {len(hits)}/{len(WHISPER_PROBE_WORDS)}"
+        from bot.config import WHISPER_PREWARM
+        try:
+            # _transcribe_once НЕ откатывается на CPU — проверяем именно текущее устройство.
+            text = w._transcribe_once(WHISPER_PROBE)
+            dev = "cpu (откат с GPU!)" if getattr(w, "_forced_cpu", False) else WHISPER_DEVICE
+            return _judge_speech(text, dev)
+        finally:
+            # Прогрев выключен — значит держать 3.6 ГБ видеопамяти между проверками
+            # незачем: проверка сама её и заняла, сама и отпускает.
+            if not WHISPER_PREWARM:
+                w.release_model()
 
     return await asyncio.to_thread(work)
 
@@ -580,7 +607,8 @@ _CHECKS = [
     # Функции (не площадки) — всегда в конце
     ("ИИ-ассистент",            None,         _check_ai,                                    "x"),
     ("Конвертер валют",         None,         _check_currency,                              "x"),
-    ("Расшифровка Whisper",     None,         _check_whisper,                               "x"),
+    ("Расшифровка (Groq)",      None,         _check_stt_groq,                              "x"),
+    ("Расшифровка (запасная)",  None,         _check_stt_local,                             "x"),
     ("yt-dlp последний",        None,         _check_ytdlp,                                 "x"),
     ("Куки Instagram",          None,         _check_ig_cookies,                            "x"),
     ("Куки X (Twitter)",        None,         _check_x_cookies,                             "x"),
