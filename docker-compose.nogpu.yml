@@ -1,0 +1,19 @@
+# Аварийный режим: бот БЕЗ видеокарты.
+#
+# Нужен, когда GPU пропал из WSL («no adapters were found») — тогда Docker вообще не может
+# создать контейнер с запросом видеокарты, и бот не поднимается совсем. С этим файлом он
+# работает целиком, кроме скорости расшифровки: Whisper считает на процессоре и делает это
+# заметно медленнее.
+#
+#   запустить:  docker compose -f docker-compose.yml -f docker-compose.nogpu.yml up -d bot
+#   вернуться:  docker compose up -d bot        (после того, как GPU снова виден)
+services:
+  bot:
+    environment:
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE_TYPE: int8
+      # Не греем модель на старте: на процессоре это долго и держит запуск.
+      WHISPER_PREWARM: "false"
+    # !reset убирает запрос видеокарты целиком: обычное слияние Compose списки
+    # объединяет, и простой пустой список запрос бы не отменил.
+    deploy: !reset null

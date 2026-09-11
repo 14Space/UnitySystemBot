@@ -1,4 +1,5 @@
 import os
+import copy
 import time
 import uuid
 import shutil
@@ -160,10 +161,12 @@ def download_video(
     quality: int,
     progress_callback=None,
     postprocess_callback=None,
+    info: dict | None = None,
 ) -> str:
     """
     Скачивает видео в указанном качестве.
-    info — уже полученные метаданные (чтобы не запрашивать YouTube второй раз).
+    info — уже полученные метаданные (чтобы не запрашивать площадку второй раз): их
+        достали, когда показывали кнопки качества. Экономит повторный поход в сеть.
     progress_callback(percent) — вызывается во время скачивания.
     postprocess_callback() — вызывается когда ffmpeg начинает склейку.
     """
@@ -215,7 +218,7 @@ def download_video(
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            extracted = ydl.extract_info(url, download=True)
+            extracted = _extract_for_download(ydl, url, info)
             filename = ydl.prepare_filename(extracted)
             if not os.path.exists(filename):
                 filename = filename.rsplit(".", 1)[0] + ".mp4"
@@ -230,6 +233,19 @@ def download_video(
             if recovered:
                 return recovered
         raise
+
+
+def _extract_for_download(ydl, url: str, info: dict | None):
+    """Готовит метаданные для скачивания. Если они УЖЕ получены раньше (когда показывали
+    кнопки качества) — переиспользуем их и не ходим к площадке второй раз: это экономит
+    ~1.5с на каждом видео. Если переиспользовать не вышло (ссылки формата протухли, другой
+    extractor и т.п.) — честно извлекаем заново, чтобы скачивание точно не сломалось."""
+    if info:
+        try:
+            return ydl.process_video_result(copy.deepcopy(info), download=True)
+        except Exception:
+            logger.info("Метаданные переиспользовать не вышло — извлекаю заново", exc_info=True)
+    return ydl.extract_info(url, download=True)
 
 
 # Кодеки, которые iPhone/Telegram на iOS играют аппаратно. Остальное (vp9, av01) —
@@ -505,24 +521,70 @@ def _best_image_url(info: dict) -> str | None:
     return None
 
 
-def download_shorts(url: str) -> str:
-    """Скачивает Shorts в максимальном качестве"""
+_FMT_CHAIN = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+
+
+def _quality_opts(max_h: int | None) -> dict:
+    """Опции выбора качества. Без ограничения — максимум.
+
+    С ограничением («Сжатие шортс») НЕ фильтруем по height: у вертикальных роликов высота
+    1280 при ширине 720, поэтому «height<=720» отсекал всё кроме 360x640 и ронял качество
+    вчетверо. Вместо фильтра сортируем по res (короткая сторона) — так 720 означает именно
+    720p и для вертикальных, и для горизонтальных.
+
+    Список форматов не сужаем: у площадок с единственным форматом (Instagram) строгий лимит
+    уронил бы скачивание «формат недоступен», а сортировка безопасна — она лишь меняет
+    порядок предпочтений.
+    """
+    if not max_h:
+        return {"format": _FMT_CHAIN}
+    return {"format": _FMT_CHAIN, "format_sort": [f"res:{max_h}"]}
+
+
+def download_shorts(url: str, max_height: int | None = None) -> str:
+    """
+    Скачивает короткое видео (YouTube Shorts, PornHub Shorties).
+
+    max_height — потолок качества («сжатие шортс»): None = максимальное.
+    При сбое скачивания (частый случай — тяжёлый файл на 40+ МБ и медленный CDN, из-за
+    чего рвётся соединение) автоматически повторяем в качестве пониже: лучше отдать
+    ролик чуть менее чётким, чем не отдать совсем.
+    """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_dl.%(ext)s")
 
-    fmt = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+    # Лесенка попыток: запрошенное качество, затем всё более лёгкие варианты.
+    ladder = [max_height, 720, 480] if max_height else [None, 720, 480]
+    seen, attempts = set(), []
+    for h in ladder:                       # убираем дубли, сохраняя порядок
+        if h not in seen:
+            seen.add(h)
+            attempts.append(h)
 
-    ydl_opts = {
-        **BASE_OPTS,
-        "format": fmt,
-        "outtmpl": output_path,
-        "merge_output_format": "mp4",
-        **_impersonate_opts(url),  # маскировка под Chrome только для PornHub (shorties)
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        extracted = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(extracted)
-        if not os.path.exists(filename):
-            filename = filename.rsplit(".", 1)[0] + ".mp4"
-        return filename
+    last_err = None
+    for i, h in enumerate(attempts):
+        # На промежуточных попытках не терпим долгие залипания: если тяжёлый файл встал,
+        # быстрее откатиться на качество пониже, чем ждать 25с ради максимума. На ПОСЛЕДНЕЙ
+        # попытке возвращаем обычное терпение yt-dlp — сдаваться раньше времени нельзя.
+        impatient = {"socket_timeout": 10, "retries": 1} if i < len(attempts) - 1 else {}
+        ydl_opts = {
+            **BASE_OPTS,
+            **_quality_opts(h),
+            "outtmpl": output_path,
+            "merge_output_format": "mp4",
+            **impatient,
+            **_impersonate_opts(url),  # маскировка под Chrome только для PornHub (shorties)
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                extracted = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(extracted)
+                if not os.path.exists(filename):
+                    filename = filename.rsplit(".", 1)[0] + ".mp4"
+                return filename
+        except Exception as e:
+            last_err = e
+            if i < len(attempts) - 1:
+                logger.info("Короткое видео не скачалось (%s) — пробую качество пониже (%sp)",
+                            str(e)[:120], attempts[i + 1])
+    raise last_err

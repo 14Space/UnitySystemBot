@@ -25,3 +25,8 @@ data/telegram-api/
 # Куки Instagram (полный доступ к аккаунту — НЕ коммитить)
 *cookies*.txt
 data/instagram_cookies.txt
+
+# Сессия Telegram для tools/bench.py — это ПОЛНЫЙ доступ к аккаунту, как пароль.
+# В репозиторий попасть не должна никогда.
+*.session
+*.session-journal

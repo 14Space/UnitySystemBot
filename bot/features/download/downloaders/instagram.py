@@ -6,7 +6,9 @@ import uuid
 import requests
 import yt_dlp
 from urllib.parse import urlparse
-from bot.features.download.downloaders.ytdlp_wrapper import BASE_OPTS, DOWNLOADS_DIR
+from bot.features.download.downloaders.ytdlp_wrapper import (
+    BASE_OPTS, DOWNLOADS_DIR, _quality_opts,
+)
 from bot.utils import pw_thread
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -108,16 +110,15 @@ def _shortcode(url: str) -> str | None:
     return m.group(1) if m else None
 
 
-def download_reel(url: str) -> str:
-    """Скачивает Instagram Reel (видео) в максимальном качестве — как Shorts."""
+def download_reel(url: str, max_height: int | None = None) -> str:
+    """Скачивает Instagram Reel (видео) — как Shorts. max_height ограничивает качество
+    («Сжатие шортс»); без него берём максимум."""
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_dl.%(ext)s")
 
-    fmt = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
-
     base_opts = {
         **BASE_OPTS,
-        "format": fmt,
+        **_quality_opts(max_height),
         "outtmpl": output_path,
         "merge_output_format": "mp4",
     }

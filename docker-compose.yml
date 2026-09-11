@@ -21,6 +21,9 @@ services:
     environment:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      # Локальный режим: сервер принимает ПУТЬ к файлу вместо повторной заливки по сети
+      # и отдаёт абсолютные пути в getFile (приём ГС это уже умеет, см. _fetch_file).
+      TELEGRAM_LOCAL: ${TELEGRAM_LOCAL:-1}
     volumes:
       # Файлы храним в Docker-томе (внутри Linux), а не в папке Windows: имя папки
       # содержит двоеточие (токен), и Windows-монтирование на нём ломает сервер.
@@ -28,6 +31,9 @@ services:
     # RAM-диск для рабочей temp-папки: через неё идёт ВЫГРУЗКА (сервер пишет файл сюда,
     # отправляет в Telegram и стирает). Переводим на оперативку — запись выгрузки не
     # попадает на SSD. Папку с принятыми голосовыми (/var/lib) не трогаем — она нужна боту.
+      # Тот же RAM-диск с загрузками, что и у бота. Нужен, чтобы отдавать серверу ПУТЬ
+      # к файлу вместо повторной заливки по сети: файл и так уже лежит в оперативке.
+      - downloads:/app/data/downloads
     tmpfs:
       # mode=1777 — чтобы сервер (работает под uid 101) мог писать в RAM-папку
       - /tmp/telegram-bot-api:size=10g,mode=1777
@@ -57,6 +63,11 @@ services:
       BOT_TOKEN: ${BOT_TOKEN}
       # Внутри Docker-сети до локального Bot API идём по имени сервиса, не localhost.
       TELEGRAM_LOCAL_API_URL: http://telegram-bot-api:8081
+      # Тот же флаг, что и у сервера: бот по нему решает, можно ли отдавать файл ссылкой
+      # «file://путь» вместо повторной заливки (см. bot/utils/tg_files.py).
+      TELEGRAM_LOCAL: ${TELEGRAM_LOCAL:-1}
+      # Потолок качества для «Сжатия шортс» (короткая сторона кадра)
+      SHORTS_CAP_HEIGHT: ${SHORTS_CAP_HEIGHT:-720}
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
       # Куда боту ходить за пропусками (PO-токенами) для YouTube.
@@ -65,14 +76,16 @@ services:
       # Монтируем всю папку data: downloads, cookies и база unitysystem.db (data/unitysystem.db).
       - ./data:/app/data
       # Тот же том с принятыми файлами (ГС/кружки) — бот в Docker читает их напрямую.
-      - tg-api-data:/var/lib/telegram-bot-api:ro
+      # Не только на чтение: в локальном режиме сервер сам файлы не удаляет, это делает
+      # бот после того, как заберёт свою копию (см. _drop_server_copy).
+      - tg-api-data:/var/lib/telegram-bot-api
       # Кэш модели Whisper (~3 ГБ): скачивается один раз, переживает пересборку.
       - whisper-cache:/cache
-    # RAM-диск для временных файлов загрузок: пишем в оперативку, а не на SSD —
-    # нулевой износ диска и выше скорость. Файлы одноразовые (скачали → отправили →
-    # удалили), потолок 10 ГБ; занята только та память, что реально сейчас в папке.
-    tmpfs:
-      - /app/data/downloads:size=10g,mode=1777
+      # RAM-диск для временных файлов загрузок: пишем в оперативку, а не на SSD —
+      # нулевой износ диска и выше скорость. Файлы одноразовые (скачали → отправили →
+      # удалили). Это ОБЩИЙ том с telegram-bot-api: сервер читает файл по пути, и
+      # видео не заливается в него второй раз по сети.
+      - downloads:/app/data/downloads
     depends_on:
       - telegram-bot-api
       - bgutil-provider
@@ -86,5 +99,13 @@ services:
               capabilities: [gpu]
 
 volumes:
+  # Именованный том в оперативной памяти. Обычный tmpfs: у каждого контейнера свой и
+  # общим быть не может, а такой — один на всех, кто его подключит.
+  downloads:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=10g,mode=1777
   tg-api-data:
   whisper-cache:

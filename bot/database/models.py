@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, func
+from sqlalchemy import Column, Integer, Float, String, Boolean, DateTime, func
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -50,6 +50,10 @@ class ChatSettings(Base):
     # Слать ли музыку слайдшоу отдельным аудио, когда слайдшоу отдаётся как фото
     # (по умолчанию ДА — срабатывает только для фото-слайдшоу, к видео не применяется)
     audio_track = Column(Boolean, default=True)
+    # Брать ли у площадки короткие видео в качестве пониже (быстрее, но менее чётко).
+    # NULL = не задано: тогда по умолчанию ВКЛ в группах (упор на скорость) и ВЫКЛ в
+    # личке (упор на качество) — решает вызывающий код по типу чата.
+    compress_shorts = Column(Boolean, nullable=True, default=None)
 
 
 class CachedFile(Base):
@@ -65,3 +69,19 @@ class CachedFile(Base):
     # Поэтому кэш храним по каждому боту отдельно.
     bot_id = Column(Integer, nullable=True)
     cached_at = Column(DateTime, server_default=func.now())
+
+
+class CheckTiming(Base):
+    """История длительности проверок функционала.
+
+    Зачем: проверка отвечает «скачалось ли», но не «не стало ли хуже». 10 сентября
+    PornHub из-за нашей же правки поехал с 4 секунд на 48 – и все галочки оставались
+    зелёными, потому что файл в итоге приходил. Храня время каждой проверки, мы ловим
+    такие провалы автоматически, даже когда заранее не догадались их проверять.
+    """
+    __tablename__ = "check_timings"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False, index=True)
+    sec = Column(Float, nullable=False)
+    at = Column(DateTime, server_default=func.now())

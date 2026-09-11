@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher
@@ -12,7 +13,7 @@ from aiogram.types import (
 )
 from bot.config import (
     BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ,
-    REPORT_HOUR, HEALTHCHECK_EVERY_HOURS,
+    REPORT_HOUR, HEALTHCHECK_EVERY_HOURS, ADMIN_LANG,
 )
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
@@ -96,6 +97,7 @@ async def _setup_commands(bot: Bot):
         admin_cmds = common + [
             BotCommand(command="statistics", description="Статистика"),
             BotCommand(command="cleancache", description="Очистить кэш"),
+            BotCommand(command="bench", description="Замерить скорость по ссылке"),
         ]
         # Личный чат админа с ботом может ещё не существовать (админ не писал боту) —
         # тогда Telegram вернёт «chat not found». Не роняем из-за этого запуск.
@@ -121,23 +123,57 @@ async def _setup_profile(bot: Bot):
         logger.exception("Не задал дефолтный профиль")
 
 
+async def _restart_for_ytdlp(bot: Bot, old: str, new: str):
+    """Перезапускает процесс, чтобы обновлённый yt-dlp начал работать.
+
+    Docker с restart: unless-stopped поднимет ТОТ ЖЕ контейнер, поэтому установленная
+    версия сохранится (пересборка образа её бы затёрла). Сначала дожидаемся конца
+    текущих скачиваний: обрывать их посреди работы нельзя.
+    """
+    from bot.features.download.link import ACTIVE_DOWNLOADS
+    for _ in range(30):                 # ждём до 15 минут, дальше уходим в любом случае
+        if not ACTIVE_DOWNLOADS:
+            break
+        await asyncio.sleep(30)
+    logger.info("Перезапуск ради обновления yt-dlp: %s -> %s", old, new)
+    if ADMIN_ID:
+        try:
+            await bot.send_message(ADMIN_ID, f"♻️ Перезапускаюсь: yt-dlp {old} → {new}")
+        except Exception:
+            pass
+    # Жёсткий выход намеренно: контейнер сейчас поднимется заново, а мягко погасить
+    # polling из фоновой задачи надёжно не выходит.
+    os._exit(0)
+
+
 async def _daily_tasks(bot: Bot):
     """Каждый день в REPORT_HOUR:00 по времени админа: обновляем yt-dlp, прогоняем
-    проверку функционала и шлём админу отчёт (статистика + результаты проверки)."""
+    проверку функционала и шлём админу отчёт (статистика + результаты проверки).
+
+    Если yt-dlp обновился — после отчёта перезапускаемся: иначе новая версия лежит
+    установленной, но в работу не идёт, и обновление крутится вхолостую.
+    """
     while True:
         await asyncio.sleep(_seconds_until_report())
-        await asyncio.to_thread(update_ytdlp)
+        old, new = await asyncio.to_thread(update_ytdlp)
         if not ADMIN_ID:
+            if old != new:
+                await _restart_for_ytdlp(bot, old, new)
             continue
         try:
             async with SessionLocal() as session:
                 stats = await get_stats(session)
             health = await run_and_cache()
             # Проверку выводим в том же порядке, что и «По платформам» (по использованию).
-            report = f"{format_stats(stats)}\n\n{format_health(health, platform_ranking(stats))}"
+            # Версия yt-dlp отдельной строкой не нужна: свежесть проверяется внутри
+            # самой проверки функционала («yt-dlp последний»).
+            report = (f"{format_stats(stats, ADMIN_LANG)}\n\n"
+                      f"{format_health(health, platform_ranking(stats), lang=ADMIN_LANG)}")
             await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
         except Exception:
             logger.exception("Не удалось отправить дневной отчёт")
+        if old != new:
+            await _restart_for_ytdlp(bot, old, new)
 
 
 async def _periodic_healthcheck(bot: Bot):
@@ -163,7 +199,7 @@ async def _periodic_healthcheck(bot: Bot):
         try:
             results = await run_and_cache()
             if ADMIN_ID:
-                alert = format_alert(results)
+                alert = format_alert(results, ADMIN_LANG)
                 if alert:
                     await bot.send_message(ADMIN_ID, alert)
         except Exception:

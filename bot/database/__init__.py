@@ -26,6 +26,11 @@ async def init_db():
             await conn.exec_driver_sql(
                 "ALTER TABLE chat_settings ADD COLUMN audio_track BOOLEAN DEFAULT 0"
             )
+        if "compress_shorts" not in cols:
+            # NULL = не задано: дефолт решается по типу чата (группа/личка) в коде.
+            await conn.exec_driver_sql(
+                "ALTER TABLE chat_settings ADD COLUMN compress_shorts BOOLEAN DEFAULT NULL"
+            )
 
         # Кэш file_id теперь по каждому боту (id привязан к отправившему боту).
         res = await conn.exec_driver_sql("PRAGMA table_info(cached_files)")

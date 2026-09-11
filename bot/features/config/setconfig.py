@@ -12,6 +12,7 @@ from bot.database import SessionLocal
 from bot.database.repository import (
     get_disabled_features, set_feature, get_slideshow_mode, set_slideshow_mode,
     get_currency_targets, toggle_currency_target, get_audio_track, set_audio_track,
+    get_compress_shorts, set_compress_shorts,
 )
 from bot.features.currency.parser import ORDER as CURRENCY_ORDER, CURRENCIES
 from bot.utils.i18n import t, lang_of
@@ -59,15 +60,20 @@ SLIDESHOW_MODES = [
 
 
 def _keyboard(disabled: set[str], ss_mode: str, targets: list[str], audio_on: bool,
-              lang: str) -> InlineKeyboardMarkup:
-    """Клавиатура настроек — одинаковая в группе и в личке. Разница только в дефолте
-    режима слайдшоу (в личке — «Выбор») и её задаёт вызывающий код через ss_mode."""
+              compress_on: bool, lang: str) -> InlineKeyboardMarkup:
+    """Клавиатура настроек — одинаковая в группе и в личке. Разница только в дефолтах
+    (режим слайдшоу и сжатие шортс) — их задаёт вызывающий код по типу чата."""
     rows = []
     # Переключатели функций
     for feature, label_key in TOGGLEABLE:
         mark = "❌" if feature in disabled else "✅"
         rows.append([InlineKeyboardButton(
             text=f"{mark} {t(label_key, lang)}", callback_data=f"cfg:{feature}")])
+
+    # Сжатие коротких видео: быстрее, но чуть менее чётко
+    rows.append([InlineKeyboardButton(
+        text=f"{'✅' if compress_on else '❌'} {t('cfg_compress_shorts', lang)}",
+        callback_data="cfg:compress")])
 
     # Отдельное аудио и режим слайдшоу
     rows.append([InlineKeyboardButton(
@@ -119,21 +125,26 @@ async def cmd_setconfig(message: Message):
         ss_mode = await get_slideshow_mode(session, message.chat.id, default=ss_default)
         targets = await get_currency_targets(session, message.chat.id)
         audio_on = await get_audio_track(session, message.chat.id)
+        # сжатие шортс: в группах по умолчанию ВКЛ (скорость), в личке ВЫКЛ (качество)
+        compress_on = await get_compress_shorts(session, message.chat.id, default=not personal)
     await message.reply(t("cfg_title", lang),
-                        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, lang))
+                        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on,
+                                               compress_on, lang))
 
 
 async def _refresh(callback: CallbackQuery, lang: str):
     """Перерисовывает клавиатуру настроек актуальным состоянием."""
     chat = callback.message.chat
-    ss_default = "ask" if chat.type not in GROUP_TYPES else "video"   # в личке — «Выбор»
+    in_group = chat.type in GROUP_TYPES
+    ss_default = "video" if in_group else "ask"   # в личке — «Выбор»
     async with SessionLocal() as session:
         disabled = await get_disabled_features(session, chat.id)
         ss_mode = await get_slideshow_mode(session, chat.id, default=ss_default)
         targets = await get_currency_targets(session, chat.id)
         audio_on = await get_audio_track(session, chat.id)
+        compress_on = await get_compress_shorts(session, chat.id, default=in_group)
     await callback.message.edit_reply_markup(
-        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, lang))
+        reply_markup=_keyboard(disabled, ss_mode, targets, audio_on, compress_on, lang))
 
 
 @router.callback_query(F.data == "cfg:noop")
@@ -168,6 +179,21 @@ async def set_slideshow(callback: CallbackQuery):
         return
     async with SessionLocal() as session:
         await set_slideshow_mode(session, chat_id, mode)
+    await _refresh(callback, lang)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cfg:compress")
+async def toggle_compress(callback: CallbackQuery):
+    """Сжатие коротких видео: берём у площадки качество пониже — быстрее приходит."""
+    lang = lang_of(callback.from_user)
+    chat = callback.message.chat
+    if not await _allowed(callback.bot, chat, callback.from_user.id):
+        await callback.answer(t("cfg_admin_only", lang), show_alert=True)
+        return
+    async with SessionLocal() as session:
+        now = await get_compress_shorts(session, chat.id, default=chat.type in GROUP_TYPES)
+        await set_compress_shorts(session, chat.id, not now)
     await _refresh(callback, lang)
     await callback.answer()
 

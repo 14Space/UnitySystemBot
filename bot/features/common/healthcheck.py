@@ -20,8 +20,12 @@ import logging
 import os
 import re
 import time
+import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+from bot.config import ADMIN_LANG
+from bot.utils.i18n import t, t_check
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +118,130 @@ async def _check_ai():
     return status == "ok", "ответ получен" if status == "ok" else reasons.get(status, status)
 
 
+_YTDLP_NIGHTLY_API = ("https://api.github.com/repos/yt-dlp/"
+                      "yt-dlp-nightly-builds/releases/latest")
+
+
+def _ver_parts(v: str) -> tuple:
+    """Числа версии по порядку: «2026.8.30.232658.dev0» и «2026.08.30.232658» дают
+    одно и то же. Строкой их сравнивать нельзя – мешают ведущий ноль и хвост .dev."""
+    return tuple(int(x) for x in re.findall(r"\d+", (v or "").split(".dev")[0]))
+
+
+async def _check_ytdlp():
+    """Свежесть yt-dlp: сайты ломают качалку часто, и починка приходит в ночную сборку.
+    Отстали – значит часть площадок может отвалиться в любой момент."""
+    from importlib import metadata as meta
+    try:
+        installed = meta.version("yt-dlp")
+    except Exception:
+        return False, t("hc_ytdlp_none", _admin_lang())
+
+    def _latest() -> str:
+        return requests.get(_YTDLP_NIGHTLY_API, timeout=20).json().get("tag_name") or ""
+
+    try:
+        latest = await asyncio.to_thread(_latest)
+    except Exception as e:
+        # Сеть/лимит GitHub – это не поломка бота, версию просто не с чем сравнить.
+        return True, t("hc_no_compare", _admin_lang(), have=f"{installed} [{type(e).__name__}]")
+    if not latest:
+        return True, t("hc_no_compare", _admin_lang(), have=installed)
+    if _ver_parts(installed) >= _ver_parts(latest):
+        return True, installed
+    return False, t("hc_ytdlp_old", _admin_lang(), have=installed, latest=latest)
+
+
+# Браузерный User-Agent: с «python-requests» площадки отвечают иначе и проверка соврёт.
+_COOKIE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0 Safari/537.36")
+# Открытый ключ веб-клиента X: с ним ходит сам сайт, и без него его API не отвечает.
+_X_BEARER = ("AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D"
+             "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA")
+
+
+def _load_cookies(path: str):
+    """Читает файл кук (формат Netscape) или возвращает None, если его нет."""
+    import http.cookiejar
+    if not path or not os.path.exists(path):
+        return None
+    jar = http.cookiejar.MozillaCookieJar(path)
+    # ignore_expires: срок проверяем сами и говорим про него понятным языком.
+    jar.load(ignore_discard=True, ignore_expires=True)
+    return jar
+
+
+def _cookie_expiry_problem(jar, name: str) -> str | None:
+    """Проблема со сроком куки входа: её нет или она уже просрочена."""
+    cookie = next((c for c in jar if c.name == name), None)
+    if cookie is None:
+        return t("hc_ck_nokey", _admin_lang(), key=name)
+    if cookie.expires and cookie.expires < time.time():
+        return t("hc_ck_expired", _admin_lang(), key=name)
+    return None
+
+
+async def _check_ig_cookies():
+    """Живы ли куки Instagram.
+
+    Зачем отдельный пункт: обычные Reels качаются и БЕЗ входа, поэтому остальные
+    проверки остаются зелёными, а закрытый контент уже не скачивается. Протухание
+    видно только здесь – и лучше узнать о нём до того, как заметят пользователи.
+    Страница настроек аккаунта вошедшему отдаёт 200, а гостя уводит на вход (302).
+    """
+    from bot.features.download.downloaders.instagram import INSTAGRAM_COOKIES
+
+    jar = _load_cookies(INSTAGRAM_COOKIES)
+    if jar is None:
+        return False, t("hc_ck_missing", _admin_lang(), path=INSTAGRAM_COOKIES)
+    problem = _cookie_expiry_problem(jar, "sessionid")
+    if problem:
+        return False, problem
+
+    def work():
+        r = requests.get("https://www.instagram.com/accounts/edit/", cookies=jar,
+                         headers={"User-Agent": _COOKIE_UA}, timeout=25,
+                         allow_redirects=False)
+        if r.status_code == 200:
+            return True, t("hc_ck_alive", _admin_lang())
+        if r.status_code in (301, 302):
+            return False, t("hc_ck_dead", _admin_lang())
+        return True, t("hc_ck_unclear", _admin_lang(), code=r.status_code)
+
+    return await asyncio.to_thread(work)
+
+
+async def _check_x_cookies():
+    """Живы ли куки X (Twitter). Тот же смысл, что и у Instagram: без входа часть
+    постов не отдаётся, но остальные проверки этого не замечают.
+
+    Проверено опытом: с живыми куками ответ 404 (сам метод давно убран, но запрос
+    опознан), с испорченными – 401, без кук вовсе – 403. Значит «401 или 403» и есть
+    признак мёртвой сессии, остальное считаем рабочим.
+    """
+    from bot.config import X_COOKIES
+
+    jar = _load_cookies(X_COOKIES)
+    if jar is None:
+        return False, t("hc_ck_missing", _admin_lang(), path=X_COOKIES)
+    problem = _cookie_expiry_problem(jar, "auth_token")
+    if problem:
+        return False, problem
+    ct0 = next((c.value for c in jar if c.name == "ct0"), "")
+
+    def work():
+        r = requests.get("https://api.x.com/1.1/account/verify_credentials.json",
+                         cookies=jar, timeout=25,
+                         headers={"User-Agent": _COOKIE_UA,
+                                  "Authorization": f"Bearer {_X_BEARER}",
+                                  "x-csrf-token": ct0})
+        if r.status_code in (401, 403):
+            return False, t("hc_ck_dead", _admin_lang())
+        return True, t("hc_ck_alive", _admin_lang())
+
+    return await asyncio.to_thread(work)
+
+
 async def _check_currency():
     from bot.features.currency.rates import convert
     res = await convert(1.0, "USD", ["EUR"])
@@ -178,14 +306,71 @@ async def _dl_probe(url, audio_only=False):
     return await asyncio.to_thread(work)
 
 
+def _short_side(path: str) -> int:
+    """Короткая сторона кадра. Именно она задаёт «качество»: у вертикального ролика
+    720x1280 это 720, а высота равна 1280 – на этом мы уже один раз обожглись, когда
+    ограничение «не выше 720» срезало вертикальные шортсы до 360."""
+    from bot.features.download.downloaders.video_meta import probe_video
+    meta = probe_video(path)
+    w, h = meta.get("width") or 0, meta.get("height") or 0
+    return min(w, h) if w and h else 0
+
+
+def _admin_lang() -> str:
+    """Язык админских сообщений. Причины сбоев пишем сразу на нужном языке: они уходят
+    только админу, и хранить их по-русски, чтобы потом переводить, смысла нет."""
+    return ADMIN_LANG
+
+
+def _judge_video(path: str, min_side: int = 0, max_side: int = 0) -> tuple[bool, str]:
+    """Проверяет не только «файл пришёл», но и «пришло то, что заказывали».
+
+    Обычная проверка «размер больше нуля» пропускает целый класс поломок: файл есть,
+    а качество не то. Так у нас неделю жило сжатие, отдававшее 360p вместо 720p, при
+    всех зелёных галочках.
+    """
+    size = _size_of(path)
+    if not size:
+        return False, t("hc_empty", _admin_lang())
+    side = _short_side(path)
+    if not side:
+        return False, t("hc_not_video", _admin_lang(), size=_kb(size))
+    if min_side and side < min_side:
+        return False, t("hc_low_q", _admin_lang(), got=side, want=min_side)
+    if max_side and side > max_side:
+        return False, t("hc_high_q", _admin_lang(), got=side, want=max_side)
+    return True, f"{_kb(size)}, {side}p"
+
+
 async def _dl_shorts(url):
+    """Полное качество (сжатие выключено): ловим просадку качества на ровном месте."""
     from bot.features.download.downloaders.ytdlp_wrapper import download_shorts
 
     def work():
         path = download_shorts(url)
         try:
-            size = _size_of(path)
-            return size > 0, _kb(size) if size else "файл пуст"
+            return _judge_video(path, min_side=480)
+        finally:
+            _cleanup(path)
+
+    return await asyncio.to_thread(work)
+
+
+async def _dl_shorts_compressed(url):
+    """Тот же ролик, но со «Сжатием шортс». Проверяем, что потолок И соблюдён, И не
+    перевыполнен: пришло больше заказанного – сжатие не работает, сильно меньше –
+    работает неправильно (ровно этот случай мы и ловили: 360p вместо 720p)."""
+    from bot.features.download.downloaders.ytdlp_wrapper import download_shorts
+    from bot.config import SHORTS_CAP_HEIGHT
+
+    cap = SHORTS_CAP_HEIGHT
+
+    def work():
+        path = download_shorts(url, max_height=cap)
+        try:
+            # Нижняя граница – половина потолка: откат на ступень ниже (720 → 480)
+            # это нормально, а вот падение до 360 при потолке 720 уже поломка.
+            return _judge_video(path, min_side=cap // 2 + 1, max_side=cap)
         finally:
             _cleanup(path)
 
@@ -280,8 +465,9 @@ async def _dl_reel(url):
     def work():
         path = download_reel(url)
         try:
-            size = _size_of(path)
-            return size > 0, _kb(size) if size else "файл пуст"
+            # Instagram обычно отдаёт единственный вариант, поэтому потолок не проверяем –
+            # но убеждаемся, что это настоящее видео, а не битый огрызок нужного размера.
+            return _judge_video(path, min_side=360)
         finally:
             _cleanup(path)
 
@@ -372,6 +558,7 @@ _CHECKS = [
     # это функция (не площадка): такие всегда идут в конце.
     ("YouTube видео",           "YouTube",    lambda: _dl_probe(U_YT_VIDEO),               U_YT_VIDEO),
     ("YouTube Shorts",          "YouTube",    lambda: _dl_shorts(U_YT_SHORTS),             U_YT_SHORTS),
+    ("YouTube Shorts (сжатие)",  "YouTube",   lambda: _dl_shorts_compressed(U_YT_SHORTS),  U_YT_SHORTS),
     ("YT Music",                "YT Music",   lambda: _dl_probe(U_YT_MUSIC, True),         U_YT_MUSIC),
     ("Spotify трек",            "Spotify",    _check_spotify,                               U_SPOTIFY),
     ("Spotify альбом/плейлист", "Spotify",    _check_spotify_collection,                    U_SPOTIFY_COL),
@@ -395,6 +582,9 @@ _CHECKS = [
     ("ИИ-ассистент",            None,         _check_ai,                                    "x"),
     ("Конвертер валют",         None,         _check_currency,                              "x"),
     ("Расшифровка Whisper",     None,         _check_whisper,                               "x"),
+    ("yt-dlp последний",        None,         _check_ytdlp,                                 "x"),
+    ("Куки Instagram",          None,         _check_ig_cookies,                            "x"),
+    ("Куки X (Twitter)",        None,         _check_x_cookies,                             "x"),
 ]
 
 
@@ -417,7 +607,7 @@ async def _run(name: str, platform: str | None, coro_fn, url: str, idx: int,
     Упавший пункт перепроверяем один раз через паузу — тревога только при двойном сбое."""
     base = {"name": name, "platform": platform, "idx": idx}
     if not url:
-        return {**base, "state": "skip", "detail": "нет тестовой ссылки", "sec": 0.0}
+        return {**base, "state": "skip", "detail": t("hc_no_url", _admin_lang()), "sec": 0.0}
 
     async def _attempt() -> tuple[bool, str]:
         if name in _PLAYWRIGHT_CHECKS:
@@ -470,9 +660,48 @@ async def run_health_checks() -> list[dict]:
 _LAST: dict = {"results": [], "at": None}
 
 
+# Во сколько раз проверка должна замедлиться, чтобы счесть это поломкой. Порог намеренно
+# грубый: скорость чужих серверов гуляет сама по себе (один и тот же TikTok приходил и за
+# 4с, и за 7с без единой правки), и чуткая тревога врала бы постоянно.
+_SLOW_FACTOR = 3.0
+# И вырасти хотя бы на столько секунд: рост «0.2с → 0.7с» формально трёхкратный, но
+# пользователю незаметен и тревоги не стоит.
+_SLOW_MIN_DELTA = 5.0
+# Пока замеров мало, нормы ещё нет – молчим, иначе первые прогоны дадут ложь.
+_SLOW_MIN_SAMPLES = 5
+
+
+async def _mark_slow(results: list[dict]) -> None:
+    """Сравнивает время каждой проверки с её собственной нормой и помечает замедлившиеся.
+
+    Ловит то, о чём мы не догадались написать проверку: падение PornHub с 4с до 48с
+    никто бы не предусмотрел отдельным пунктом, а отклонение от нормы видно само.
+    Время берём только у успешных проверок – у сломанной оно бессмысленно.
+    """
+    from bot.database import SessionLocal
+    from bot.database.repository import get_check_baselines, save_check_timings
+
+    try:
+        async with SessionLocal() as session:
+            baselines = await get_check_baselines(session)
+            for r in results:
+                base, n = baselines.get(r["name"], (None, 0))
+                if r["state"] != "ok" or base is None or n < _SLOW_MIN_SAMPLES:
+                    continue
+                if r["sec"] >= base * _SLOW_FACTOR and r["sec"] - base >= _SLOW_MIN_DELTA:
+                    r["slow"] = True
+                    r["baseline"] = round(base, 1)
+            # Норму обновляем ПОСЛЕ сравнения, иначе текущий прогон подтянет её к себе.
+            await save_check_timings(
+                session, [(r["name"], r["sec"]) for r in results if r["state"] == "ok"])
+    except Exception:
+        logger.exception("Не удалось сверить время проверок с нормой")
+
+
 async def run_and_cache() -> list[dict]:
     """Прогоняет проверку и запоминает результат + время (для /statistics)."""
     results = await run_health_checks()
+    await _mark_slow(results)
     _LAST["results"] = results
     _LAST["at"] = datetime.now(_ADMIN_ZONE)
     return results
@@ -503,24 +732,29 @@ def _display_order(results: list[dict], platform_order: list[str] | None) -> lis
 
 
 def format_health(results: list[dict], platform_order: list[str] | None = None,
-                  at: "datetime | None" = None) -> str:
+                  at: "datetime | None" = None, lang: str = "ru") -> str:
     """Блок «проверка функционала» для отчёта (HTML). platform_order — платформы по
     убыванию использования (порядок как в «По платформам»). at — время, когда проверка
     была снята: если задано, в заголовок добавляется «(была в ЧЧ:ММ)» (для /statistics)."""
     icons = {"ok": "✅", "fail": "❌", "skip": "⚪"}
     ok_n = sum(1 for r in results if r["state"] == "ok")
     tested = sum(1 for r in results if r["state"] != "skip")
-    head = "Проверка функционала"
+    head = t("hc_title", lang)
     if at is not None:
-        head += f" (была в {at.strftime('%H:%M')})"
+        head += f" ({t('hc_taken_at', lang, time=at.strftime('%H:%M'))})"
     lines = [f"<b>{head}: {ok_n}/{tested}</b>"]
     for r in _display_order(results, platform_order):
         # Рабочие — чисто (только галочка + название). У сломанных/пропущенных оставляем
         # короткую причину (это не размер/время, а «что не так»), без времени.
         if r["state"] == "ok":
-            lines.append(f"✅ {r['name']}")
+            # Работает, но резко медленнее своей нормы — молча пропускать такое нельзя.
+            if r.get("slow"):
+                lines.append(f"🐢 {t_check(r['name'], lang)} – "
+                             f"{t('hc_slow', lang, sec=r['sec'], base=r['baseline'])}")
+            else:
+                lines.append(f"✅ {t_check(r['name'], lang)}")
         else:
-            lines.append(f"{icons[r['state']]} {r['name']} – {r['detail']}")
+            lines.append(f"{icons[r['state']]} {t_check(r['name'], lang)} – {r['detail']}")
     return "\n".join(lines)
 
 
@@ -535,13 +769,20 @@ def _short_reason(detail: str) -> str:
     return s[:80]
 
 
-def format_alert(results: list[dict]) -> str:
-    """Короткая тревога — ТОЛЬКО про сломанное. Пусто, если всё работает (тогда не шлём)."""
+def format_alert(results: list[dict], lang: str = "ru") -> str:
+    """Короткая тревога — про сломанное и про резко замедлившееся. Пусто, если всё в
+    порядке (тогда не шлём). Замедление отдельным блоком: формально работает, но стало
+    заметно хуже, и это тоже поломка — просто тихая."""
     failed = [r for r in results if r["state"] == "fail"]
-    if not failed:
+    slow = [r for r in results if r.get("slow")]
+    if not failed and not slow:
         return ""
     ok_n = sum(1 for r in results if r["state"] == "ok")
     tested = sum(1 for r in results if r["state"] != "skip")
-    lines = [f"❌ {r['name']} - {_short_reason(r['detail'])}" for r in failed]
-    lines.append(f"Остальное работает ({ok_n}/{tested})")
+    lines = [f"❌ {t_check(r['name'], lang)} - {_short_reason(r['detail'])}"
+             for r in failed]
+    for r in slow:
+        lines.append(f"🐢 {t_check(r['name'], lang)} - "
+                     f"{t('hc_slow', lang, sec=r['sec'], base=r['baseline'])}")
+    lines.append(t("hc_rest_ok", lang, ok=ok_n, total=tested))
     return "\n".join(lines)

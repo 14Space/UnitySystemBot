@@ -4,24 +4,26 @@ import json
 import logging
 import os
 import uuid
+from functools import partial
 from urllib.parse import urlparse, unquote
 from aiogram import Router, F, Bot
 from aiogram.types import (
-    Message, CallbackQuery, FSInputFile, BufferedInputFile,
+    Message, CallbackQuery, BufferedInputFile,
     InputMediaPhoto, InputMediaVideo,
 )
-from bot.utils.platform_detector import detect_platform, Platform, normalize_cache_url
+from bot.utils.platform_detector import detect_platform, Platform
 from bot.features.download.keyboards.quality import build_quality_keyboard, FREE_LIMIT
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar
-from bot.utils import limits, traffic
+from bot.config import SHORTS_CAP_HEIGHT
+from bot.utils import limits, traffic, tg_files
 from bot.utils import inflight
 from bot.features.common import alerts
 from bot.utils.i18n import t, lang_of, t_kind
 from bot.database import SessionLocal
 from bot.database.repository import (
     get_cached_file_id, save_cached_file_id, increment_download, is_premium,
-    get_slideshow_mode, get_audio_track,
+    get_slideshow_mode, get_audio_track, get_compress_shorts,
 )
 from bot.features.download.downloaders.audio_extract import extract_audio_track
 from bot.features.download.downloaders.ytdlp_wrapper import (
@@ -113,11 +115,33 @@ async def process_link(message: Message, url: str):
     await _dispatch_platform(message, url, platform, lang)
 
 
+GROUP_TYPES = ("group", "supergroup")
+
+
+async def _shorts_cap(chat) -> int | None:
+    """Потолок качества для коротких видео («Сжатие шортс») или None без ограничения.
+    Величину потолка задаёт SHORTS_CAP_HEIGHT (короткая сторона кадра). Дефолт тумблера
+    зависит от типа чата: в группах ВКЛ (упор на скорость), в личке ВЫКЛ (упор на
+    качество). Пользователь может переключить в /setconfig."""
+    in_group = chat.type in GROUP_TYPES
+    async with SessionLocal() as session:
+        on = await get_compress_shorts(session, chat.id, default=in_group)
+    return SHORTS_CAP_HEIGHT if on else None
+
+
+def _shorts_key(base: str, cap: int | None) -> str:
+    """Ключ кэша с учётом сжатия: сжатая и полная версии не должны подменять друг друга
+    (иначе в личку прилетела бы сжатая версия, закэшированная группой, и наоборот)."""
+    return f"{base}_c" if cap else base
+
+
 async def _dispatch_platform(message: Message, url: str, platform, lang: str):
     """Отправляет контент по платформе; каждая ветка сама завершает работу."""
     # Shorts — скачиваем сразу без лишних сообщений
     if platform == Platform.YOUTUBE_SHORTS:
-        await _handle_simple_video(message, url, download_shorts, "shorts", lang)
+        cap = await _shorts_cap(message.chat)
+        await _handle_simple_video(message, url, partial(download_shorts, max_height=cap),
+                                   _shorts_key("shorts", cap), lang)
         return
 
     # Аудио (SoundCloud, YT Music) — качаем сразу в mp3 с тегами.
@@ -144,7 +168,9 @@ async def _dispatch_platform(message: Message, url: str, platform, lang: str):
 
     # Instagram Reel — короткое видео, качаем сразу (как Shorts)
     if platform == Platform.INSTAGRAM_REEL:
-        await _handle_simple_video(message, url, download_reel, "reel", lang)
+        cap = await _shorts_cap(message.chat)
+        await _handle_simple_video(message, url, partial(download_reel, max_height=cap),
+                                   _shorts_key("reel", cap), lang)
         return
 
     # Instagram пост — фото, видео или карусель (отдаём альбомом)
@@ -167,6 +193,10 @@ async def _dispatch_platform(message: Message, url: str, platform, lang: str):
     if platform == Platform.PORNHUB_SHORT:
         video_id = urlparse(url).path.rstrip("/").split("/")[-1]
         std_url = f"https://www.pornhub.com/view_video.php?viewkey={video_id}"
+        # Сжатие здесь сознательно НЕ применяем: у PornHub качество пониже раздаётся
+        # с задушенного узла (замер на одном ролике: 1080p — 4с, тот же ролик в 720p — 48с),
+        # так что «сжатие» вышло бы медленнее и хуже одновременно. Откат по качеству при
+        # сбое внутри download_shorts продолжает работать.
         await _handle_simple_video(message, std_url, download_shorts, "ph_short", lang)
         return
 
@@ -224,7 +254,7 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
         if not result:
             return  # нет звука или не удалось извлечь — молча пропускаем (это бонус)
         path, title = result
-        sent = await message.reply_audio(FSInputFile(path), title=title)
+        sent = await message.reply_audio(tg_files.input_file(path), title=title)
         if sent.audio:
             async with SessionLocal() as session:
                 await _tt_cache_save(session, url, cache_url, sent.audio.file_id, "audiotrack")
@@ -543,7 +573,7 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         )
         await _safe_edit(status, t("uploading", lang))
         sent = await bot.send_video(
-            chat_id, FSInputFile(file_path),
+            chat_id, tg_files.input_file(file_path),
             reply_to_message_id=entry["user_msg_id"],
             **await _video_kwargs(file_path),
         )
@@ -578,7 +608,7 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
         await limits.acquire(limits.LIGHT)
         try:
             file_path = await asyncio.to_thread(download_fn, url)
-            sent = await message.reply_video(FSInputFile(file_path), **await _video_kwargs(file_path))
+            sent = await message.reply_video(tg_files.input_file(file_path), **await _video_kwargs(file_path))
             if sent.video:
                 async with SessionLocal() as session:
                     await save_cached_file_id(session, url, sent.video.file_id, cache_key)
@@ -615,15 +645,15 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
             if file_path.lower().endswith(".gif"):
                 # GIF → чистый mp4 (без грубой авто-конвертации Telegram), шлём анимацией
                 mp4 = await asyncio.to_thread(convert_gif_to_mp4, file_path)
-                sent = await message.reply_animation(FSInputFile(mp4))
+                sent = await message.reply_animation(tg_files.input_file(mp4))
                 fid = "A:" + sent.animation.file_id if sent.animation else None
                 if mp4 != file_path:
                     _cleanup(mp4)
             elif is_image(file_path):
-                sent = await message.reply_photo(FSInputFile(file_path))
+                sent = await message.reply_photo(tg_files.input_file(file_path))
                 fid = "P:" + sent.photo[-1].file_id if sent.photo else None
             else:
-                sent = await message.reply_video(FSInputFile(file_path), **await _video_kwargs(file_path))
+                sent = await message.reply_video(tg_files.input_file(file_path), **await _video_kwargs(file_path))
                 fid = "V:" + sent.video.file_id if sent.video else None
             if fid:
                 async with SessionLocal() as session:
@@ -711,11 +741,11 @@ async def _send_media_files(message: Message, files: list[str], lang: str) -> li
     if len(files) == 1:
         f = files[0]
         if is_image(f):
-            sent = await message.reply_photo(FSInputFile(f))
+            sent = await message.reply_photo(tg_files.input_file(f))
             if sent.photo:
                 tokens.append("P:" + sent.photo[-1].file_id)
         else:
-            sent = await message.reply_video(FSInputFile(f), **await _video_kwargs(f))
+            sent = await message.reply_video(tg_files.input_file(f), **await _video_kwargs(f))
             if sent.video:
                 tokens.append("V:" + sent.video.file_id)
     else:
@@ -723,9 +753,9 @@ async def _send_media_files(message: Message, files: list[str], lang: str) -> li
             media = []
             for f in chunk:
                 if is_image(f):
-                    media.append(InputMediaPhoto(media=FSInputFile(f)))
+                    media.append(InputMediaPhoto(media=tg_files.input_file(f)))
                 else:
-                    media.append(InputMediaVideo(media=FSInputFile(f), **await _video_kwargs(f)))
+                    media.append(InputMediaVideo(media=tg_files.input_file(f), **await _video_kwargs(f)))
             sent_msgs = await message.reply_media_group(media)
             for m in sent_msgs:
                 if m.photo:
@@ -757,8 +787,11 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
 
     # По ссылке не нашли — узнаём данные поста (запрос к TikTok, кэшируется в памяти):
     # из них берём НАСТОЯЩИЙ номер видео — по нему кэшируем как запасной ключ.
+    # При включённом сжатии HD-вариант не просим: сервис готовит его дольше, а мы всё
+    # равно возьмём обычное качество. Настройку читаем заранее, до запроса.
+    want_hd = await _shorts_cap(message.chat) is None
     try:
-        info = await asyncio.to_thread(tiktok.fetch_tiktok, url)
+        info = await asyncio.to_thread(tiktok.fetch_tiktok, url, want_hd)
     except Exception as e:
         logger.exception("TikTok fetch failed")
         await message.reply(limits.friendly_error(e, lang))
@@ -772,6 +805,7 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
     # Слайдшоу — по настройке /setconfig этого чата: video (сразу видео), photos (сразу
     # фото) или ask (кнопки выбора; их слушает только приславший ссылку). Дефолт зависит
     # от типа чата: в группе — video, в личке — ask (там выбор удобнее по умолчанию).
+    compress = False          # у слайдшоу выбирать нечего — сжатие только для видео
     if info["kind"] == "slideshow":
         default_mode = "ask" if message.chat.type == "private" else "video"
         async with SessionLocal() as session:
@@ -792,7 +826,10 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         else:
             mode, cache_key = "video", "tt_video"
     else:
-        mode, cache_key = "auto", "tt_auto"    # обычное видео / Live
+        # Обычное видео / Live. Сжатие применимо только здесь (у слайдшоу выбирать
+        # нечего), поэтому и ключ кэша разделяем только для этой ветки.
+        compress = not want_hd
+        mode, cache_key = "auto", ("tt_auto_c" if compress else "tt_auto")
 
     # Кэш по номеру видео + дедуп: параллельные запросы одного видео (в т.ч. с разными
     # короткими ссылками) ждут ведущего и берут готовое из кэша.
@@ -806,7 +843,7 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
     async def produce():
         await limits.acquire(limits.LIGHT)
         try:
-            files = await asyncio.to_thread(tiktok.download_from, info, mode)
+            files = await asyncio.to_thread(tiktok.download_from, info, mode, compress)
             tokens = await _send_media_files(message, files, lang)
             if tokens:
                 async with SessionLocal() as session:
@@ -967,7 +1004,7 @@ async def _send_twitter(message: Message, items: list[dict], caption: str | None
     tokens: list[dict] = []
     if len(items) == 1:
         it = items[0]
-        f = FSInputFile(it["path"])
+        f = tg_files.input_file(it["path"])
         if it["kind"] == "photo":
             sent = await message.reply_photo(f, caption=caption, parse_mode=parse_mode)
             if sent.photo:
@@ -987,7 +1024,7 @@ async def _send_twitter(message: Message, items: list[dict], caption: str | None
     for i, it in enumerate(items):
         cap = caption if i == 0 else None
         pm = parse_mode if i == 0 else None
-        f = FSInputFile(it["path"])
+        f = tg_files.input_file(it["path"])
         if it["kind"] == "photo":
             media.append(InputMediaPhoto(media=f, caption=cap, parse_mode=pm))
         else:
@@ -1007,7 +1044,6 @@ async def _send_twitter(message: Message, items: list[dict], caption: str | None
 
 async def _twitter_cache_get(url: str) -> dict | None:
     """Достаёт сохранённый твит из кэша (или None). Значение — JSON с токенами и подписью."""
-    url = normalize_cache_url(url)   # один твит с разными хвостами → одна запись
     async with SessionLocal() as session:
         raw = await get_cached_file_id(session, url, "x")
     if not raw:
@@ -1020,7 +1056,6 @@ async def _twitter_cache_get(url: str) -> dict | None:
 
 async def _twitter_cache_save(url: str, tokens: list[dict], caption: str | None,
                               parse_mode: str | None):
-    url = normalize_cache_url(url)   # ключ каноничный: как при чтении
     payload = json.dumps({"items": tokens, "caption": caption, "pm": parse_mode})
     async with SessionLocal() as session:
         await save_cached_file_id(session, url, payload, "x")
@@ -1308,7 +1343,7 @@ async def _do_download_audio(
                 thumbnail = BufferedInputFile(thumb_bytes, filename="cover.jpg")
         sent = await bot.send_audio(
             chat_id,
-            FSInputFile(file_path),
+            tg_files.input_file(file_path),
             title=title,
             performer=performer,
             duration=duration,
@@ -1401,14 +1436,16 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     duration = int(info.get("duration", 0) or 0) if info else 0
 
     try:
+        # info уже получен, когда показывали кнопки качества — передаём его, чтобы
+        # yt-dlp не ходил к площадке за теми же метаданными второй раз (экономит ~1.5с).
         file_path = await asyncio.to_thread(
-            download_video, url, quality, on_progress, on_postprocess
+            download_video, url, quality, on_progress, on_postprocess, info
         )
         # Не удаляем статус, а показываем «Отправляю» — заливка тоже занимает время
         await _safe_edit(progress_msg, t("uploading", lang))
         sent = await bot.send_video(
             chat_id,
-            FSInputFile(file_path),
+            tg_files.input_file(file_path),
             reply_to_message_id=user_msg_id,
             **await _video_kwargs(file_path, duration),
         )
@@ -1439,8 +1476,11 @@ async def _video_kwargs(file_path: str, duration: int = 0) -> dict:
     зондируем файл ffprobe'ом и прикладываем постер-кадр — видео сразу корректно
     показывается и стримится на лету.
     """
-    meta = await asyncio.to_thread(probe_video, file_path)
-    thumb_bytes = await asyncio.to_thread(make_video_thumbnail, file_path)
+    # Оба вызова читают один и тот же файл и друг от друга не зависят — запускаем разом.
+    meta, thumb_bytes = await asyncio.gather(
+        asyncio.to_thread(probe_video, file_path),
+        asyncio.to_thread(make_video_thumbnail, file_path),
+    )
     thumbnail = BufferedInputFile(thumb_bytes, filename="thumb.jpg") if thumb_bytes else None
     return dict(
         duration=duration or meta["duration"],

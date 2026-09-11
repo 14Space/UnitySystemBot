@@ -1,10 +1,14 @@
 import hashlib
+import statistics
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from bot.database.models import User, CachedFile, DownloadStat, MonthlyTraffic, ChatSettings
+from bot.database.models import (
+    User, CachedFile, DownloadStat, MonthlyTraffic, ChatSettings, CheckTiming,
+)
+from bot.utils.platform_detector import normalize_cache_url
 
 # id бота, обрабатывающего текущий апдейт. Выставляет RoutingMiddleware на каждый
 # апдейт. file_id в Telegram привязан к отправившему боту, поэтому кэш ведём отдельно
@@ -13,7 +17,11 @@ current_bot_id: ContextVar[int | None] = ContextVar("current_bot_id", default=No
 
 
 def _cache_hash(url: str, quality, bot_id: int | None) -> str:
-    return hashlib.md5(f"{bot_id}:{url}:{quality}".encode()).hexdigest()
+    """Ключ кэша. Ссылку приводим к каноничному виду прямо здесь — так одна и та же вещь,
+    присланная с разными хвостами (?si=, ?stkn=, метка времени, зеркало), попадает в одну
+    запись, и это работает сразу во всех местах, где кэш читается или пишется."""
+    return hashlib.md5(
+        f"{bot_id}:{normalize_cache_url(url)}:{quality}".encode()).hexdigest()
 
 
 async def get_or_create_user(
@@ -217,6 +225,30 @@ async def set_audio_track(session: AsyncSession, chat_id: int, on: bool) -> None
     await session.commit()
 
 
+async def get_compress_shorts(session: AsyncSession, chat_id: int, default: bool) -> bool:
+    """Брать ли короткие видео в качестве пониже (быстрее). Если чат ничего не менял
+    (NULL) — возвращаем default: его задаёт вызывающий код по типу чата (в группах ВКЛ,
+    в личке ВЫКЛ)."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    if row is None or row.compress_shorts is None:
+        return default
+    return bool(row.compress_shorts)
+
+
+async def set_compress_shorts(session: AsyncSession, chat_id: int, on: bool) -> None:
+    """Явно включает/выключает сжатие коротких видео в этом чате."""
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    if row is None:
+        row = ChatSettings(chat_id=chat_id, disabled_features="")
+        session.add(row)
+    row.compress_shorts = on
+    await session.commit()
+
+
 async def get_cached_file_id(session: AsyncSession, url: str, quality: str = None) -> str | None:
     """Возвращает Telegram file_id для пары URL+качество (для текущего бота), если он в кэше"""
     bot_id = current_bot_id.get()
@@ -232,7 +264,8 @@ async def get_any_cached_file(session: AsyncSession, url: str) -> dict | None:
     bot_id = current_bot_id.get()
     result = await session.execute(
         select(CachedFile)
-        .where(CachedFile.original_url == url, CachedFile.bot_id == bot_id)
+        .where(CachedFile.original_url == normalize_cache_url(url),
+               CachedFile.bot_id == bot_id)
         .limit(1)
     )
     row = result.scalars().first()
@@ -265,6 +298,50 @@ async def save_cached_file_id(session: AsyncSession, url: str, file_id: str, qua
         row.file_id = file_id
         row.bot_id = bot_id
     else:
-        session.add(CachedFile(url_hash=url_hash, original_url=url,
+        session.add(CachedFile(url_hash=url_hash, original_url=normalize_cache_url(url),
                                file_id=file_id, quality=quality, bot_id=bot_id))
     await session.commit()
+
+
+# Сколько последних прогонов держим по каждой проверке. Норма считается по медиане
+# этого окна: одиночный выброс (чужой сервер тормознул) её не сдвигает, а устойчивое
+# замедление – сдвигает.
+CHECK_HISTORY_KEEP = 20
+
+
+async def save_check_timings(session: AsyncSession, pairs: list[tuple[str, float]]) -> None:
+    """Дописывает длительности проверок и подчищает хвост истории."""
+    if not pairs:
+        return
+    session.add_all([CheckTiming(name=name, sec=float(sec)) for name, sec in pairs])
+    await session.commit()
+
+    # Чистим сразу здесь: отдельная фоновая уборка ради пары сотен строк не нужна.
+    rows = (await session.execute(
+        select(CheckTiming.id, CheckTiming.name).order_by(CheckTiming.id.desc())
+    )).all()
+    seen, stale = {}, []
+    for row_id, name in rows:                     # идём от новых к старым
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > CHECK_HISTORY_KEEP:
+            stale.append(row_id)
+    if stale:
+        await session.execute(delete(CheckTiming).where(CheckTiming.id.in_(stale)))
+        await session.commit()
+
+
+async def get_check_baselines(session: AsyncSession) -> dict[str, tuple[float, int]]:
+    """Норма по каждой проверке: {название: (медиана секунд, сколько замеров)}.
+
+    Медиана, а не среднее: скорость чужих серверов скачет, и одно случайное значение
+    в десять раз больше обычного не должно задирать норму.
+    """
+    rows = (await session.execute(
+        select(CheckTiming.name, CheckTiming.sec).order_by(CheckTiming.id.desc())
+    )).all()
+    buckets: dict[str, list[float]] = {}
+    for name, sec in rows:
+        bucket = buckets.setdefault(name, [])
+        if len(bucket) < CHECK_HISTORY_KEEP:
+            bucket.append(float(sec))
+    return {name: (statistics.median(vals), len(vals)) for name, vals in buckets.items() if vals}

@@ -1,6 +1,6 @@
 import re
 from enum import Enum
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qsl
 
 _TW_STATUS_RE = re.compile(r"/status/(\d+)")
 
@@ -90,23 +90,93 @@ def detect_platform(url: str) -> Platform:
     return Platform.UNKNOWN
 
 
+def _yt_id(parsed) -> str | None:
+    """Идентификатор ролика YouTube из любой формы ссылки."""
+    path = parsed.path
+    if parsed.netloc.lower().replace("www.", "") == "youtu.be":
+        return path.strip("/").split("/")[0] or None
+    for prefix in ("/shorts/", "/embed/", "/live/", "/v/"):
+        if path.startswith(prefix):
+            return path[len(prefix):].split("/")[0] or None
+    return dict(parse_qsl(parsed.query)).get("v")
+
+
+def _first_segment_after(path: str, marker: str) -> str | None:
+    """Сегмент пути сразу после marker: «/p/ABC/xyz» + «/p/» → «ABC»."""
+    idx = path.find(marker)
+    if idx == -1:
+        return None
+    return path[idx + len(marker):].split("/")[0] or None
+
+
 def normalize_cache_url(url: str) -> str:
     """Приводит ссылку к каноничному виду ДЛЯ КЛЮЧА КЭША (сам URL для скачивания не меняем).
-    Пока нормализуем только X/Twitter: один твит расшаривают с разными хвостами
-    (?s=46, ?t=…), с разных зеркал (fx/vx/fixupx) и с под-путями (/photo/1) — всё это
-    один и тот же пост, и в кэше он должен быть одной записью, а не десятком."""
-    if detect_platform(url) != Platform.TWITTER:
-        return url
+
+    Одну и ту же вещь присылают в десятке видов: с хвостами отслеживания (?si=, ?stkn=,
+    ?utm_source=), с меткой времени, с мобильного домена, через зеркало, с под-путём.
+    Для кэша всё это должно быть ОДНОЙ записью, иначе один и тот же ролик качается заново
+    при каждом новом хвосте. У Spotify и Instagram хвост меняется при каждом «Поделиться»,
+    так что без нормализации их прямые ссылки в кэш не попадали почти никогда.
+
+    HDRezka сознательно не трогаем: там ключ составной (ссылка + озвучка + сезон + серия),
+    и обрезка хвоста сломала бы его.
+    """
+    platform = detect_platform(url)
     try:
         parsed = urlparse(url)
-        m = _TW_STATUS_RE.search(parsed.path)
-        if not m:
+        path = parsed.path
+
+        if platform == Platform.TWITTER:
+            m = _TW_STATUS_RE.search(path)
+            # /<user>/status/<id> — путь до id включительно, домен → x.com
+            return f"https://x.com{path[:m.end()]}" if m else url
+
+        if platform in (Platform.YOUTUBE_VIDEO, Platform.YOUTUBE_SHORTS, Platform.YT_MUSIC):
+            vid = _yt_id(parsed)
+            if not vid:
+                return url
+            if platform == Platform.YT_MUSIC:
+                return f"https://music.youtube.com/watch?v={vid}"
+            kind = "shorts/" if platform == Platform.YOUTUBE_SHORTS else "watch?v="
+            return f"https://www.youtube.com/{kind}{vid}"
+
+        if platform in (Platform.INSTAGRAM_REEL, Platform.INSTAGRAM_POST):
+            for marker, canon in (("/reels/", "reel"), ("/reel/", "reel"),
+                                  ("/p/", "p"), ("/tv/", "p")):
+                code = _first_segment_after(path, marker)
+                if code:
+                    return f"https://www.instagram.com/{canon}/{code}"
             return url
-        # /<user>/status/<id> — берём путь до id включительно, домен → x.com,
-        # хвосты-параметры и под-пути отбрасываем.
-        return f"https://x.com{parsed.path[:m.end()]}"
+
+        if platform == Platform.TIKTOK:
+            # Полную ссылку сводим к тому же ключу, что и путь через данные поста («tt:<id>»),
+            # чтобы одно видео не лежало в кэше дважды. Короткие vt./vm. без сети не развернуть.
+            vid = _first_segment_after(path, "/video/") or _first_segment_after(path, "/photo/")
+            return f"tt:{vid}" if vid and vid.isdigit() else url
+
+        if platform in (Platform.SPOTIFY, Platform.SPOTIFY_COLLECTION):
+            for marker in ("/track/", "/album/", "/playlist/", "/episode/"):
+                code = _first_segment_after(path, marker)
+                if code:
+                    return f"https://open.spotify.com{marker}{code}"
+            return url
+
+        if platform == Platform.PORNHUB:
+            key = dict(parse_qsl(parsed.query)).get("viewkey")
+            return f"https://www.pornhub.com/view_video.php?viewkey={key}" if key else url
+
+        if platform == Platform.PORNHUB_SHORT:
+            vid = _first_segment_after(path, "/shorties/")
+            return f"https://www.pornhub.com/shorties/{vid}" if vid else url
+
+        if platform in (Platform.SOUNDCLOUD, Platform.SOUNDCLOUD_SET, Platform.PINTEREST):
+            # Здесь путь и есть идентификатор — достаточно отбросить хвосты.
+            domain = parsed.netloc.lower().replace("www.", "").replace("m.", "")
+            return f"https://{domain}{path.rstrip('/')}" if path.strip("/") else url
+
     except Exception:
-        return url
+        pass
+    return url
 
 
 def is_supported(url: str) -> bool:

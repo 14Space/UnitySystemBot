@@ -22,6 +22,9 @@ AI_USER_DAILY_LIMIT = int(os.getenv("AI_USER_DAILY_LIMIT", "30"))  # на пол
 
 # Локальный Telegram Bot API сервер (лимит файлов 2 ГБ вместо 50 МБ, быстрая отдача)
 TELEGRAM_LOCAL_API_URL = os.getenv("TELEGRAM_LOCAL_API_URL", "http://localhost:8081")
+# Локальный Bot API-сервер запущен с флагом --local: тогда ему можно отдавать файл
+# ссылкой «file://путь» вместо повторной заливки по сети (см. bot/utils/tg_files.py).
+TELEGRAM_LOCAL = os.getenv("TELEGRAM_LOCAL", "").strip() not in ("", "0", "false", "no")
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "data/downloads")
 
 # Локальный Bot API сервер кладёт принятые файлы на диск (внутри своего Docker-тома)
@@ -48,6 +51,9 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 # Europe/Chisinau, и zoneinfo сам учитывает переход на летнее/зимнее время
 # (пакет tzdata в requirements гарантирует базу зон на любой ОС/архитектуре).
 ADMIN_TZ = os.getenv("ADMIN_TZ", "Europe/Chisinau")
+# Язык админских сообщений: отчёт, тревоги, причины сбоев. Отдельная настройка, а не
+# язык Telegram: тревоги шлёт фоновая задача, у которой нет объекта пользователя.
+ADMIN_LANG = os.getenv("ADMIN_LANG", "ru")
 REPORT_HOUR = int(os.getenv("REPORT_HOUR", "12"))     # час (0..23) локального времени админа
 
 # Как часто (в часах) гонять проверку функционала для РАННЕГО оповещения: если что-то
@@ -120,3 +126,8 @@ WHISPER_MIN_SPEECH_PROB = float(os.getenv("WHISPER_MIN_SPEECH_PROB", "0.5"))
 # true – первое голосовое не тормозит, но видеопамять занята всё время работы.
 # false – видеопамять свободна, пока никто не прислал голосовое (как было раньше).
 WHISPER_PREWARM = os.getenv("WHISPER_PREWARM", "true").lower() in ("1", "true", "yes")
+
+# Потолок качества для «Сжатия шортс» (короткая сторона кадра, пиксели). 720 — заметно
+# легче оригинала, но картинка ещё чёткая; 480/360 — быстрее, но уже мыло. Замер на
+# YouTube Shorts: скачивание 720p ~2.8-4.9с, 360p ~1.9-2.6с.
+SHORTS_CAP_HEIGHT = int(os.getenv("SHORTS_CAP_HEIGHT", "720"))

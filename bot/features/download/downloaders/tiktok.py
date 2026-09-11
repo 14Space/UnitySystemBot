@@ -220,22 +220,44 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
     return out_path
 
 
+def _is_short(url: str) -> bool:
+    """Короткая ссылка-редирект TikTok (из кнопки «Поделиться»)."""
+    return bool(url) and ("vt.tiktok.com" in url or "vm.tiktok.com" in url)
+
+
 def _resolve_short(url: str) -> str:
-    """Разворачивает короткую ссылку (vt./vm.tiktok.com) в полную — так API надёжнее.
-    Если не вышло — возвращаем исходную ссылку как есть."""
+    """Разворачивает короткую ссылку (vt./vm.tiktok.com) в полную.
+
+    Читаем только заголовок Location, не скачивая страницу: обычный GET с переходами
+    тянет весь HTML ради одного адреса и стоит ~0.8с против ~0.3с. Если по заголовкам
+    не вышло — возвращаемся к обычному GET, а совсем не вышло — отдаём ссылку как есть.
+    """
+    if not _is_short(url):
+        return url
     try:
-        if url and ("vt.tiktok.com" in url or "vm.tiktok.com" in url):
-            return requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True).url
+        target = url
+        for _ in range(5):                  # цепочка переходов бывает не одношаговой
+            nxt = requests.get(target, headers=HEADERS, timeout=15,
+                               allow_redirects=False).headers.get("Location")
+            if not nxt:
+                break
+            target = requests.compat.urljoin(target, nxt)
+        if target != url and "tiktok.com" in target:
+            return target
     except Exception:
         pass
-    return url
+    try:
+        return requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True).url
+    except Exception:
+        return url
 
 
-def _api_call(url: str) -> dict:
-    return _api_call_retry(url)
+def _api_call(url: str, hd: bool = True) -> dict:
+    return _api_call_retry(url, hd=hd)
 
 
-def _api_call_retry(url: str, attempts: int = 3, delay: float = 1.2) -> dict:
+def _api_call_retry(url: str, attempts: int = 3, delay: float = 1.2,
+                    hd: bool = True) -> dict:
     """Запрос к API TikTok (tikwm) с ПОВТОРАМИ. Под нагрузкой сервис иногда отдаёт
     пустой/битый ответ (тогда падает .json()), таймаут или ошибочный код — всё это
     временно. Пробуем до `attempts` раз с паузой. Если все попытки мимо — возвращаем
@@ -243,7 +265,7 @@ def _api_call_retry(url: str, attempts: int = 3, delay: float = 1.2) -> dict:
     last = None
     for i in range(attempts):
         try:
-            data = requests.get(API, params={"url": url, "hd": 1},
+            data = requests.get(API, params={"url": url, "hd": 1 if hd else 0},
                                 headers=HEADERS, timeout=30).json()
             if data.get("code") == 0:
                 return data                      # успех
@@ -274,27 +296,40 @@ def _fetch_backup(url: str) -> dict | None:
     return {"id": item_id, "kind": "video", "data": {"id": item_id, "play": play, "hdplay": play}}
 
 
-def fetch_tiktok(url: str) -> dict:
+def fetch_tiktok(url: str, hd: bool = True) -> dict:
     """Данные поста с коротким кэшем (TTL): один и тот же пост в рамках запроса
-    (основной контент + аудиодорожка) не дёргает API дважды."""
+    (основной контент + аудиодорожка) не дёргает API дважды.
+
+    hd=False — не просить HD-вариант. Сервис готовит его дольше (замер: 1.31с против
+    1.04с), а при включённом «Сжатии шортс» мы всё равно берём обычное качество, так
+    что просить HD означает просто ждать лишнее.
+    """
     now = time.time()
-    hit = _FETCH_CACHE.get(url)
+    key = url if hd else f"{url}#sd"    # SD и HD-ответы различаются, не смешиваем
+    hit = _FETCH_CACHE.get(key)
     if hit and now - hit[0] < _FETCH_TTL:
         return hit[1]
-    result = _fetch_tiktok_api(url)     # успех или исключение (ошибки не кэшируем)
-    _FETCH_CACHE[url] = (now, result)
+    result = _fetch_tiktok_api(url, hd)  # успех или исключение (ошибки не кэшируем)
+    _FETCH_CACHE[key] = (now, result)
     if len(_FETCH_CACHE) > 64:          # лёгкая уборка протухших записей
         for k in [k for k, (ts, _) in _FETCH_CACHE.items() if now - ts >= _FETCH_TTL]:
             _FETCH_CACHE.pop(k, None)
     return result
 
 
-def _fetch_tiktok_api(url: str) -> dict:
+def _fetch_tiktok_api(url: str, hd: bool = True) -> dict:
     """Запрашивает данные поста (без скачивания файлов) и определяет тип:
     'video' — обычное видео, 'slideshow' — набор фото (+ возможно музыка),
     'live' — Live Photo (короткие видео). Возвращает {'id','kind','data'}."""
-    url = _resolve_short(url)
-    payload = _api_call(url)     # внутри уже до 3 попыток с паузой (см. _api_call_retry)
+    # Короткую ссылку сначала скармливаем API как есть: он их понимает, а разворот стоит
+    # лишних ~0.8с на каждом видео. Одна попытка без пауз; не вышло — разворачиваем и
+    # идём обычным путём с повторами, так что надёжность не теряем.
+    payload = {}
+    if _is_short(url):
+        payload = _api_call_retry(url, attempts=1, hd=hd)
+    if payload.get("code") != 0:
+        url = _resolve_short(url)
+        payload = _api_call(url, hd)  # внутри до 3 попыток (см. _api_call_retry)
     if payload.get("code") == 0:
         data = payload["data"]
         # Фото-посты (photo mode) содержат images. У «живых фото» вдобавок бывает
@@ -350,11 +385,14 @@ def _download_slideshow_items(data: dict, item_id: str) -> list[tuple[str, bool]
     return out
 
 
-def download_from(info: dict, mode: str = "auto") -> list[str]:
+def download_from(info: dict, mode: str = "auto", compress: bool = False) -> list[str]:
     """
     Скачивает TikTok по уже полученным данным (fetch_tiktok).
     mode для слайдшоу: 'photos' — только фото, 'video' — собрать видео со звуком,
     'auto' — видео, если есть музыка, иначе фото. Возвращает список файлов.
+    compress — «сжатие шортс»: для ОБЫЧНОГО видео берём облегчённую версию поста.
+        На слайдшоу не влияет: фото отдаются как есть, а видео из слайдшоу мы собираем
+        сами из картинок, там выбирать нечего.
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     data = info["data"]
@@ -430,8 +468,11 @@ def download_from(info: dict, mode: str = "auto") -> list[str]:
                 pass  # не вышло собрать видео — отдадим картинки
         return files  # музыки нет (или сборка не удалась) — отдаём фото
 
-    # Обычное видео
-    play = data.get("hdplay") or data.get("play")
+    # Обычное видео. При «сжатии шортс» берём облегчённую версию (play) вместо HD:
+    # она примерно вдвое легче при том же ролике и качается не медленнее — замерено.
+    # Оба варианта лежат на CDN самого TikTok, водяного знака нет ни там, ни там.
+    play = (data.get("play") or data.get("hdplay")) if compress else \
+           (data.get("hdplay") or data.get("play"))
     content = requests.get(_abs(play), headers=HEADERS, timeout=120).content
     path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
     with open(path, "wb") as f:

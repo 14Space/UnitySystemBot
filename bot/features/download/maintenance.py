@@ -27,10 +27,15 @@ def clean_downloads():
         logger.info("Очищено хвостов загрузок: %d", removed)
 
 
-def update_ytdlp():
+def update_ytdlp() -> tuple[str, str]:
     """Обновляет yt-dlp до последней НОЧНОЙ сборки (сайты часто меняются, а скачивание
     через SABR есть только в nightly). Обычная стабильная версия сюда не годится —
-    она откатит SABR и вернёт 403 на YouTube. Применяется после перезапуска бота."""
+    она откатит SABR и вернёт 403 на YouTube.
+
+    Возвращает (было, стало). Если версии совпали — обновлять было нечего. Новая версия
+    начинает работать только после перезапуска процесса, поэтому вызывающий код решает,
+    перезапускаться ли (см. _daily_tasks).
+    """
     try:
         old = meta.version("yt-dlp")
     except Exception:
@@ -46,5 +51,7 @@ def update_ytdlp():
             logger.info("yt-dlp обновлён: %s -> %s (применится после перезапуска)", old, new)
         else:
             logger.info("yt-dlp уже последней версии (%s)", old)
+        return old, new
     except Exception as e:
         logger.warning("Не удалось обновить yt-dlp: %s", e)
+    return old, old

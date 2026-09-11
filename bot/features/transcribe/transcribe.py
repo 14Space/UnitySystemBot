@@ -77,6 +77,10 @@ async def _fetch_file(message: Message, file_id: str, dest: str):
       1) если бот сам в Docker и том примонтирован — читаем напрямую;
       2) если бот на хосте — копируем из контейнера через `docker cp`;
       3) иначе (облачный API) — обычное скачивание.
+
+    В локальном режиме (--local) сервер НЕ удаляет принятые файлы сам: это забота бота.
+    Поэтому свою копию мы забираем, а исходник у сервера подчищаем, иначе его папка
+    растёт бесконечно.
     """
     if TELEGRAM_LOCAL_API_URL:
         # Токен бота, принявшего голосовое: локальный сервер хранит файлы под папкой
@@ -86,6 +90,7 @@ async def _fetch_file(message: Message, file_id: str, dest: str):
         # 1) файл виден напрямую (бот и сервер делят том) или через bind-папку
         if file.file_path and os.path.exists(file.file_path):
             await asyncio.to_thread(shutil.copyfile, file.file_path, dest)
+            _drop_server_copy(file.file_path)
             return
         # 1b) бот в Docker: том сервера примонтирован (TELEGRAM_BOT_API_ROOT), но
         # getFile отдаёт ОТНОСИТЕЛЬНЫЙ путь (voice/file_0.oga) — собираем абсолютный
@@ -93,15 +98,27 @@ async def _fetch_file(message: Message, file_id: str, dest: str):
         container = _container_path(file.file_path, token)
         if container and os.path.exists(container):
             await asyncio.to_thread(shutil.copyfile, container, dest)
+            _drop_server_copy(container)
             return
         local = _map_local_path(file.file_path)
         if local and os.path.exists(local):
             await asyncio.to_thread(shutil.copyfile, local, dest)
+            _drop_server_copy(local)
             return
         # 2) забираем файл из контейнера сервера
         if await _docker_cp(file.file_path, dest, token):
             return
     await message.bot.download(file_id, destination=dest)
+
+
+def _drop_server_copy(path: str):
+    """Удаляет файл из папки Bot API-сервера после того, как забрали свою копию.
+    В локальном режиме сервер этого не делает, а мы файл больше не используем.
+    Если папка примонтирована только на чтение — молча пропускаем, это не ошибка."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _container_path(server_path: str, token: str) -> str | None:

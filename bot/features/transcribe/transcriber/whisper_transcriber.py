@@ -80,6 +80,12 @@ _model_lock = threading.Lock()
 # с «CUDA failed…». Ловим это на лету и перегружаем модель на CPU: медленнее, но работает
 # без ручного перезапуска. Флаг держит нас на CPU до перезапуска бота (там снова пробуем GPU).
 _forced_cpu = False
+# Битые GPU-модели складываем СЮДА и не отпускаем до конца жизни процесса. Освободить
+# такую модель нельзя: её деструктор лезет в уже мёртвый контекст CUDA и роняет процесс
+# аварийным завершением на уровне C++ («terminate called … CUDA failed»), а такое Python
+# перехватить не может — падает весь бот, а не одна расшифровка. Память она занимает
+# только на видеокарте, которой всё равно больше нет, так что цена нулевая.
+_dead_models = []
 
 
 def _is_cuda_error(exc: Exception) -> bool:
@@ -194,7 +200,9 @@ def transcribe(file_path: str) -> str:
         logger.error("Whisper: сбой GPU (CUDA) на лету — перегружаю модель на CPU", exc_info=True)
         with _model_lock:
             _forced_cpu = True
-            _model = None                 # выбрасываем битую GPU-модель, следующий _get_model даст CPU
+            if _model is not None:
+                _dead_models.append(_model)   # НЕ освобождаем: освобождение убьёт процесс
+            _model = None                     # следующий _get_model поднимет модель на CPU
         return _transcribe_once(file_path)
 
 

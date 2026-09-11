@@ -40,6 +40,47 @@ def t_kind(kind: str, lang: str) -> str:
     return _KINDS.get(kind, {}).get(lang, kind)
 
 
+def t_check(name: str, lang: str) -> str:
+    """Переводит название пункта проверки функционала.
+
+    Внутреннее имя пункта остаётся русским: оно служит ключом в истории времени
+    проверок и в списках вроде _TIKTOK_CHECKS. Переводим только то, что видит человек.
+    """
+    return _CHECK_NAMES.get(name, {}).get(lang, name)
+
+
+_CHECK_NAMES = {
+    "YouTube видео":            {"ru": "YouTube видео", "uk": "YouTube відео", "en": "YouTube video"},
+    "YouTube Shorts":           {"ru": "YouTube Shorts", "uk": "YouTube Shorts", "en": "YouTube Shorts"},
+    "YouTube Shorts (сжатие)":  {"ru": "YouTube Shorts (сжатие)", "uk": "YouTube Shorts (стиснення)", "en": "YouTube Shorts (compressed)"},
+    "YT Music":                 {"ru": "YT Music", "uk": "YT Music", "en": "YT Music"},
+    "Spotify трек":             {"ru": "Spotify трек", "uk": "Spotify трек", "en": "Spotify track"},
+    "Spotify альбом/плейлист":  {"ru": "Spotify альбом/плейлист", "uk": "Spotify альбом/плейлист", "en": "Spotify album/playlist"},
+    "SoundCloud трек":          {"ru": "SoundCloud трек", "uk": "SoundCloud трек", "en": "SoundCloud track"},
+    "SoundCloud сет":           {"ru": "SoundCloud сет", "uk": "SoundCloud сет", "en": "SoundCloud set"},
+    "Instagram Reels":          {"ru": "Instagram Reels", "uk": "Instagram Reels", "en": "Instagram Reels"},
+    "Instagram фото-пост":      {"ru": "Instagram фото-пост", "uk": "Instagram фото-пост", "en": "Instagram photo post"},
+    "Instagram карусель":       {"ru": "Instagram карусель", "uk": "Instagram карусель", "en": "Instagram carousel"},
+    "TikTok видео":             {"ru": "TikTok видео", "uk": "TikTok відео", "en": "TikTok video"},
+    "TikTok слайдшоу":          {"ru": "TikTok слайдшоу", "uk": "TikTok слайдшоу", "en": "TikTok slideshow"},
+    "Pinterest фото":           {"ru": "Pinterest фото", "uk": "Pinterest фото", "en": "Pinterest photo"},
+    "Pinterest видео":          {"ru": "Pinterest видео", "uk": "Pinterest відео", "en": "Pinterest video"},
+    "Twitter видео":            {"ru": "Twitter видео", "uk": "Twitter відео", "en": "Twitter video"},
+    "Twitter фото":             {"ru": "Twitter фото", "uk": "Twitter фото", "en": "Twitter photo"},
+    "Twitter текст":            {"ru": "Twitter текст", "uk": "Twitter текст", "en": "Twitter text"},
+    "PornHub видео":            {"ru": "PornHub видео", "uk": "PornHub відео", "en": "PornHub video"},
+    "PornHub Shorties":         {"ru": "PornHub Shorties", "uk": "PornHub Shorties", "en": "PornHub Shorties"},
+    "HDRezka фильм":            {"ru": "HDRezka фильм", "uk": "HDRezka фільм", "en": "HDRezka movie"},
+    "HDRezka сериал":           {"ru": "HDRezka сериал", "uk": "HDRezka серіал", "en": "HDRezka series"},
+    "ИИ-ассистент":             {"ru": "ИИ-ассистент", "uk": "ШІ-асистент", "en": "AI assistant"},
+    "Конвертер валют":          {"ru": "Конвертер валют", "uk": "Конвертер валют", "en": "Currency converter"},
+    "Расшифровка Whisper":      {"ru": "Расшифровка Whisper", "uk": "Розшифровка Whisper", "en": "Whisper transcription"},
+    "yt-dlp последний":         {"ru": "yt-dlp последний", "uk": "yt-dlp останній", "en": "yt-dlp up to date"},
+    "Куки Instagram":           {"ru": "Куки Instagram", "uk": "Куки Instagram", "en": "Instagram cookies"},
+    "Куки X (Twitter)":         {"ru": "Куки X (Twitter)", "uk": "Куки X (Twitter)", "en": "X (Twitter) cookies"},
+}
+
+
 _KINDS = {
     "Альбом": {"ru": "Альбом", "uk": "Альбом", "en": "Album"},
     "Плейлист": {"ru": "Плейлист", "uk": "Плейлист", "en": "Playlist"},
@@ -48,6 +89,50 @@ _KINDS = {
 
 
 TEXTS = {
+
+    # --- Отчёт админу: статистика и проверка функционала ---
+    "rep_title":      {"ru": "📊 <b>Статистика UnitySystem</b>", "uk": "📊 <b>Статистика UnitySystem</b>", "en": "📊 <b>UnitySystem statistics</b>"},
+    "rep_users":      {"ru": "👥 Пользователей", "uk": "👥 Користувачів", "en": "👥 Users"},
+    "rep_requests":   {"ru": "⬇️ Всего запросов", "uk": "⬇️ Усього запитів", "en": "⬇️ Total requests"},
+    "rep_platforms":  {"ru": "По платформам:", "uk": "За платформами:", "en": "By platform:"},
+    "rep_langs":      {"ru": "Языки пользователей:", "uk": "Мови користувачів:", "en": "User languages:"},
+    "rep_traffic":    {"ru": "📊 <b>Прокачано за месяц:</b>", "uk": "📊 <b>Прокачано за місяць:</b>", "en": "📊 <b>Transferred this month:</b>"},
+    "rep_files":      {"ru": "файлов", "uk": "файлів", "en": "files"},
+    "hc_title":       {"ru": "Проверка функционала", "uk": "Перевірка функціоналу", "en": "Functionality check"},
+    "hc_taken_at":    {"ru": "была в {time}", "uk": "була о {time}", "en": "taken at {time}"},
+    "hc_rest_ok":     {"ru": "Остальное работает ({ok}/{total})", "uk": "Решта працює ({ok}/{total})", "en": "Everything else works ({ok}/{total})"},
+    "hc_slow":        {"ru": "{sec}с вместо обычных {base}с", "uk": "{sec}с замість звичних {base}с", "en": "{sec}s instead of the usual {base}s"},
+    # Причины, которые пишем МЫ сами (остальные приходят от площадок как есть)
+    "hc_empty":       {"ru": "файл пуст", "uk": "файл порожній", "en": "empty file"},
+    "hc_not_video":   {"ru": "{size}, но это не читается как видео", "uk": "{size}, але це не читається як відео", "en": "{size}, but it does not read as video"},
+    "hc_low_q":       {"ru": "качество упало: {got}p вместо ≥{want}p", "uk": "якість впала: {got}p замість ≥{want}p", "en": "quality dropped: {got}p instead of ≥{want}p"},
+    "hc_high_q":      {"ru": "качество выше заказанного: {got}p вместо ≤{want}p", "uk": "якість вища за замовлену: {got}p замість ≤{want}p", "en": "quality above requested: {got}p instead of ≤{want}p"},
+    "hc_no_url":      {"ru": "нет тестовой ссылки", "uk": "немає тестового посилання", "en": "no test link"},
+    "hc_ytdlp_none":  {"ru": "не установлен", "uk": "не встановлений", "en": "not installed"},
+    "hc_ytdlp_old":   {"ru": "устарел: {have}, есть {latest}", "uk": "застарів: {have}, є {latest}", "en": "outdated: {have}, {latest} available"},
+    "hc_no_compare":  {"ru": "{have} (не с чем сравнить)", "uk": "{have} (немає з чим порівняти)", "en": "{have} (nothing to compare with)"},
+    # Замер скорости (/bench, только админ)
+    "bench_usage":   {"ru": "Пришли ссылку: <code>/bench ссылка</code>\nЗамеряю само скачивание, без отправки в Telegram.", "uk": "Надішли посилання: <code>/bench посилання</code>\nЗаміряю саме завантаження, без надсилання в Telegram.", "en": "Send a link: <code>/bench link</code>\nMeasures the download itself, without sending to Telegram."},
+    "bench_running": {"ru": "⏱ Замеряю, качаю заново в каждом режиме...", "uk": "⏱ Заміряю, завантажую заново в кожному режимі...", "en": "⏱ Measuring, downloading fresh in each mode..."},
+    "bench_failed":  {"ru": "❌ Замер не вышел: {reason}", "uk": "❌ Замір не вийшов: {reason}", "en": "❌ Benchmark failed: {reason}"},
+    "bench_title":   {"ru": "⏱ <b>Замер скорости</b>", "uk": "⏱ <b>Замір швидкості</b>", "en": "⏱ <b>Speed benchmark</b>"},
+    "bench_full":    {"ru": "без сжатия", "uk": "без стиснення", "en": "no compression"},
+    "bench_cap":     {"ru": "со сжатием ({cap}p)", "uk": "зі стисненням ({cap}p)", "en": "compressed ({cap}p)"},
+    "bench_note":    {"ru": "<i>Кэш не участвует, качалось заново. Отправка в Telegram не учтена.</i>", "uk": "<i>Кеш не брав участі, завантажувалось наново. Надсилання в Telegram не враховано.</i>", "en": "<i>Cache not used, downloaded fresh. Telegram upload not included.</i>"},
+    # Проверка кук площадок
+    "hc_ck_missing": {"ru": "файла кук нет ({path})", "uk": "файлу кук немає ({path})", "en": "no cookie file ({path})"},
+    "hc_ck_nokey":   {"ru": "в файле нет ключа входа ({key})", "uk": "у файлі немає ключа входу ({key})", "en": "login key missing in file ({key})"},
+    "hc_ck_expired": {"ru": "срок ключа {key} истёк, перевыгрузи cookies.txt", "uk": "термін ключа {key} минув, перевивантаж cookies.txt", "en": "key {key} expired, export cookies.txt again"},
+    "hc_ck_dead":    {"ru": "сессия протухла, перевыгрузи cookies.txt", "uk": "сесія протухла, перевивантаж cookies.txt", "en": "session expired, export cookies.txt again"},
+    "hc_ck_alive":   {"ru": "вход в порядке", "uk": "вхід у порядку", "en": "signed in"},
+    "hc_ck_unclear": {"ru": "неясный ответ ({code}), считаю рабочим", "uk": "незрозуміла відповідь ({code}), вважаю робочим", "en": "unclear response ({code}), treating as fine"},
+    # Единицы размера
+    "size_b":  {"ru": "Б",  "uk": "Б",  "en": "B"},
+    "size_kb": {"ru": "КБ", "uk": "КБ", "en": "KB"},
+    "size_mb": {"ru": "МБ", "uk": "МБ", "en": "MB"},
+    "size_gb": {"ru": "ГБ", "uk": "ГБ", "en": "GB"},
+    "size_tb": {"ru": "ТБ", "uk": "ТБ", "en": "TB"},
+
     # --- Приветствие /start ---
     "welcome": {
         "ru": (
@@ -283,9 +368,9 @@ TEXTS = {
         "en": "Photos",
     },
     "cfg_title": {
-        "ru": "⚙️ Функции бота в этой группе (нажмите, чтобы вкл/выкл):",
-        "uk": "⚙️ Функції бота в цій групі (натисніть, щоб увімк/вимк):",
-        "en": "⚙️ Bot features in this group (tap to toggle):",
+        "ru": "⚙️ Функции бота в этом чате (нажмите, чтобы вкл/выкл):",
+        "uk": "⚙️ Функції бота в цьому чаті (натисніть, щоб увімк/вимк):",
+        "en": "⚙️ Bot features in this chat (tap to toggle):",
     },
     "cfg_admin_only": {
         "ru": "Настраивать функции могут только администраторы группы.",
@@ -354,6 +439,11 @@ TEXTS = {
         "ru": "Присылать аудио к слайдшоу",
         "uk": "Надсилати аудіо до слайдшоу",
         "en": "Send audio with slideshow",
+    },
+    "cfg_compress_shorts": {
+        "ru": "Сжатие шортс",
+        "uk": "Стиснення шортс",
+        "en": "Compress shorts",
     },
     "cfg_currency_header": {
         "ru": "Валюты для конвертации:",
