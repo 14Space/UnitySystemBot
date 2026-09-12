@@ -135,6 +135,21 @@ def _shorts_key(base: str, cap: int | None) -> str:
     return f"{base}_c" if cap else base
 
 
+def _pick_thumbnail(info: dict) -> str | None:
+    """Ссылка на превью для экрана выбора качества.
+
+    yt-dlp кладёт в «thumbnail» свой лучший вариант, но у YouTube это webp, который
+    Telegram забирает через раз. Поэтому сначала ищем jpeg среди всех предложенных
+    (они отсортированы от худшего к лучшему — идём с конца), и только если не нашли,
+    берём то, что дал yt-dlp.
+    """
+    for thumb in reversed(info.get("thumbnails") or []):
+        u = thumb.get("url") or ""
+        if ".jpg" in u or ".jpeg" in u:
+            return u
+    return info.get("thumbnail")
+
+
 async def _dispatch_platform(message: Message, url: str, platform, lang: str):
     """Отправляет контент по платформе; каждая ветка сама завершает работу."""
     # Shorts — скачиваем сразу без лишних сообщений
@@ -291,7 +306,7 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
         if not title:                     # заголовок не извлёкся — тоже сигнал деградации
             logger.warning("Метаданные без заголовка (деградация источника): %s", url)
             title = "Без названия"
-        thumbnail = info.get("thumbnail")
+        thumbnail = _pick_thumbnail(info)
 
         async with SessionLocal() as session:
             premium = await is_premium(session, message.from_user.id)
@@ -310,9 +325,19 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
 
         keyboard = build_quality_keyboard(url_id, available, premium)
 
+        # Превью — украшение, кнопки — суть. Telegram иногда отказывается забирать
+        # картинку по ссылке («wrong type of the web page content») даже когда она живая
+        # и обычного размера. Без запасного пути падал весь экран выбора, и человек
+        # вместо кнопок получал ошибку. Теперь в худшем случае будет текст с кнопками.
+        sent = False
         if thumbnail:
-            await message.answer_photo(thumbnail, caption=caption, reply_markup=keyboard)
-        else:
+            try:
+                await message.answer_photo(thumbnail, caption=caption, reply_markup=keyboard)
+                sent = True
+            except Exception as e:
+                logger.info("Превью не отправилось (%s) — показываю выбор качества текстом",
+                            str(e)[:80])
+        if not sent:
             await message.answer(caption, reply_markup=keyboard)
 
     except Exception as e:

@@ -9,6 +9,7 @@
 
 # Скачанные файлы
 data/downloads/
+data/tg-temp/
 
 # Python
 __pycache__/

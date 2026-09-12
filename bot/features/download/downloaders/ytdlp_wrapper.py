@@ -26,6 +26,21 @@ def _find_ffmpeg() -> str | None:
 FFMPEG_DIR = _find_ffmpeg()
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "data/downloads")
 
+
+def _unique_outtmpl(suffix: str = "dl") -> str:
+    """Шаблон имени файла, уникальный для КАЖДОГО скачивания.
+
+    Раньше имя строилось только из номера ролика, и два скачивания одного и того же
+    видео писали в одни и те же файлы: одно удаляло их за собой, второе в этот момент
+    склеивало и падало с «No such file or directory» либо «Invalid data». Ловится это
+    легко (два пункта проверки на одну ссылку), а у пользователей выглядело бы как
+    случайный сбой раз в сто запросов.
+
+    yt-dlp к тому же качает видео и звук отдельными файлами и склеивает третьим, так
+    что столкнуться можно и на промежуточных кусках.
+    """
+    return os.path.join(DOWNLOADS_DIR, f"%(id)s_{suffix}_{uuid.uuid4().hex[:8]}.%(ext)s")
+
 # Адрес POT-провайдера («выдаватель пропусков»): контейнер bgutil-ytdlp-pot-provider.
 # Без пропусков (PO-токенов) YouTube отдаёт HTTP 403 на скачивание. В docker бот идёт
 # к нему по имени сервиса; на хосте — задать POT_PROVIDER_URL=http://localhost:4416.
@@ -449,7 +464,7 @@ def download_media(url: str) -> str:
     Возвращает путь к файлу (ext подскажет тип: mp4 — видео, jpg — фото).
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_dl.%(ext)s")
+    output_path = _unique_outtmpl()
 
     ydl_opts = {
         **BASE_OPTS,
@@ -551,7 +566,7 @@ def download_shorts(url: str, max_height: int | None = None) -> str:
     ролик чуть менее чётким, чем не отдать совсем.
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_dl.%(ext)s")
+    output_path = _unique_outtmpl()
 
     # Лесенка попыток: запрошенное качество, затем всё более лёгкие варианты.
     ladder = [max_height, 720, 480] if max_height else [None, 720, 480]

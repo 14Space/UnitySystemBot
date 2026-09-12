@@ -52,6 +52,10 @@ def _url(key: str, default: str = "") -> str:
 # пустой: впиши свою ссылку в .env (HC_URL_PORNHUB / HC_URL_PORNHUB_SHORT).
 U_YT_VIDEO   = _url("YT_VIDEO", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 U_YT_SHORTS  = _url("YT_SHORTS", "https://www.youtube.com/shorts/tPEE9ZwTmy0")
+# Для проверки СЖАТИЯ нужен ролик заведомо выше потолка, иначе проверять нечего:
+# ролик выше (1 секунда, максимум 480p) под потолок 720 просто не попадает, и пункт
+# зеленел бы впустую — то есть ту поломку, ради которой он заведён, не поймал бы.
+U_YT_SHORTS_HQ = _url("YT_SHORTS_HQ", "https://www.youtube.com/shorts/I6iy-0bnles")
 U_YT_MUSIC   = _url("YT_MUSIC", "https://music.youtube.com/watch?v=dQw4w9WgXcQ")
 U_SPOTIFY    = _url("SPOTIFY", "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT")
 # Редакционные плейлисты Spotify (37i9…) через публичный API не читаются — берём альбом.
@@ -238,6 +242,32 @@ async def _check_x_cookies():
         if r.status_code in (401, 403):
             return False, t("hc_ck_dead", _admin_lang())
         return True, t("hc_ck_alive", _admin_lang())
+
+    return await asyncio.to_thread(work)
+
+
+async def _check_tiktok_music():
+    """Аудиодорожка к слайдшоу TikTok.
+
+    Зачем отдельным пунктом: тумблер «Присылать аудио к слайдшоу» включён по умолчанию,
+    а музыка берётся отдельным запросом — не тем, что отдаёт видео. Сломается он один,
+    и слайдшоу продолжат приходить, все прочие пункты останутся зелёными, а музыка молча
+    перестанет доходить. Ровно так у нас пряталась история с протухшими куками.
+    """
+    from bot.features.download.downloaders import tiktok
+
+    def work():
+        res = tiktok.download_music(U_TIKTOK_SLIDE)
+        if not res:
+            return False, t("hc_music_none", _admin_lang())
+        path, title = res
+        try:
+            size = _size_of(path)
+            if not size:
+                return False, t("hc_empty", _admin_lang())
+            return True, f"{_kb(size)}, {(title or '').strip()[:40]}"
+        finally:
+            _cleanup(path)
 
     return await asyncio.to_thread(work)
 
@@ -587,7 +617,7 @@ _CHECKS = [
     # это функция (не площадка): такие всегда идут в конце.
     ("YouTube видео",           "YouTube",    lambda: _dl_probe(U_YT_VIDEO),               U_YT_VIDEO),
     ("YouTube Shorts",          "YouTube",    lambda: _dl_shorts(U_YT_SHORTS),             U_YT_SHORTS),
-    ("YouTube Shorts (сжатие)",  "YouTube",   lambda: _dl_shorts_compressed(U_YT_SHORTS),  U_YT_SHORTS),
+    ("YouTube Shorts (сжатие)",  "YouTube",   lambda: _dl_shorts_compressed(U_YT_SHORTS_HQ), U_YT_SHORTS_HQ),
     ("YT Music",                "YT Music",   lambda: _dl_probe(U_YT_MUSIC, True),         U_YT_MUSIC),
     ("Spotify трек",            "Spotify",    _check_spotify,                               U_SPOTIFY),
     ("Spotify альбом/плейлист", "Spotify",    _check_spotify_collection,                    U_SPOTIFY_COL),
@@ -598,6 +628,7 @@ _CHECKS = [
     ("Instagram карусель",      "Instagram",  lambda: _dl_ig_post(U_IG_CAROUSEL, True),    U_IG_CAROUSEL),
     ("TikTok видео",            "TikTok",     lambda: _check_tiktok(U_TIKTOK),             U_TIKTOK),
     ("TikTok слайдшоу",         "TikTok",     lambda: _check_tiktok(U_TIKTOK_SLIDE, True), U_TIKTOK_SLIDE),
+    ("TikTok аудиодорожка",     "TikTok",     _check_tiktok_music,                         U_TIKTOK_SLIDE),
     ("Pinterest фото",          "Pinterest",  lambda: _dl_media(U_PINTEREST_IMG),          U_PINTEREST_IMG),
     ("Pinterest видео",         "Pinterest",  lambda: _dl_media(U_PINTEREST_VID),          U_PINTEREST_VID),
     ("Twitter видео",           "Twitter",    lambda: _check_twitter(U_TWITTER_VIDEO),     U_TWITTER_VIDEO),
@@ -628,7 +659,7 @@ _CHECKS = [
 _PLAYWRIGHT_CHECKS = {"HDRezka фильм", "HDRezka сериал"}
 # TikTok API (tikwm) держит лимит «1 запрос/сек» — гоняем TikTok-чеки строго по одному
 # с паузой между ними, иначе видео+слайдшоу сталкиваются и ловят «Free Api Limit».
-_TIKTOK_CHECKS = {"TikTok видео", "TikTok слайдшоу"}
+_TIKTOK_CHECKS = {"TikTok видео", "TikTok слайдшоу", "TikTok аудиодорожка"}
 # Instagram-чеки читают ОДИН файл кук; при параллельном доступе yt-dlp может писать его
 # обратно и портить — ловится как «failed to load cookies». Поэтому тоже по одному.
 _INSTAGRAM_CHECKS = {"Instagram Reels", "Instagram фото-пост", "Instagram карусель"}

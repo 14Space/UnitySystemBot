@@ -7,7 +7,7 @@ import requests
 import yt_dlp
 from urllib.parse import urlparse
 from bot.features.download.downloaders.ytdlp_wrapper import (
-    BASE_OPTS, DOWNLOADS_DIR, _quality_opts,
+    BASE_OPTS, DOWNLOADS_DIR, _quality_opts, _unique_outtmpl,
 )
 from bot.utils import pw_thread
 
@@ -114,7 +114,7 @@ def download_reel(url: str, max_height: int | None = None) -> str:
     """Скачивает Instagram Reel (видео) — как Shorts. max_height ограничивает качество
     («Сжатие шортс»); без него берём максимум."""
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_dl.%(ext)s")
+    output_path = _unique_outtmpl()
 
     base_opts = {
         **BASE_OPTS,

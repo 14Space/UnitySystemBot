@@ -54,12 +54,15 @@ def download_music(url: str) -> tuple[str, str] | None:
     music_url = data.get("music")
     if not music_url:
         return None
-    raw = os.path.join(DOWNLOADS_DIR, f"{info['id']}_track_src")
+    # Уникальный хвост: один и тот же звук могут попросить сразу несколько человек,
+    # и с общим именем один переписывал бы исходник, пока другой его перекодирует.
+    tag = uuid.uuid4().hex[:8]
+    raw = os.path.join(DOWNLOADS_DIR, f"{info['id']}_{tag}_track_src")
     content = requests.get(_abs(music_url), headers=HEADERS, timeout=60).content
     with open(raw, "wb") as f:
         f.write(content)
     # Приводим к чистому mp3 (звук из tikwm бывает в контейнере m4a/без тегов).
-    out = os.path.join(DOWNLOADS_DIR, f"{info['id']}_track.mp3")
+    out = os.path.join(DOWNLOADS_DIR, f"{info['id']}_{tag}_track.mp3")
     subprocess.run(
         [_ffbin("ffmpeg"), "-y", "-i", raw, "-vn", "-acodec", "libmp3lame",
          "-b:a", "192k", out],

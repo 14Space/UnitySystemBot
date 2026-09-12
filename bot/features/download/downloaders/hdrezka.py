@@ -2,6 +2,7 @@ import functools
 import logging
 import os
 import re
+import uuid
 import subprocess
 import time
 import requests
@@ -228,7 +229,11 @@ def download_stream(stream, quality: str, name="video", season=None, episode=Non
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     safe = re.sub(r"[^\w]+", "_", name)[:40] or "video"
     suffix = f"_s{season}e{episode}" if season and episode else ""
-    base = os.path.join(DOWNLOADS_DIR, f"{safe}{suffix}_dl")
+    # Хвост уникален для каждой загрузки. Без него имя складывалось только из названия
+    # (качество в него даже не входило), и два человека, качающие один фильм — или один
+    # фильм в двух качествах — писали в один и тот же файл. У HDRezka файлы на гигабайты,
+    # то есть окно для столкновения — минуты, а результат: битое видео или падение.
+    base = os.path.join(DOWNLOADS_DIR, f"{safe}{suffix}_dl_{uuid.uuid4().hex[:8]}")
     raw = base + "_raw.mp4"
     final = base + ".mp4"
 

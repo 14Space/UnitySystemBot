@@ -63,6 +63,7 @@ _CHECK_NAMES = {
     "Instagram карусель":       {"ru": "Instagram карусель", "uk": "Instagram карусель", "en": "Instagram carousel"},
     "TikTok видео":             {"ru": "TikTok видео", "uk": "TikTok відео", "en": "TikTok video"},
     "TikTok слайдшоу":          {"ru": "TikTok слайдшоу", "uk": "TikTok слайдшоу", "en": "TikTok slideshow"},
+    "TikTok аудиодорожка":      {"ru": "TikTok аудиодорожка", "uk": "TikTok аудіодоріжка", "en": "TikTok audio track"},
     "Pinterest фото":           {"ru": "Pinterest фото", "uk": "Pinterest фото", "en": "Pinterest photo"},
     "Pinterest видео":          {"ru": "Pinterest видео", "uk": "Pinterest відео", "en": "Pinterest video"},
     "Twitter видео":            {"ru": "Twitter видео", "uk": "Twitter відео", "en": "Twitter video"},
@@ -125,6 +126,7 @@ TEXTS = {
     "hc_wh_garbled":  {"ru": "речь не распознаётся: совпало {hits} слов из нужных {need}, услышал: {text}", "uk": "мовлення не розпізнається: збіглося {hits} слів із потрібних {need}, почув: {text}", "en": "speech not recognized: {hits} words matched of {need} required, heard: {text}"},
     "hc_stt_nokey":   {"ru": "нет ключа Groq", "uk": "немає ключа Groq", "en": "no Groq key"},
     "hc_off":         {"ru": "выключен настройкой", "uk": "вимкнено налаштуванням", "en": "disabled by settings"},
+    "hc_music_none":  {"ru": "музыки в посте нет или сервис не отдал", "uk": "музики в дописі немає або сервіс не віддав", "en": "no music in the post, or the service refused"},
     # Проверка кук площадок
     "hc_ck_missing": {"ru": "файла кук нет ({path})", "uk": "файлу кук немає ({path})", "en": "no cookie file ({path})"},
     "hc_ck_nokey":   {"ru": "в файле нет ключа входа ({key})", "uk": "у файлі немає ключа входу ({key})", "en": "login key missing in file ({key})"},
