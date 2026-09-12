@@ -24,7 +24,7 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from bot.config import ADMIN_LANG
+from bot.config import ADMIN_LANG, STT_ORDER
 from bot.utils.i18n import t, t_check
 
 logger = logging.getLogger(__name__)
@@ -579,6 +579,9 @@ async def _check_hdrezka(url):
 # ---------------------------------------------------------------------------
 # Реестр проверок. Порядок = порядок в отчёте. url="" → проверка пропускается (⚪).
 # ---------------------------------------------------------------------------
+# Метка «пункт выключен настройкой» вместо тестовой ссылки.
+_OFF = "-off-"
+
 _CHECKS = [
     # (название, платформа-для-порядка, проверка, тестовая ссылка). Платформа=None —
     # это функция (не площадка): такие всегда идут в конце.
@@ -608,7 +611,11 @@ _CHECKS = [
     ("ИИ-ассистент",            None,         _check_ai,                                    "x"),
     ("Конвертер валют",         None,         _check_currency,                              "x"),
     ("Расшифровка (Groq)",      None,         _check_stt_groq,                              "x"),
-    ("Расшифровка (запасная)",  None,         _check_stt_local,                             "x"),
+    # Пустая ссылка = пункт пропускается. Локальный Whisper проверяем ТОЛЬКО если он
+    # реально стоит в цепочке: иначе выключенная модель всё равно поднималась бы каждые
+    # два часа и держала RAM, ради экономии которой её и выключали.
+    ("Расшифровка (запасная)",  None,         _check_stt_local,
+     "x" if "local" in STT_ORDER else _OFF),
     ("yt-dlp последний",        None,         _check_ytdlp,                                 "x"),
     ("Куки Instagram",          None,         _check_ig_cookies,                            "x"),
     ("Куки X (Twitter)",        None,         _check_x_cookies,                             "x"),
@@ -633,6 +640,10 @@ async def _run(name: str, platform: str | None, coro_fn, url: str, idx: int,
     """Запускает одну проверку с таймаутом и перехватом ошибок. url=="" → пропуск.
     Упавший пункт перепроверяем один раз через паузу — тревога только при двойном сбое."""
     base = {"name": name, "platform": platform, "idx": idx}
+    if url == _OFF:
+        # Пункт не сломан, а сознательно выключен настройкой — так и пишем, иначе
+        # «нет тестовой ссылки» выглядит как недоделка.
+        return {**base, "state": "skip", "detail": t("hc_off", _admin_lang()), "sec": 0.0}
     if not url:
         return {**base, "state": "skip", "detail": t("hc_no_url", _admin_lang()), "sec": 0.0}
 

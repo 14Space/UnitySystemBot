@@ -124,6 +124,7 @@ TEXTS = {
     "hc_wh_nosample": {"ru": "нет образца речи ({path})", "uk": "немає зразка мовлення ({path})", "en": "no speech sample ({path})"},
     "hc_wh_garbled":  {"ru": "речь не распознаётся: совпало {hits} слов из нужных {need}, услышал: {text}", "uk": "мовлення не розпізнається: збіглося {hits} слів із потрібних {need}, почув: {text}", "en": "speech not recognized: {hits} words matched of {need} required, heard: {text}"},
     "hc_stt_nokey":   {"ru": "нет ключа Groq", "uk": "немає ключа Groq", "en": "no Groq key"},
+    "hc_off":         {"ru": "выключен настройкой", "uk": "вимкнено налаштуванням", "en": "disabled by settings"},
     # Проверка кук площадок
     "hc_ck_missing": {"ru": "файла кук нет ({path})", "uk": "файлу кук немає ({path})", "en": "no cookie file ({path})"},
     "hc_ck_nokey":   {"ru": "в файле нет ключа входа ({key})", "uk": "у файлі немає ключа входу ({key})", "en": "login key missing in file ({key})"},
