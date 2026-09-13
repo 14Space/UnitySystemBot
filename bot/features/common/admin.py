@@ -100,6 +100,22 @@ async def cmd_stats(message: Message):
     await message.answer(report, parse_mode="HTML")
 
 
+@router.message(Command("test"))
+async def cmd_test(message: Message):
+    """Админ: принудительно прогоняет проверку функционала заново, не глядя на кэш
+    (в отличие от /statistics, которая между делом просто показывает последний
+    сохранённый результат). Нужна, чтобы проверить систему прямо сейчас — например,
+    сразу после переезда на новый сервер или правки в коде."""
+    if not _is_admin(message):
+        return
+    from bot.features.common.healthcheck import run_and_cache, format_health, last_results
+    await message.answer("🔄 Гоняю полную проверку функционала, подожди…")
+    results = await run_and_cache()
+    _, at = last_results()
+    lang = lang_of(message.from_user)
+    await message.answer(format_health(results, at=at, lang=lang), parse_mode="HTML")
+
+
 @router.message(Command("cleancache"))
 async def cmd_cleancache(message: Message):
     """Админ: чистит кэш file_id этого бота (стираются только ссылки, файлы в Telegram целы)."""

@@ -97,6 +97,7 @@ async def _setup_commands(bot: Bot):
         admin_cmds = common + [
             BotCommand(command="statistics", description="Статистика"),
             BotCommand(command="cleancache", description="Очистить кэш"),
+            BotCommand(command="test", description="Проверить систему"),
             BotCommand(command="bench", description="Замерить скорость по ссылке"),
         ]
         # Личный чат админа с ботом может ещё не существовать (админ не писал боту) —
