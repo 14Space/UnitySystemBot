@@ -63,28 +63,39 @@ BASE_OPTS = {
 if FFMPEG_DIR:
     BASE_OPTS["ffmpeg_location"] = FFMPEG_DIR
 
-# Прокси (из .env → PROXY_URL) нужен ТОЛЬКО для YT Music: часть треков под гео-блоком
-# (в Молдове, например). Но сам прокси, особенно бесплатный, часто нестабилен, поэтому
-# логика «умная»: СНАЧАЛА пробуем YT Music напрямую (быстро и надёжно — большинство
-# треков доступны), и лишь если прямой заход упал (гео-блок/сеть) — повторяем через
-# прокси. Так падения из-за тупящего прокси не задевают доступные треки, а прокси
-# работает как запасной путь только для реально заблокированных. По образцу Instagram.
+# Прокси (из .env → PROXY_URL) — обход блокировок YouTube/YT Music (репутация IP
+# сервера у YouTube — see «Sign in to confirm you're not a bot») и PornHub (блок целой
+# страны, например Франции). Но сам прокси, особенно домашний, часто не такой быстрый,
+# как сервер, поэтому логика «умная» — СНАЧАЛА пробуем напрямую (быстро и надёжно —
+# большинство ссылок доступны и так), и лишь если прямой заход упал — повторяем через
+# прокси. Так падения из-за тупящего прокси не задевают доступные ссылки. По образцу
+# Instagram. Исключение — PornHub: там блок ПО СТРАНЕ целиком, прямой заход обречён
+# заранее, поэтому сразу идём через прокси, не тратя время на заведомо мёртвую попытку.
 _PROXY = os.getenv("PROXY_URL", "")
 
 
+def _needs_proxy(url: str) -> bool:
+    """Площадки, где наш серверный IP может быть заблокирован/на подозрении."""
+    u = url or ""
+    return any(d in u for d in ("youtube.com", "youtu.be", "pornhub.com"))
+
+
 def _with_music_fallback(url: str, op):
-    """op(proxy_opts: dict) -> результат. Для YT Music: сначала прямой заход (proxy_opts
-    пустой), при ошибке — повтор через {"proxy": PROXY}. Для остальных ссылок — один
-    прямой вызов без прокси (как и было)."""
-    attempts: list[dict] = [{}]
-    if _PROXY and "music.youtube.com" in (url or ""):
-        attempts.append({"proxy": _PROXY})
+    """op(proxy_opts: dict) -> результат. Если прокси не задан или площадке он не нужен —
+    один прямой вызов, как и было. Если нужен — для PornHub сразу через прокси (страновой
+    блок прямой заход не переживёт), для YouTube/YT Music — сначала прямой заход, при
+    ошибке повтор через {"proxy": PROXY}."""
+    if not _PROXY or not _needs_proxy(url):
+        return op({})
+    if "pornhub.com" in (url or ""):
+        return op({"proxy": _PROXY})
+    attempts: list[dict] = [{}, {"proxy": _PROXY}]
     for i, proxy_opts in enumerate(attempts):
         try:
             return op(proxy_opts)
         except Exception:
             if i < len(attempts) - 1:      # был прямой заход и есть запасной прокси
-                logger.info("YT Music напрямую не вышло — пробую через прокси")
+                logger.info("Напрямую не вышло — пробую через прокси")
                 continue
             raise
 
@@ -219,35 +230,39 @@ def download_video(
         f"/best[height<={cap}]"
     )
 
-    ydl_opts = {
-        **BASE_OPTS,
-        "format": fmt,
-        "outtmpl": output_path,
-        "merge_output_format": "mp4",
-        "progress_hooks": [progress_hook],
-        # +faststart переносит метаданные в начало файла — видео играется на лету,
-        # не дожидаясь полной загрузки на стороне зрителя
-        "postprocessor_args": {"merger": ["-movflags", "+faststart"]},
-        **_impersonate_opts(url),  # маскировка под Chrome только для PornHub
-    }
+    def _op(proxy_opts: dict) -> str:
+        ydl_opts = {
+            **BASE_OPTS,
+            "format": fmt,
+            "outtmpl": output_path,
+            "merge_output_format": "mp4",
+            "progress_hooks": [progress_hook],
+            # +faststart переносит метаданные в начало файла — видео играется на лету,
+            # не дожидаясь полной загрузки на стороне зрителя
+            "postprocessor_args": {"merger": ["-movflags", "+faststart"]},
+            **proxy_opts,  # для YouTube/PornHub: пусто напрямую, затем прокси при неудаче
+            **_impersonate_opts(url),  # маскировка под Chrome только для PornHub
+        }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            extracted = _extract_for_download(ydl, url, info)
-            filename = ydl.prepare_filename(extracted)
-            if not os.path.exists(filename):
-                filename = filename.rsplit(".", 1)[0] + ".mp4"
-            # Страховка: если H.264 не нашлось (часто на 1440p/2160p — там только
-            # VP9/AV1), перекодируем в H.264, иначе на iPhone будет чёрный экран.
-            return _ensure_h264(filename, postprocess_callback)
-    except Exception as e:
-        # На Windows антивирус иногда держит .temp.mp4 в момент переименования
-        # после склейки ffmpeg. Файл уже готов — переименовываем сами с повторами.
-        if "WinError 32" in str(e) or isinstance(e, PermissionError):
-            recovered = _rename_temp_file()
-            if recovered:
-                return recovered
-        raise
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                extracted = _extract_for_download(ydl, url, info)
+                filename = ydl.prepare_filename(extracted)
+                if not os.path.exists(filename):
+                    filename = filename.rsplit(".", 1)[0] + ".mp4"
+                # Страховка: если H.264 не нашлось (часто на 1440p/2160p — там только
+                # VP9/AV1), перекодируем в H.264, иначе на iPhone будет чёрный экран.
+                return _ensure_h264(filename, postprocess_callback)
+        except Exception as e:
+            # На Windows антивирус иногда держит .temp.mp4 в момент переименования
+            # после склейки ffmpeg. Файл уже готов — переименовываем сами с повторами.
+            if "WinError 32" in str(e) or isinstance(e, PermissionError):
+                recovered = _rename_temp_file()
+                if recovered:
+                    return recovered
+            raise
+
+    return _with_music_fallback(url, _op)
 
 
 def _extract_for_download(ydl, url: str, info: dict | None):
@@ -576,30 +591,34 @@ def download_shorts(url: str, max_height: int | None = None) -> str:
             seen.add(h)
             attempts.append(h)
 
-    last_err = None
-    for i, h in enumerate(attempts):
-        # На промежуточных попытках не терпим долгие залипания: если тяжёлый файл встал,
-        # быстрее откатиться на качество пониже, чем ждать 25с ради максимума. На ПОСЛЕДНЕЙ
-        # попытке возвращаем обычное терпение yt-dlp — сдаваться раньше времени нельзя.
-        impatient = {"socket_timeout": 10, "retries": 1} if i < len(attempts) - 1 else {}
-        ydl_opts = {
-            **BASE_OPTS,
-            **_quality_opts(h),
-            "outtmpl": output_path,
-            "merge_output_format": "mp4",
-            **impatient,
-            **_impersonate_opts(url),  # маскировка под Chrome только для PornHub (shorties)
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                extracted = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(extracted)
-                if not os.path.exists(filename):
-                    filename = filename.rsplit(".", 1)[0] + ".mp4"
-                return filename
-        except Exception as e:
-            last_err = e
-            if i < len(attempts) - 1:
-                logger.info("Короткое видео не скачалось (%s) — пробую качество пониже (%sp)",
-                            str(e)[:120], attempts[i + 1])
-    raise last_err
+    def _op(proxy_opts: dict) -> str:
+        last_err = None
+        for i, h in enumerate(attempts):
+            # На промежуточных попытках не терпим долгие залипания: если тяжёлый файл встал,
+            # быстрее откатиться на качество пониже, чем ждать 25с ради максимума. На ПОСЛЕДНЕЙ
+            # попытке возвращаем обычное терпение yt-dlp — сдаваться раньше времени нельзя.
+            impatient = {"socket_timeout": 10, "retries": 1} if i < len(attempts) - 1 else {}
+            ydl_opts = {
+                **BASE_OPTS,
+                **_quality_opts(h),
+                "outtmpl": output_path,
+                "merge_output_format": "mp4",
+                **impatient,
+                **proxy_opts,  # для YouTube/PornHub: пусто напрямую, затем прокси при неудаче
+                **_impersonate_opts(url),  # маскировка под Chrome только для PornHub (shorties)
+            }
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    extracted = ydl.extract_info(url, download=True)
+                    filename = ydl.prepare_filename(extracted)
+                    if not os.path.exists(filename):
+                        filename = filename.rsplit(".", 1)[0] + ".mp4"
+                    return filename
+            except Exception as e:
+                last_err = e
+                if i < len(attempts) - 1:
+                    logger.info("Короткое видео не скачалось (%s) — пробую качество пониже (%sp)",
+                                str(e)[:120], attempts[i + 1])
+        raise last_err
+
+    return _with_music_fallback(url, _op)

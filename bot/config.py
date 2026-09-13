@@ -87,8 +87,10 @@ INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "data/instagram_cookies.txt")
 # для видео и контента, видимого только вошедшим. Публичные посты берём и без них.
 X_COOKIES = os.getenv("X_COOKIES", "data/x.com_cookies.txt")
 
-# Прокси для обхода гео-блокировок YouTube/YT Music (http:// или socks5://).
-# Пусто = без прокси. Пример: socks5://127.0.0.1:1080
+# Прокси для обхода блокировок YouTube/YT Music (репутация IP сервера) и PornHub
+# (блок целой страны) — http:// или socks5://. Пусто = без прокси.
+# Пример: socks5://172.18.0.1:1080 (обратный SSH-туннель на домашний IP; адрес — это
+# gateway docker-сети на сервере, не localhost — иначе контейнер бота его не увидит).
 PROXY_URL = os.getenv("PROXY_URL", "")
 
 # Прокси ТОЛЬКО для Instagram (http:// или socks5://). Instagram банит по IP: с
