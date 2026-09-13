@@ -3,10 +3,17 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # ffmpeg — конвертация видео/аудио. Шрифты Noto — чтобы карточки твитов (Chromium)
-# правильно рисовали кириллицу и цветные эмодзи, а не «квадратики».
+# правильно рисовали кириллицу и цветные эмодзи, а не «квадратики». curl/unzip — нужны
+# только для установки Deno чуть ниже, самому боту не требуются.
 RUN apt-get update && apt-get install -y \
-        ffmpeg fonts-noto-core fonts-noto-color-emoji \
+        ffmpeg fonts-noto-core fonts-noto-color-emoji curl unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Deno — JS-движок для решения новой защиты YouTube (без него часть роликов, включая
+# Shorts, отдаёт «Sign in to confirm you're not a bot» даже с валидным PO-токеном).
+# yt-dlp находит его сам по PATH, ничего в коде указывать не нужно.
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV PATH="/root/.deno/bin:${PATH}"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
