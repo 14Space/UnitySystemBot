@@ -70,12 +70,18 @@ if ($Install) {
     if (-not $installed) {
         $startup = [Environment]::GetFolderPath("Startup")
         $vbs = Join-Path $startup "UnitySystemBot-tunnel.vbs"
-        $cmd = "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File """ + $me + """"
-        @(
-            "' Поднимает SOCKS-туннель до сервера при входе в систему.",
-            "' Создано tools	unnel.ps1 -Install. Чтобы отключить — удалите этот файл.",
-            "CreateObject(""Wscript.Shell"").Run ""$cmd"", 0, False"
-        ) | Set-Content -Path $vbs -Encoding ASCII
+        # Файл пишем ОДНОЙ строкой через WriteAllText, а не массивом через Set-Content:
+        # тот разбивал длинную строку Run на несколько, и wscript спотыкался о半 команду.
+        # Комментарии внутри намеренно английские: VBS читается как ANSI, и кириллица
+        # в нём превращалась в мусор.
+        # В VBScript кавычка внутри строки удваивается — отсюда "" вокруг пути.
+        $q = [char]34
+        $inner = "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $q$q$me$q$q"
+        $line = "CreateObject(${q}Wscript.Shell${q}).Run ${q}${inner}${q}, 0, False"
+        $text = "' UnitySystemBot: starts the SOCKS tunnel to the server at logon.`r`n" +
+                "' Created by tunnel.ps1 -Install. Delete this file to disable.`r`n" +
+                $line + "`r`n"
+        [System.IO.File]::WriteAllText($vbs, $text, [System.Text.Encoding]::ASCII)
         if (Test-Path $vbs) {
             Write-Host "Готово: туннель добавлен в автозагрузку."
             Write-Host "  файл:     $vbs"
