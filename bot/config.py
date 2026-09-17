@@ -151,6 +151,16 @@ RELAY_STT_SESSION = os.getenv("RELAY_STT_SESSION", "data/relay.session")
 TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 RELAY_STT_TIMEOUT = int(os.getenv("RELAY_STT_TIMEOUT", "90"))
+# Сколько обращений к чужому боту-расшифровщику идёт одновременно. Ограничение не
+# про сам бот (у ботов лимиты высокие), а про АККАУНТ-ПОСРЕДНИК: автоматические
+# отправки с пользовательского аккаунта Telegram считает признаком userbot, и цена
+# ошибки — ограничение живого аккаунта. Раньше тут было жёстко «строго по одному», из-за
+# чего пять голосовых подряд ждали друг друга по очереди. Теперь это настройка:
+# 0 = без ограничения (на свой страх), меньшее значение = осторожнее.
+RELAY_STT_CONCURRENCY = int(os.getenv("RELAY_STT_CONCURRENCY", "3"))
+# Минимальный зазор между отправками, секунд. Даже при разрешённой одновременности
+# очередь из отправок «встык» выглядит подозрительнее, чем те же отправки враздрай.
+RELAY_STT_MIN_GAP = float(os.getenv("RELAY_STT_MIN_GAP", "0.5"))
 
 WHISPER_PROBE = os.getenv("WHISPER_PROBE", "data/samples/whisper_probe.ogg")
 # Корни слов, которые ОБЯЗАНЫ прозвучать в расшифровке образца. Корни, а не слова

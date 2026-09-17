@@ -318,6 +318,25 @@ async def _check_stt_groq():
     return _judge_speech(text, GROQ_STT_MODEL)
 
 
+async def _check_stt_relay():
+    """Последний рубеж расшифровки: чужой бот через аккаунт-посредник.
+
+    Проверяем только ЖИВА ЛИ СЕССИЯ, файл боту не шлём: гонять чужое голосовое через
+    посторонний сервис каждые два часа незачем, а ломается тут почти всегда именно
+    авторизация. Файл сессии переживает её отзыв — завершил сеансы в настройках
+    Telegram, и рубеж молча мёртв, хотя на диске всё на месте. Ровно так и случилось:
+    сессию закрыли, а узнали об этом только когда полезли ей пользоваться.
+    """
+    from bot.features.transcribe.transcriber import relay_stt
+    from bot.config import RELAY_STT_BOT
+
+    if not relay_stt.available():
+        return False, t("hc_relay_nosession", _admin_lang())
+    if not await relay_stt.authorized():
+        return False, t("hc_relay_dead", _admin_lang())
+    return True, t("hc_relay_ok", _admin_lang(), bot=RELAY_STT_BOT)
+
+
 async def _check_stt_local():
     """Запасной способ: наша видеокарта. Пользователи его не видят, пока жив Groq, —
     тем важнее проверять отдельно, иначе страховка тихо сгниёт."""
@@ -647,6 +666,9 @@ _CHECKS = [
     # два часа и держала RAM, ради экономии которой её и выключали.
     ("Расшифровка (запасная)",  None,         _check_stt_local,
      "x" if "local" in STT_ORDER else _OFF),
+    # Как и локальный Whisper — проверяем, только если способ реально стоит в цепочке.
+    ("Расшифровка (посредник)", None,         _check_stt_relay,
+     "x" if "relay" in STT_ORDER else _OFF),
     ("yt-dlp последний",        None,         _check_ytdlp,                                 "x"),
     ("Куки Instagram",          None,         _check_ig_cookies,                            "x"),
     ("Куки X (Twitter)",        None,         _check_x_cookies,                             "x"),

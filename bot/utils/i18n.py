@@ -77,6 +77,7 @@ _CHECK_NAMES = {
     "Конвертер валют":          {"ru": "Конвертер валют", "uk": "Конвертер валют", "en": "Currency converter"},
     "Расшифровка (Groq)":       {"ru": "Расшифровка (Groq)", "uk": "Розшифровка (Groq)", "en": "Transcription (Groq)"},
     "Расшифровка (запасная)":   {"ru": "Расшифровка (запасная)", "uk": "Розшифровка (запасна)", "en": "Transcription (fallback)"},
+    "Расшифровка (посредник)":  {"ru": "Расшифровка (посредник)", "uk": "Розшифровка (посередник)", "en": "Transcription (relay)"},
     "yt-dlp последний":         {"ru": "yt-dlp последний", "uk": "yt-dlp останній", "en": "yt-dlp up to date"},
     "Куки Instagram":           {"ru": "Куки Instagram", "uk": "Куки Instagram", "en": "Instagram cookies"},
     "Куки X (Twitter)":         {"ru": "Куки X (Twitter)", "uk": "Куки X (Twitter)", "en": "X (Twitter) cookies"},
@@ -117,6 +118,9 @@ TEXTS = {
     "hc_wh_nosample": {"ru": "нет образца речи ({path})", "uk": "немає зразка мовлення ({path})", "en": "no speech sample ({path})"},
     "hc_wh_garbled":  {"ru": "речь не распознаётся: совпало {hits} слов из нужных {need}, услышал: {text}", "uk": "мовлення не розпізнається: збіглося {hits} слів із потрібних {need}, почув: {text}", "en": "speech not recognized: {hits} words matched of {need} required, heard: {text}"},
     "hc_stt_nokey":   {"ru": "нет ключа Groq", "uk": "немає ключа Groq", "en": "no Groq key"},
+    "hc_relay_nosession": {"ru": "нет файла сессии-посредника", "uk": "немає файлу сесії-посередника", "en": "no relay session file"},
+    "hc_relay_dead":  {"ru": "сессия-посредник больше не авторизована — войти заново: tools/relay_login.py", "uk": "сесія-посередник більше не авторизована — увійти знову: tools/relay_login.py", "en": "relay session is no longer authorized — log in again: tools/relay_login.py"},
+    "hc_relay_ok":    {"ru": "сессия жива, бот {bot}", "uk": "сесія жива, бот {bot}", "en": "session alive, bot {bot}"},
     "hc_off":         {"ru": "выключен настройкой", "uk": "вимкнено налаштуванням", "en": "disabled by settings"},
     "hc_music_none":  {"ru": "музыки в посте нет или сервис не отдал", "uk": "музики в дописі немає або сервіс не віддав", "en": "no music in the post, or the service refused"},
     # Проверка кук площадок
