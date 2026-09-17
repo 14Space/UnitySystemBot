@@ -47,5 +47,8 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/us
 ENV HF_HOME=/cache
 
 COPY bot/ ./bot/
+# Ручные инструменты (tools/speedbench.py): в работе бота не участвуют, но должны
+# быть под рукой внутри контейнера — там стоят yt-dlp, ffmpeg и лежат куки.
+COPY tools/ ./tools/
 
 CMD ["python", "-m", "bot.main"]

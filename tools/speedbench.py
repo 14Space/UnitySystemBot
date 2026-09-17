@@ -1,26 +1,39 @@
 """
-Замер скорости скачивания по одной ссылке (команда /bench, только админ).
+Замер скорости скачивания по ссылке. Ручной инструмент, частью бота не является.
 
 Зачем это нужно отдельно от проверки функционала: та отвечает «скачалось ли», но не
 «стало ли лучше». Второй вопрос закрывается только числами до и после правки, снятыми
 на живой ссылке. Именно так нашлись сломанное сжатие (360p вместо 720p) и отставание
 на TikTok.
 
+Раньше это была команда /bench внутри бота. Её убрали: замеры нужны несколько раз в
+год, а команда всё остальное время висела в меню и мешала. Логика осталась прежняя,
+переехала только точка входа.
+
 Меряем САМО скачивание, без отправки в Telegram: иначе цифра зависела бы от того,
 насколько быстро сейчас отвечают серверы Telegram, и сравнивать «до и после» было бы
 нельзя. Кэш бота тоже не участвует – качаем всегда заново.
 
-Чего здесь нет и быть не может: сравнения с чужим ботом. В Telegram бот не может
-написать боту, для этого нужен обычный аккаунт (см. tools/bench.py).
+Чего здесь нет и быть не может: сравнения с чужим ботом. Для этого нужен обычный
+аккаунт Telegram – см. соседний tools/bench.py.
+
+Запуск на сервере (внутри контейнера, где стоят yt-dlp, ffmpeg и куки):
+    docker compose exec bot python tools/speedbench.py <ссылка> [<ссылка> ...]
+
+Локально (из корня проекта, с активированным окружением бота):
+    python tools/speedbench.py <ссылка>
 """
 import asyncio
 import logging
 import os
 import time
+import sys
 from functools import partial
 
+# Скрипт лежит в tools/, а импортирует bot.* — добавляем корень проекта в пути.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from bot.config import SHORTS_CAP_HEIGHT
-from bot.utils.i18n import t
 from bot.utils.platform_detector import detect_platform, Platform
 
 logger = logging.getLogger(__name__)
@@ -101,18 +114,32 @@ async def run_bench(url: str) -> list[dict]:
     return rows
 
 
-def format_bench(url: str, rows: list[dict], lang: str) -> str:
-    """Результат замера человеку: по строке на режим."""
-    lines = [t("bench_title", lang), f"<code>{url[:80]}</code>", ""]
+def print_bench(url: str, rows: list[dict]) -> None:
+    """Печатает замер в консоль: по строке на режим."""
+    print(f"\n{url}")
     for r in rows:
-        name = t("bench_full", lang) if r["mode"] == "full" else t(
-            "bench_cap", lang, cap=SHORTS_CAP_HEIGHT)
+        name = "без сжатия" if r["mode"] == "full" else f"со сжатием ({SHORTS_CAP_HEIGHT}p)"
         if r.get("error"):
-            lines.append(f"❌ {name}: {r['error']}")
+            print(f"  [FAIL] {name}: {r['error']}")
             continue
         extra = f" · {r['res']}" if r.get("res") else ""
         files = f" · {r['files']} шт" if r.get("files", 1) > 1 else ""
-        lines.append(f"• {name}: <b>{r['sec']}с</b> · {r['mb']}МБ{extra}{files}")
-    lines.append("")
-    lines.append(t("bench_note", lang))
-    return "\n".join(lines)
+        print(f"  {name}: {r['sec']}с · {r['mb']}МБ{extra}{files}")
+
+
+async def _main(urls: list[str]) -> None:
+    for url in urls:
+        try:
+            rows = await run_bench(url)
+        except Exception as e:
+            print(f"\n{url}\n  [FAIL] {e}")
+            continue
+        print_bench(url, rows)
+    print("\nКэш не участвовал, качалось заново. Отправка в Telegram не учтена.")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print(__doc__)
+        raise SystemExit(1)
+    asyncio.run(_main(sys.argv[1:]))

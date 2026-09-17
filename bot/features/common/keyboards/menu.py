@@ -13,7 +13,7 @@ from bot.config import ADMIN_ID
 def main_menu_keyboard(user_id: int = 0, placeholder: str | None = None) -> ReplyKeyboardMarkup:
     """
     Плитки-кнопки команд снизу. Обычным пользователям — только /help; админу — ещё
-    /statistics и /cleancache. (Синее «Меню» шире: всем /start, /help, /premium.)
+    /statistics, /test и /cleancache. (Синее «Меню» шире: всем /start, /help, /premium.)
 
     is_persistent=True держит клавиатуру доступной по квадратной кнопке у поля ввода,
     даже когда пользователь её свернул. Прикрепляем её ТОЛЬКО к /start и больше нигде
@@ -27,7 +27,8 @@ def main_menu_keyboard(user_id: int = 0, placeholder: str | None = None) -> Repl
         [KeyboardButton(text="/help")],
     ]
     if ADMIN_ID and user_id == ADMIN_ID:
-        rows.append([KeyboardButton(text="/statistics"), KeyboardButton(text="/cleancache")])
+        rows.append([KeyboardButton(text="/statistics"), KeyboardButton(text="/test"),
+                     KeyboardButton(text="/cleancache")])
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,

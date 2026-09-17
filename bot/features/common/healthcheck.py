@@ -767,13 +767,51 @@ async def _mark_slow(results: list[dict]) -> None:
         logger.exception("Не удалось сверить время проверок с нормой")
 
 
-async def run_and_cache() -> list[dict]:
-    """Прогоняет проверку и запоминает результат + время (для /statistics)."""
+# Идущий прямо сейчас прогон. Проверка тяжёлая (качает тестовые ролики со всех
+# площадок), и два прогона разом мешают друг другу: нагрузка удваивается, время растёт,
+# а исправные площадки начинают помечаться медленными. Раньше это было возможно —
+# /statistics или /test могли стартовать поверх плановой проверки. Теперь второй
+# желающий не запускает свою, а дожидается результата уже идущей.
+_RUNNING: "asyncio.Task | None" = None
+
+
+async def _run_and_cache() -> list[dict]:
     results = await run_health_checks()
     await _mark_slow(results)
     _LAST["results"] = results
     _LAST["at"] = datetime.now(_ADMIN_ZONE)
     return results
+
+
+async def run_and_cache() -> list[dict]:
+    """Прогоняет проверку и запоминает результат + время (для /statistics).
+
+    Прогон всегда один на весь бот: если проверка уже идёт, подключаемся к ней и ждём
+    её результат, а свою не запускаем.
+    """
+    global _RUNNING
+    if _RUNNING is None or _RUNNING.done():
+        _RUNNING = asyncio.create_task(_run_and_cache())
+        # Снимаем ссылку сами, когда прогон закончится — хоть результатом, хоть падением.
+        # Через try/finally было бы неверно: если ждущего отменят (например, админ
+        # перезапустил бота посреди проверки), ссылка обнулилась бы, пока прогон ещё идёт,
+        # и следующий вызов запустил бы второй параллельно — ровно то, от чего уходим.
+        _RUNNING.add_done_callback(_forget_run)
+    else:
+        logger.info("Проверка уже идёт — жду её результат, свою не запускаю")
+    # shield: отмена ожидающего не должна убивать сам прогон, его ждут и другие.
+    return await asyncio.shield(_RUNNING)
+
+
+def _forget_run(task: "asyncio.Task") -> None:
+    global _RUNNING
+    if _RUNNING is task:
+        _RUNNING = None
+
+
+def is_running() -> bool:
+    """Идёт ли проверка прямо сейчас (для текста «уже выполняется» в /statistics)."""
+    return _RUNNING is not None and not _RUNNING.done()
 
 
 def last_results() -> tuple[list[dict], "datetime | None"]:

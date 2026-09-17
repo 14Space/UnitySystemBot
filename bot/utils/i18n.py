@@ -113,14 +113,6 @@ TEXTS = {
     "hc_ytdlp_none":  {"ru": "не установлен", "uk": "не встановлений", "en": "not installed"},
     "hc_ytdlp_old":   {"ru": "устарел: {have}, есть {latest}", "uk": "застарів: {have}, є {latest}", "en": "outdated: {have}, {latest} available"},
     "hc_no_compare":  {"ru": "{have} (не с чем сравнить)", "uk": "{have} (немає з чим порівняти)", "en": "{have} (nothing to compare with)"},
-    # Замер скорости (/bench, только админ)
-    "bench_usage":   {"ru": "Пришли ссылку: <code>/bench ссылка</code>\nЗамеряю само скачивание, без отправки в Telegram.", "uk": "Надішли посилання: <code>/bench посилання</code>\nЗаміряю саме завантаження, без надсилання в Telegram.", "en": "Send a link: <code>/bench link</code>\nMeasures the download itself, without sending to Telegram."},
-    "bench_running": {"ru": "⏱ Замеряю, качаю заново в каждом режиме...", "uk": "⏱ Заміряю, завантажую заново в кожному режимі...", "en": "⏱ Measuring, downloading fresh in each mode..."},
-    "bench_failed":  {"ru": "❌ Замер не вышел: {reason}", "uk": "❌ Замір не вийшов: {reason}", "en": "❌ Benchmark failed: {reason}"},
-    "bench_title":   {"ru": "⏱ <b>Замер скорости</b>", "uk": "⏱ <b>Замір швидкості</b>", "en": "⏱ <b>Speed benchmark</b>"},
-    "bench_full":    {"ru": "без сжатия", "uk": "без стиснення", "en": "no compression"},
-    "bench_cap":     {"ru": "со сжатием ({cap}p)", "uk": "зі стисненням ({cap}p)", "en": "compressed ({cap}p)"},
-    "bench_note":    {"ru": "<i>Кэш не участвует, качалось заново. Отправка в Telegram не учтена.</i>", "uk": "<i>Кеш не брав участі, завантажувалось наново. Надсилання в Telegram не враховано.</i>", "en": "<i>Cache not used, downloaded fresh. Telegram upload not included.</i>"},
     # Проверка расшифровки
     "hc_wh_nosample": {"ru": "нет образца речи ({path})", "uk": "немає зразка мовлення ({path})", "en": "no speech sample ({path})"},
     "hc_wh_garbled":  {"ru": "речь не распознаётся: совпало {hits} слов из нужных {need}, услышал: {text}", "uk": "мовлення не розпізнається: збіглося {hits} слів із потрібних {need}, почув: {text}", "en": "speech not recognized: {hits} words matched of {need} required, heard: {text}"},
@@ -220,10 +212,22 @@ TEXTS = {
             "/setconfig – feature setup"
         ),
     },
+
+    # --- Проверка функционала: состояние вместо результата ---
+    "health_running": {
+        "ru": "🔄 Выполняется проверка…",
+        "uk": "🔄 Виконується перевірка…",
+        "en": "🔄 Health check running…",
+    },
+    "health_none": {
+        "ru": "🩺 Проверка ещё не снималась — бот недавно перезапустился.\nПервая пройдёт сама через пару минут, или запусти сейчас: /test",
+        "uk": "🩺 Перевірку ще не знімали — бот нещодавно перезапустився.\nПерша пройде сама за пару хвилин, або запусти зараз: /test",
+        "en": "🩺 No health check yet — the bot restarted recently.\nThe first one runs by itself in a couple of minutes, or start it now: /test",
+    },
     "help_admin_extra": {
-        "ru": "\n\n<b>Админ:</b>\n/statistics – статистика\n/cleancache – очистить кэш",
-        "uk": "\n\n<b>Адмін:</b>\n/statistics – статистика\n/cleancache – очистити кеш",
-        "en": "\n\n<b>Admin:</b>\n/statistics – statistics\n/cleancache – clear cache",
+        "ru": "\n\n<b>Админ:</b>\n/statistics – статистика\n/test – проверить систему\n/cleancache – очистить кэш",
+        "uk": "\n\n<b>Адмін:</b>\n/statistics – статистика\n/test – перевірити систему\n/cleancache – очистити кеш",
+        "en": "\n\n<b>Admin:</b>\n/statistics – statistics\n/test – check the system\n/cleancache – clear cache",
     },
     "cache_cleared": {
         "ru": "🧹 Кэш очищен: удалено записей – <b>{count}</b>.\nФайлы в Telegram не тронуты, бот просто перекачает их заново при следующем запросе.",

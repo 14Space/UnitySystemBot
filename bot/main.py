@@ -98,7 +98,6 @@ async def _setup_commands(bot: Bot):
             BotCommand(command="statistics", description="Статистика"),
             BotCommand(command="cleancache", description="Очистить кэш"),
             BotCommand(command="test", description="Проверить систему"),
-            BotCommand(command="bench", description="Замерить скорость по ссылке"),
         ]
         # Личный чат админа с ботом может ещё не существовать (админ не писал боту) —
         # тогда Telegram вернёт «chat not found». Не роняем из-за этого запуск.
@@ -182,9 +181,20 @@ async def _periodic_healthcheck(bot: Bot):
     HEALTHCHECK_EVERY_HOURS, по времени админа — при 2 это 00:00, 02:00, 04:00 …),
     независимо от момента запуска. Если что-то сломалось — сразу шлём админу короткую
     тревогу, всё ок — молчим (не спамим). Час суточного отчёта (REPORT_HOUR) пропускаем:
-    его проверку делает _daily_tasks. Первый прогон — вскоре после старта (наполнить кэш
-    для /statistics и поймать поломку сразу), дальше — строго по слотам."""
-    await asyncio.sleep(120)  # не грузим проверкой сам момент запуска
+    его проверку делает _daily_tasks.
+
+    Первый прогон — вскоре после старта, чтобы наполнить кэш для /statistics и сразу
+    поймать поломку; дальше строго по слотам. Стартовый прогон идёт в любой час, в том
+    числе в час отчёта: раньше он там пропускался (боялись столкнуться с _daily_tasks),
+    и после перезапуска в этот час /statistics оставалась без проверки до следующего
+    слота. Теперь сталкиваться нечем — run_and_cache пускает только один прогон разом,
+    второй желающий просто ждёт результат первого."""
+    # Короткая пауза, чтобы проверка не села на сам момент запуска: боту надо поднять
+    # соединение с Telegram, а соседним контейнерам (POT-провайдер для YouTube) —
+    # успеть начать отвечать. Раньше тут было 120 секунд, и всё это время /statistics
+    # оставалась без проверки. Упавший пункт проверка и так перепроверяет ещё раз
+    # через _RETRY_DELAY, поэтому не до конца прогревшийся сосед ложной тревоги не даст.
+    await asyncio.sleep(15)
     startup = True
     while True:
         if not startup:
@@ -192,10 +202,6 @@ async def _periodic_healthcheck(bot: Bot):
             # _daily_tasks. Пропуск заложен прямо в расчёт слота (детерминированно),
             # иначе два прогона могли столкнуться в 12:00 (двойная нагрузка → ложные сбои).
             await asyncio.sleep(_seconds_until_slot(HEALTHCHECK_EVERY_HOURS, skip_hour=REPORT_HOUR))
-        # Стартовый прогон в час отчёта тоже пропускаем — иначе столкнётся с _daily_tasks.
-        if startup and datetime.now(_ADMIN_ZONE).hour == REPORT_HOUR:
-            startup = False
-            continue
         startup = False
         try:
             results = await run_and_cache()

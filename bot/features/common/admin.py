@@ -85,19 +85,21 @@ async def cmd_stats(message: Message):
     # Доступно только админу; остальным — тишина
     if not _is_admin(message):
         return
-    from bot.features.common.healthcheck import last_results, run_and_cache, format_health
+    from bot.features.common.healthcheck import last_results, format_health, is_running
     async with SessionLocal() as session:
         stats = await get_stats(session)
-    # Проверку не гоняем заново на каждое нажатие — берём последнюю (её снимают каждые
-    # несколько часов и в полдень). Если кэша ещё нет (бот только запустился) — снимем.
-    results, at = last_results()
-    if not results:
-        results = await run_and_cache()
-        _, at = last_results()
     lang = lang_of(message.from_user)
-    report = (f"{format_stats(stats, lang)}\n\n"
-              f"{format_health(results, platform_ranking(stats), at=at, lang=lang)}")
-    await message.answer(report, parse_mode="HTML")
+    # Проверку тут не гоняем ВООБЩЕ — показываем последнюю снятую (их снимают каждые
+    # несколько часов и в полдень). Раньше при пустом кэше команда запускала полную
+    # проверку прямо здесь и молчала минутами, из-за чего бот выглядел зависшим. Пусто
+    # бывает первые пару минут после перезапуска и до конца первого прогона — в этом
+    # окне отвечаем сразу цифрами и говорим, что проверки пока нет.
+    results, at = last_results()
+    if results:
+        health = format_health(results, platform_ranking(stats), at=at, lang=lang)
+    else:
+        health = t("health_running" if is_running() else "health_none", lang)
+    await message.answer(f"{format_stats(stats, lang)}\n\n{health}", parse_mode="HTML")
 
 
 @router.message(Command("test"))
@@ -109,11 +111,19 @@ async def cmd_test(message: Message):
     if not _is_admin(message):
         return
     from bot.features.common.healthcheck import run_and_cache, format_health, last_results
-    await message.answer("🔄 Гоняю полную проверку функционала, подожди…")
+    lang = lang_of(message.from_user)
+    # Одно сообщение на всю команду: сначала «выполняется», потом тот же текст заменяем
+    # результатом. Так в чате не остаётся мусора и не нужно ничего удалять.
+    status = await message.answer(t("health_running", lang))
     results = await run_and_cache()
     _, at = last_results()
-    lang = lang_of(message.from_user)
-    await message.answer(format_health(results, at=at, lang=lang), parse_mode="HTML")
+    report = format_health(results, at=at, lang=lang)
+    try:
+        await status.edit_text(report, parse_mode="HTML")
+    except Exception:
+        # Telegram не даёт редактировать сообщение длиннее 4096 символов и отклоняет
+        # правку, если текст не изменился. Ни то, ни другое не повод терять отчёт.
+        await message.answer(report, parse_mode="HTML")
 
 
 @router.message(Command("cleancache"))
@@ -124,37 +134,3 @@ async def cmd_cleancache(message: Message):
     async with SessionLocal() as session:
         count = await clear_cache(session)
     await message.answer(t("cache_cleared", lang_of(message.from_user), count=count), parse_mode="HTML")
-
-
-@router.message(Command("bench"))
-async def cmd_bench(message: Message):
-    """Админ: замеряет скорость скачивания по ссылке – отдельно без сжатия и со сжатием.
-
-    Зачем: проверка функционала отвечает «скачалось ли», но не «стало ли быстрее».
-    Этой командой снимаются цифры ДО правки и ПОСЛЕ, чтобы сравнивать по числам, а не
-    по ощущениям – именно так нашлись и сломанное сжатие, и отставание на TikTok.
-
-    Меряется САМО скачивание, без отправки в Telegram: так цифры не зависят от того,
-    насколько быстро сейчас работает связь с серверами Telegram.
-
-    Сравнить себя с чужим ботом отсюда нельзя: в Telegram бот не может писать боту.
-    Для этого нужен обычный аккаунт (см. tools/bench.py).
-    """
-    if not _is_admin(message):
-        return
-    from bot.features.common.benchmark import run_bench, format_bench
-
-    parts = (message.text or "").split(maxsplit=1)
-    url = parts[1].strip() if len(parts) > 1 else ""
-    lang = lang_of(message.from_user)
-    if not url:
-        await message.answer(t("bench_usage", lang))
-        return
-
-    status = await message.answer(t("bench_running", lang))
-    try:
-        rows = await run_bench(url)
-    except Exception as e:
-        await status.edit_text(t("bench_failed", lang, reason=str(e)[:120]))
-        return
-    await status.edit_text(format_bench(url, rows, lang), parse_mode="HTML")

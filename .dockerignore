@@ -2,6 +2,8 @@
 .env
 .cache
 *cookies*.txt
+*.session
+*.session-journal
 data/instagram_cookies.txt
 
 # База и скачанные файлы — монтируются томами, в образ не нужны
