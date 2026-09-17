@@ -228,6 +228,33 @@ async def _flush_traffic():
                 logger.exception("Не удалось сохранить статистику трафика")
 
 
+async def _ensure_single_instance(bot: Bot):
+    """Не даёт поднять ВТОРОГО бота на том же токене.
+
+    Зачем: у одного токена может быть только один опрашивающий. Если их два (например,
+    бот остался запущен на домашней машине, а его же подняли на сервере), Telegram
+    отдаёт обновления то одному, то другому, а неподтверждённые доставляет повторно —
+    и пользователи получают дубли ответов на одни и те же сообщения. Ошибка тихая:
+    оба экземпляра при этом выглядят работающими.
+
+    Как ловим: короткий getUpdates. Если кто-то уже опрашивает, Telegram отвечает
+    ошибкой конфликта — тогда честно не стартуем, вместо того чтобы вступать в драку.
+    Любая другая ошибка (сеть прилегла, Telegram недоступен) старт не блокирует: за
+    временный сбой связи наказывать отказом запуска неправильно.
+    """
+    from aiogram.exceptions import TelegramConflictError
+    try:
+        await bot.get_updates(offset=-1, limit=1, timeout=1)
+    except TelegramConflictError:
+        raise SystemExit(
+            "Этот бот уже где-то запущен на том же токене (Telegram: конфликт опроса). "
+            "Два экземпляра на один токен дают дубли ответов, поэтому не стартую. "
+            "Останови лишний — обычно это старый контейнер: docker compose stop bot")
+    except Exception:
+        logger.warning("Не удалось проверить единственность экземпляра — продолжаю",
+                       exc_info=True)
+
+
 async def main():
     await init_db()
     clean_downloads()  # чистим «хвосты» прошлых сессий
@@ -236,6 +263,7 @@ async def main():
         raise SystemExit("Не задан BOT_TOKEN в .env — запускать нечего.")
 
     bot = _make_bot(BOT_TOKEN)
+    await _ensure_single_instance(bot)
     await _setup_commands(bot)
     await _setup_profile(bot)
     logger.info("Бот UnitySystem (id=%s) запущен со всеми функциями", bot.id)

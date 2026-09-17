@@ -54,10 +54,19 @@ def _dur_ok(cand_dur, target) -> bool:
 
 def _search_youtube(artist: str, title: str, duration: int) -> str | None:
     """Умный поиск на YouTube: приоритет официальному аудио исполнителя."""
-    opts = {"quiet": True, "no_warnings": True, "noplaylist": True}
-    try:
+    # Через общий механизм прокси: с дата-центрового IP YouTube отвечает на поиск
+    # бот-чеком, и без этого Spotify-треки не находились вовсе (см. _needs_proxy).
+    from bot.features.download.downloaders.ytdlp_wrapper import _with_music_fallback
+
+    term = f"ytsearch8:{artist} {title}"
+
+    def _op(proxy_opts: dict):
+        opts = {"quiet": True, "no_warnings": True, "noplaylist": True, **proxy_opts}
         with yt_dlp.YoutubeDL(opts) as ydl:
-            res = ydl.extract_info(f"ytsearch8:{artist} {title}", download=False)
+            return ydl.extract_info(term, download=False)
+
+    try:
+        res = _with_music_fallback(term, _op)
     except Exception:
         logger.warning("YouTube поиск не удался", exc_info=True)
         return None

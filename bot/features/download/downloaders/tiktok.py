@@ -20,6 +20,42 @@ API = "https://www.tikwm.com/api/"
 BACKUP_API = "https://lovetik.com/api/ajax/search"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
+# Прокси (PROXY_URL из .env) — тот же, что у YouTube и PornHub. Нужен потому, что
+# tikwm режет дата-центровые адреса: с сервера во Франции API отдаёт ПУСТОЙ ответ
+# (падает .json()), а через домашний адрес тот же запрос отвечает нормально. Это не
+# отказ сервиса, а блок по IP, поэтому лечится именно прокси.
+# Логика как у YouTube: сперва напрямую (дома и на чистом IP прокси не нужен и только
+# замедлил бы), при отказе — повтор через прокси.
+_PROXY = os.getenv("PROXY_URL", "")
+_PROXIES = {"http": _PROXY, "https": _PROXY} if _PROXY else None
+
+
+def _via(fn, *args, **kwargs):
+    """Сетевой запрос с откатом на прокси: сначала напрямую, при ошибке — через прокси.
+    Прокси не задан — обычный одиночный вызов, как было раньше."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        if not _PROXIES:
+            raise
+        return fn(*args, proxies=_PROXIES, **kwargs)
+
+
+def _via_json(fn, *args, **kwargs):
+    """То же, но для ответов JSON — и разбор тоже внутри попытки.
+
+    Иначе откат не сработал бы вовсе: заблокированный tikwm отвечает не ошибкой, а
+    ПУСТЫМ телом с кодом 200. Сам запрос при этом успешен, падает только .json(). Если
+    разбирать снаружи, прямая попытка будет считаться удачной, и до прокси дело никогда
+    не дойдёт — ровно тот случай, ради которого прокси здесь и появился.
+    """
+    try:
+        return fn(*args, **kwargs).json()
+    except Exception:
+        if not _PROXIES:
+            raise
+        return fn(*args, proxies=_PROXIES, **kwargs).json()
+
 # Короткий кэш ответов API: {url: (время, результат)}. Нужен, чтобы один и тот же
 # пост в рамках одного запроса (контент + аудиодорожка) не запрашивался дважды.
 # TTL маленький — CDN-ссылки внутри живут недолго, а нам они нужны сразу.
@@ -58,7 +94,7 @@ def download_music(url: str) -> tuple[str, str] | None:
     # и с общим именем один переписывал бы исходник, пока другой его перекодирует.
     tag = uuid.uuid4().hex[:8]
     raw = os.path.join(DOWNLOADS_DIR, f"{info['id']}_{tag}_track_src")
-    content = requests.get(_abs(music_url), headers=HEADERS, timeout=60).content
+    content = _via(requests.get, _abs(music_url), headers=HEADERS, timeout=60).content
     with open(raw, "wb") as f:
         f.write(content)
     # Приводим к чистому mp3 (звук из tikwm бывает в контейнере m4a/без тегов).
@@ -268,8 +304,8 @@ def _api_call_retry(url: str, attempts: int = 3, delay: float = 1.2,
     last = None
     for i in range(attempts):
         try:
-            data = requests.get(API, params={"url": url, "hd": 1 if hd else 0},
-                                headers=HEADERS, timeout=30).json()
+            data = _via_json(requests.get, API, params={"url": url, "hd": 1 if hd else 0},
+                             headers=HEADERS, timeout=30)
             if data.get("code") == 0:
                 return data                      # успех
             last = data.get("msg") or f"code={data.get('code')}"
@@ -284,7 +320,8 @@ def _fetch_backup(url: str) -> dict | None:
     """Запасной сервис (lovetik): когда основной не отдал видео. Возвращает данные
     в том же формате, что и основной (kind='video'), или None. Слайдшоу не умеет."""
     try:
-        j = requests.post(BACKUP_API, data={"query": url}, headers=HEADERS, timeout=25).json()
+        j = _via_json(requests.post, BACKUP_API, data={"query": url},
+                      headers=HEADERS, timeout=25)
     except Exception:
         return None
     if j.get("status") != "ok":
@@ -357,7 +394,7 @@ def _fetch_tiktok_api(url: str, hd: bool = True) -> dict:
 def _download_images(images: list[str], item_id: str) -> list[str]:
     files = []
     for i, img_url in enumerate(images, 1):
-        content = requests.get(_abs(img_url), headers=HEADERS, timeout=60).content
+        content = _via(requests.get, _abs(img_url), headers=HEADERS, timeout=60).content
         path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.jpg")
         with open(path, "wb") as f:
             f.write(content)
@@ -375,11 +412,11 @@ def _download_slideshow_items(data: dict, item_id: str) -> list[tuple[str, bool]
     for i, img_url in enumerate(images, 1):
         live = lives[i - 1] if i - 1 < len(lives) else None
         if live:
-            content = requests.get(_abs(live), headers=HEADERS, timeout=120).content
+            content = _via(requests.get, _abs(live), headers=HEADERS, timeout=120).content
             path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.mp4")
             is_video = True
         else:
-            content = requests.get(_abs(img_url), headers=HEADERS, timeout=60).content
+            content = _via(requests.get, _abs(img_url), headers=HEADERS, timeout=60).content
             path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.jpg")
             is_video = False
         with open(path, "wb") as f:
@@ -413,7 +450,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
         for i, vid_url in enumerate(data["live_images"], 1):
             if not vid_url:
                 continue
-            content = requests.get(_abs(vid_url), headers=HEADERS, timeout=120).content
+            content = _via(requests.get, _abs(vid_url), headers=HEADERS, timeout=120).content
             path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.mp4")
             with open(path, "wb") as f:
                 f.write(content)
@@ -437,7 +474,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
             if music_url:
                 try:
                     audio_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_audio.mp3")
-                    content = requests.get(_abs(music_url), headers=HEADERS, timeout=60).content
+                    content = _via(requests.get, _abs(music_url), headers=HEADERS, timeout=60).content
                     with open(audio_path, "wb") as f:
                         f.write(content)
                     video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
@@ -456,7 +493,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
         if music_url:
             try:
                 audio_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_audio.mp3")
-                content = requests.get(_abs(music_url), headers=HEADERS, timeout=60).content
+                content = _via(requests.get, _abs(music_url), headers=HEADERS, timeout=60).content
                 with open(audio_path, "wb") as f:
                     f.write(content)
                 video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
@@ -476,7 +513,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
     # Оба варианта лежат на CDN самого TikTok, водяного знака нет ни там, ни там.
     play = (data.get("play") or data.get("hdplay")) if compress else \
            (data.get("hdplay") or data.get("play"))
-    content = requests.get(_abs(play), headers=HEADERS, timeout=120).content
+    content = _via(requests.get, _abs(play), headers=HEADERS, timeout=120).content
     path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
     with open(path, "wb") as f:
         f.write(content)

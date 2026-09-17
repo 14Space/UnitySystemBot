@@ -75,9 +75,17 @@ _PROXY = os.getenv("PROXY_URL", "")
 
 
 def _needs_proxy(url: str) -> bool:
-    """Площадки, где наш серверный IP может быть заблокирован/на подозрении."""
+    """Площадки, где наш серверный IP может быть заблокирован/на подозрении.
+
+    «ytsearch» — это не ссылка, а запрос поиска по YouTube (так качаются треки
+    Spotify и запасной путь SoundCloud). Его сюда пришлось добавить отдельно: строки
+    вида «ytsearch8:Ed Sheeran Shape of You» слова youtube.com не содержат, поэтому
+    поиск шёл мимо прокси и упирался в тот же бот-чек, от которого прокси и спасает.
+    Ссылки чинились, а поиск — нет, и ломались ровно Spotify и SoundCloud.
+    """
     u = url or ""
-    return any(d in u for d in ("youtube.com", "youtu.be", "pornhub.com"))
+    return u.startswith("ytsearch") or any(
+        d in u for d in ("youtube.com", "youtu.be", "pornhub.com"))
 
 
 def _with_music_fallback(url: str, op):
@@ -352,9 +360,13 @@ def search_audio(query: str, target_duration: int = None, count: int = 5) -> str
     Если известна длительность (из Spotify) — выбираем результат с самой близкой длиной,
     это спасает от случайных «не тех» треков (каверы, ремиксы, ускоренные версии).
     """
-    opts = {**BASE_OPTS, "noplaylist": True}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        res = ydl.extract_info(f"ytsearch{count}:{query}", download=False)
+    term = f"ytsearch{count}:{query}"
+
+    def _op(proxy_opts: dict):
+        with yt_dlp.YoutubeDL({**BASE_OPTS, "noplaylist": True, **proxy_opts}) as ydl:
+            return ydl.extract_info(term, download=False)
+
+    res = _with_music_fallback(term, _op)
 
     entries = [e for e in (res.get("entries") or []) if e]
     if not entries:
@@ -370,9 +382,13 @@ def search_audio(query: str, target_duration: int = None, count: int = 5) -> str
 def search_audio_candidates(query: str, target_duration: int = None, count: int = 5) -> list[str]:
     """Несколько лучших совпадений (отсортированы по близости длительности).
     Нужно, чтобы при недоступности первого результата попробовать следующий."""
-    opts = {**BASE_OPTS, "noplaylist": True}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        res = ydl.extract_info(f"ytsearch{count}:{query}", download=False)
+    term = f"ytsearch{count}:{query}"
+
+    def _op(proxy_opts: dict):
+        with yt_dlp.YoutubeDL({**BASE_OPTS, "noplaylist": True, **proxy_opts}) as ydl:
+            return ydl.extract_info(term, download=False)
+
+    res = _with_music_fallback(term, _op)
     entries = [e for e in (res.get("entries") or []) if e]
     if target_duration:
         entries.sort(key=lambda e: abs((e.get("duration") or 0) - target_duration))

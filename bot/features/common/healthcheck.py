@@ -381,6 +381,43 @@ async def _dl_probe(url, audio_only=False):
     return await asyncio.to_thread(work)
 
 
+async def _check_soundcloud_track(url: str):
+    """SoundCloud тем же путём, что и у пользователя: сперва сам SoundCloud, при отказе —
+    поиск того же трека на YouTube.
+
+    Раньше проверка качала только с SoundCloud и потому врала. Официальные треки там
+    закрыты защитой от копирования («This video is DRM protected»), пункт краснел — а
+    человеку трек при этом приходил, потому что в боевом пути есть запасной ход через
+    YouTube (см. _soundcloud_query в link.py). Проверка должна показывать то, что видит
+    человек, иначе она не проверка. Заодно этот запасной ход наконец проверяется: до сих
+    пор он не был покрыт вовсе и мог сгнить незаметно.
+    """
+    from bot.features.download.downloaders.ytdlp_wrapper import download_probe, search_audio
+    from bot.features.download.link import _soundcloud_query
+
+    def work():
+        try:
+            path = download_probe(url, audio_only=True)
+        except Exception as e:
+            # Прямой путь закрыт — идём тем же обходным, что и бот у пользователя.
+            direct = f"{type(e).__name__}"
+            found = search_audio(_soundcloud_query(url))
+            path = download_probe(found, audio_only=True)
+            try:
+                size = _size_of(path)
+                return size > 0, (f"через YouTube ({_kb(size)}), сам SoundCloud отказал: {direct}"
+                                  if size else "файл пуст")
+            finally:
+                _cleanup(path)
+        try:
+            size = _size_of(path)
+            return size > 0, _kb(size) if size else "файл пуст"
+        finally:
+            _cleanup(path)
+
+    return await asyncio.to_thread(work)
+
+
 def _short_side(path: str) -> int:
     """Короткая сторона кадра. Именно она задаёт «качество»: у вертикального ролика
     720x1280 это 720, а высота равна 1280 – на этом мы уже один раз обожглись, когда
@@ -640,7 +677,7 @@ _CHECKS = [
     ("YT Music",                "YT Music",   lambda: _dl_probe(U_YT_MUSIC, True),         U_YT_MUSIC),
     ("Spotify трек",            "Spotify",    _check_spotify,                               U_SPOTIFY),
     ("Spotify альбом/плейлист", "Spotify",    _check_spotify_collection,                    U_SPOTIFY_COL),
-    ("SoundCloud трек",         "SoundCloud", lambda: _dl_probe(U_SOUNDCLOUD, True),        U_SOUNDCLOUD),
+    ("SoundCloud трек",         "SoundCloud", lambda: _check_soundcloud_track(U_SOUNDCLOUD), U_SOUNDCLOUD),
     ("SoundCloud сет",          "SoundCloud", _check_soundcloud_set,                        U_SOUNDCLOUD_SET),
     ("Instagram Reels",         "Instagram",  lambda: _dl_reel(U_IG_REEL),                 U_IG_REEL),
     ("Instagram фото-пост",     "Instagram",  lambda: _dl_ig_post(U_IG_PHOTO),             U_IG_PHOTO),
