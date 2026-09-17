@@ -72,6 +72,7 @@ if FFMPEG_DIR:
 # Instagram. Исключение — PornHub: там блок ПО СТРАНЕ целиком, прямой заход обречён
 # заранее, поэтому сразу идём через прокси, не тратя время на заведомо мёртвую попытку.
 _PROXY = os.getenv("PROXY_URL", "")
+_PROXY_FIRST = os.getenv("PROXY_FIRST", "false").lower() in ("1", "true", "yes")
 
 
 def _needs_proxy(url: str) -> bool:
@@ -95,7 +96,10 @@ def _with_music_fallback(url: str, op):
     ошибке повтор через {"proxy": PROXY}."""
     if not _PROXY or not _needs_proxy(url):
         return op({})
-    if "pornhub.com" in (url or ""):
+    # PornHub — всегда сразу через прокси: там блок ПО СТРАНЕ, прямой заход обречён.
+    # Остальные — сразу, если включён PROXY_FIRST (на сервере с забаненным адресом
+    # прямая попытка всё равно провалится, а время съест).
+    if _PROXY_FIRST or "pornhub.com" in (url or ""):
         return op({"proxy": _PROXY})
     attempts: list[dict] = [{}, {"proxy": _PROXY}]
     for i, proxy_opts in enumerate(attempts):

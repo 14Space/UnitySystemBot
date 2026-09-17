@@ -15,10 +15,11 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
 try:
-    from bot.config import INSTAGRAM_COOKIES, INSTAGRAM_PROXY
+    from bot.config import INSTAGRAM_COOKIES, INSTAGRAM_PROXY, PROXY_FIRST as _PROXY_FIRST
 except Exception:  # worker может запускаться отдельно от бота
     INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "data/instagram_cookies.txt")
     INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
+    _PROXY_FIRST = os.getenv("PROXY_FIRST", "false").lower() in ("1", "true", "yes")
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,12 @@ def _looks_blocked(err: Exception) -> bool:
 
 
 def _proxy_attempts() -> list[str]:
-    """Сначала прямое соединение (''), затем — прокси, если он задан. На домашнем IP
-    хватает прямого; прокси включается запасным путём для дата-центрового IP (VPS)."""
-    return ["", INSTAGRAM_PROXY] if INSTAGRAM_PROXY else [""]
+    """Порядок попыток. По умолчанию сначала прямое соединение (''), затем прокси:
+    на домашнем IP хватает прямого. При PROXY_FIRST прямую попытку пропускаем — на
+    сервере с забаненным адресом она всё равно провалится, только время съест."""
+    if not INSTAGRAM_PROXY:
+        return [""]
+    return [INSTAGRAM_PROXY] if _PROXY_FIRST else ["", INSTAGRAM_PROXY]
 
 
 # --- Запасной путь для одиночного ФОТО через браузер (Playwright) -------------

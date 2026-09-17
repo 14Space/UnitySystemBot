@@ -27,12 +27,15 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 # Логика как у YouTube: сперва напрямую (дома и на чистом IP прокси не нужен и только
 # замедлил бы), при отказе — повтор через прокси.
 _PROXY = os.getenv("PROXY_URL", "")
+_PROXY_FIRST = os.getenv("PROXY_FIRST", "false").lower() in ("1", "true", "yes")
 _PROXIES = {"http": _PROXY, "https": _PROXY} if _PROXY else None
 
 
 def _via(fn, *args, **kwargs):
     """Сетевой запрос с откатом на прокси: сначала напрямую, при ошибке — через прокси.
-    Прокси не задан — обычный одиночный вызов, как было раньше."""
+    При PROXY_FIRST прямую попытку пропускаем. Прокси не задан — обычный вызов."""
+    if _PROXY_FIRST and _PROXIES:
+        return fn(*args, proxies=_PROXIES, **kwargs)
     try:
         return fn(*args, **kwargs)
     except Exception:
@@ -48,7 +51,11 @@ def _via_json(fn, *args, **kwargs):
     ПУСТЫМ телом с кодом 200. Сам запрос при этом успешен, падает только .json(). Если
     разбирать снаружи, прямая попытка будет считаться удачной, и до прокси дело никогда
     не дойдёт — ровно тот случай, ради которого прокси здесь и появился.
+
+    При PROXY_FIRST прямую попытку пропускаем совсем.
     """
+    if _PROXY_FIRST and _PROXIES:
+        return fn(*args, proxies=_PROXIES, **kwargs).json()
     try:
         return fn(*args, **kwargs).json()
     except Exception:

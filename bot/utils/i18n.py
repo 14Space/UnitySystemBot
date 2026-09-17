@@ -28,8 +28,14 @@ def lang_of(user) -> str:
     return code if code in SUPPORTED else DEFAULT_LANG
 
 
-def t(key: str, lang: str, **kwargs) -> str:
-    """Возвращает надпись по ключу на нужном языке (с подстановкой {переменных})."""
+def t(key: str, lang: str, /, **kwargs) -> str:
+    """Возвращает надпись по ключу на нужном языке (с подстановкой {переменных}).
+
+    Косая черта делает key и lang ПОЗИЦИОННЫМИ: иначе надпись с подстановкой {key}
+    или {lang} роняет вызов с «t() got multiple values for argument 'key'». Именно так
+    молча падала проверка кук Instagram — в её тексте есть {key}, и вместо понятного
+    «срок ключа истёк» админ получал TypeError.
+    """
     entry = TEXTS.get(key, {})
     text = entry.get(lang) or entry.get("ru") or key
     return text.format(**kwargs) if kwargs else text

@@ -22,6 +22,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # скачивание через SABR (новый протокол YouTube). Стабильная это ещё не умеет и отдаёт
 # 403 на популярных роликах. Плагин bgutil (клиент к «выдавателю пропусков», PO-токенам)
 # уже стоит из requirements.txt — здесь не дублируем.
+# Сбрасыватель кеша: Docker перекачивает этот файл при каждой сборке, и когда выходит
+# новая ночная сборка, его содержимое меняется — тогда слой ниже пересобирается. Без
+# этого строка pip не менялась неделями, слой брался из кеша, и ЛЮБАЯ пересборка ставила
+# ту версию yt-dlp, что попала в образ первый раз (ловилось как «устарел на 3 недели»
+# сразу после свежей сборки).
+ADD https://api.github.com/repos/yt-dlp/yt-dlp-nightly-builds/releases/latest /tmp/ytdlp-nightly.json
 RUN pip install --no-cache-dir -U --pre "yt-dlp[default]" \
         --extra-index-url https://github.com/yt-dlp/yt-dlp-nightly-builds/releases
 
