@@ -1,4 +1,5 @@
 import os
+import re
 import copy
 import time
 import uuid
@@ -128,6 +129,33 @@ except Exception:
 # Куки YouTube (см. bot/config.py). Читаем через окружение, как и остальные настройки
 # этого модуля: он должен уметь работать и в отрыве от бота.
 YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES", "data/youtube_cookies.txt")
+
+
+def youtube_search_query(url: str) -> str:
+    """Поисковый запрос «Исполнитель Название» по ссылке YouTube или YT Music.
+
+    Нужен, когда сам ролик недоступен: лейбловые релизы в YT Music часто отдают «Video
+    unavailable» — запись снял правообладатель. Трек при этом обычно лежит на обычном
+    YouTube другой загрузкой, и найти его можно по названию.
+
+    Данные берём у ОТКРЫТОГО метода самого YouTube (oembed): он отвечает даже по тем
+    роликам, которые yt-dlp уже не открывает, не требует ключей и сторонних сервисов.
+
+    У автоматических каналов исполнителей YouTube приписывает к имени «- Topic» —
+    в поисковом запросе она только мешает, поэтому срезаем.
+    """
+    try:
+        r = requests.get("https://www.youtube.com/oembed",
+                         params={"url": url, "format": "json"},
+                         proxies={"http": _PROXY, "https": _PROXY} if _PROXY else None,
+                         timeout=20)
+        data = r.json()
+    except Exception:
+        logger.info("Не удалось прочитать данные ролика для поиска: %s", url)
+        return ""
+    author = re.sub(r"\s*-\s*Topic$", "", (data.get("author_name") or "").strip())
+    title = (data.get("title") or "").strip()
+    return " ".join(x for x in (author, title) if x)
 
 
 def _cookie_opts(url: str) -> dict:

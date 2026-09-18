@@ -28,6 +28,7 @@ from bot.database.repository import (
 )
 from bot.features.download.downloaders.audio_extract import extract_audio_track
 from bot.features.download.downloaders.ytdlp_wrapper import (
+    youtube_search_query,
     get_video_info, get_available_qualities, download_video, download_shorts,
     download_audio, search_audio, search_audio_candidates, get_soundcloud_set,
     download_media, convert_gif_to_mp4,
@@ -163,7 +164,13 @@ async def _dispatch_platform(message: Message, url: str, platform, lang: str):
     # Аудио (SoundCloud, YT Music) — качаем сразу в mp3 с тегами.
     # Для SoundCloud готовим запасной поиск на YouTube на случай DRM-защиты.
     if platform in (Platform.SOUNDCLOUD, Platform.YT_MUSIC):
-        fallback = _soundcloud_query(url) if platform == Platform.SOUNDCLOUD else None
+        # Запасной путь на случай, когда сам источник недоступен: у SoundCloud это
+        # защита от копирования, у YT Music — снятые правообладателем релизы («Video
+        # unavailable»). В обоих случаях трек ищется на обычном YouTube по названию.
+        if platform == Platform.SOUNDCLOUD:
+            fallback = _soundcloud_query(url)
+        else:
+            fallback = await asyncio.to_thread(youtube_search_query, url)
         await _handle_audio(message, url, fallback_query=fallback)
         return
 
@@ -1350,8 +1357,16 @@ async def _do_download_audio(
             except Exception as e:
                 # DRM на SoundCloud — сам файл зашифрован. Берём метаданные защищённого
                 # трека (название, исполнитель, длительность) и ищем его на YouTube.
-                if "DRM" in str(e) and fallback_query:
-                    drm_meta = await asyncio.to_thread(get_video_info, cache_url, True)
+                # «Video unavailable» — та же по сути беда, что и DRM: сам источник
+                # отдать файл не может, и единственный путь — искать трек заново.
+                gone = "DRM" in str(e) or "unavailable" in str(e).lower()
+                if gone and fallback_query:
+                    # У снятого ролика метаданных не получить — тогда идём с запросом,
+                    # собранным заранее (см. youtube_search_query).
+                    try:
+                        drm_meta = await asyncio.to_thread(get_video_info, cache_url, True)
+                    except Exception:
+                        drm_meta = {}
                     query = (
                         f"{drm_meta.get('uploader') or ''} {drm_meta.get('title') or ''}".strip()
                         or fallback_query

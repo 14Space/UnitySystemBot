@@ -72,6 +72,7 @@ U_PINTEREST_VID = _url("PINTEREST_VID", "https://pin.it/2BrznYneL")
 U_TWITTER_VIDEO = _url("TWITTER_VIDEO", "https://x.com/GaiaSerenity/status/2089940424815247484")
 U_TWITTER_PHOTO = _url("TWITTER_PHOTO", "https://x.com/TheEllenShow/status/440322224407314432")
 U_TWITTER_TEXT = _url("TWITTER_TEXT", "https://x.com/jack/status/20")
+U_TWITTER_GIF = _url("TWITTER_GIF", "")
 # PornHub сейчас отдаёт 403 (анти-бот площадки) — ссылки рабочие, проверка это покажет.
 U_PORNHUB    = _url("PORNHUB", "https://www.pornhub.com/view_video.php?viewkey=6a757d85f1e87")
 U_PORNHUB_SHORT = _url("PORNHUB_SHORT", "https://www.pornhub.com/shorties/6a16e8fcbb7ec")
@@ -666,7 +667,7 @@ async def _check_tiktok(url, expect_slideshow=False):
     return await asyncio.to_thread(work)
 
 
-async def _check_twitter(url, expect_text=False):
+async def _check_twitter(url, expect_text=False, expect_kind=None):
     """X (Twitter): читаем твит (главная точка отказа — API). Для медиа-твита ещё и
     скачиваем медиа. Для текстового — проверяем, что твит прочитался и в нём есть текст.
     Саму отрисовку карточки (Playwright/Chromium) тут не гоняем: этот headless-браузер
@@ -686,7 +687,13 @@ async def _check_twitter(url, expect_text=False):
         try:
             size = _size_of(paths)
             kinds = ", ".join(sorted({f["kind"] for f in files}))
-            return size > 0, f"{kinds}, {_kb(size)}" if size else "медиа пусто"
+            if not size:
+                return False, "медиа пусто"
+            # Сверяем ВИД медиа, а не только «что-то скачалось»: у гифки своя ветка
+            # отправки, и подмена её на видео прошла бы незамеченной.
+            if expect_kind and expect_kind not in {f["kind"] for f in files}:
+                return False, f"ожидали {expect_kind}, пришло: {kinds}"
+            return True, f"{kinds}, {_kb(size)}"
         finally:
             _cleanup(paths)
 
@@ -734,6 +741,7 @@ _CHECKS = [
     ("Twitter видео",           "Twitter",    lambda: _check_twitter(U_TWITTER_VIDEO),     U_TWITTER_VIDEO),
     ("Twitter фото",            "Twitter",    lambda: _check_twitter(U_TWITTER_PHOTO),     U_TWITTER_PHOTO),
     ("Twitter текст",           "Twitter",    lambda: _check_twitter(U_TWITTER_TEXT, True),U_TWITTER_TEXT),
+    ("Twitter GIF",             "Twitter",    lambda: _check_twitter(U_TWITTER_GIF, expect_kind="gif"), U_TWITTER_GIF),
     ("PornHub видео",           "PornHub",    lambda: _dl_probe(U_PORNHUB),                U_PORNHUB),
     ("PornHub Shorties",        "PornHub",    lambda: _dl_pornhub_short(U_PORNHUB_SHORT),  U_PORNHUB_SHORT),
     ("HDRezka фильм",           "HDRezka",    lambda: _check_hdrezka(U_HDREZKA),           U_HDREZKA),

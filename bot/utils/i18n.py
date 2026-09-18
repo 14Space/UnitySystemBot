@@ -75,6 +75,7 @@ _CHECK_NAMES = {
     "Twitter видео":            {"ru": "Twitter видео", "uk": "Twitter відео", "en": "Twitter video"},
     "Twitter фото":             {"ru": "Twitter фото", "uk": "Twitter фото", "en": "Twitter photo"},
     "Twitter текст":            {"ru": "Twitter текст", "uk": "Twitter текст", "en": "Twitter text"},
+    "Twitter GIF":              {"ru": "Twitter GIF", "uk": "Twitter GIF", "en": "Twitter GIF"},
     "PornHub видео":            {"ru": "PornHub видео", "uk": "PornHub відео", "en": "PornHub video"},
     "PornHub Shorties":         {"ru": "PornHub Shorties", "uk": "PornHub Shorties", "en": "PornHub Shorties"},
     "HDRezka фильм":            {"ru": "HDRezka фильм", "uk": "HDRezka фільм", "en": "HDRezka movie"},
