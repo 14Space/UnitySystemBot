@@ -11,6 +11,7 @@ from bot.features.download.downloaders.ytdlp_wrapper import (
     BASE_OPTS, DOWNLOADS_DIR, _quality_opts, _unique_outtmpl,
 )
 from bot.utils import pw_thread
+from bot.utils import media_names
 
 # Одноразовые копии файла кук, отданные yt-dlp (см. _cookies_path).
 _COOKIE_COPIES: list[str] = []
@@ -174,6 +175,7 @@ def download_reel(url: str, max_height: int | None = None) -> str:
                 filename = ydl.prepare_filename(extracted)
                 if not os.path.exists(filename):
                     filename = filename.rsplit(".", 1)[0] + ".mp4"
+                media_names.remember(filename, extracted.get("title"), extracted.get("id"))
                 return filename
         except Exception as e:
             last_err = e

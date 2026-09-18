@@ -18,6 +18,7 @@ from bot.utils.progress_bar import make_progress_bar
 from bot.config import SHORTS_CAP_HEIGHT
 from bot.utils import limits, traffic, tg_files
 from bot.utils import inflight
+from bot.utils import media_names
 from bot.features.common import alerts
 from bot.utils.i18n import t, lang_of, t_kind
 from bot.database import SessionLocal
@@ -184,8 +185,10 @@ async def _dispatch_platform(message: Message, url: str, platform, lang: str):
     # Instagram Reel — короткое видео, качаем сразу (как Shorts)
     if platform == Platform.INSTAGRAM_REEL:
         cap = await _shorts_cap(message.chat)
+        # Название у Reels не гарантировано (подпись автора бывает пустой), поэтому
+        # имя файла строим по техническому номеру — см. _nice_name.
         await _handle_simple_video(message, url, partial(download_reel, max_height=cap),
-                                   _shorts_key("reel", cap), lang)
+                                   _shorts_key("reel", cap), lang, use_title=False)
         return
 
     # Instagram пост — фото, видео или карусель (отдаём альбомом)
@@ -269,7 +272,8 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
         if not result:
             return  # нет звука или не удалось извлечь — молча пропускаем (это бонус)
         path, title = result
-        sent = await message.reply_audio(tg_files.input_file(path), title=title)
+        sent = await message.reply_audio(
+            tg_files.input_file(path, await _nice_name(path, quality="")), title=title)
         if sent.audio:
             async with SessionLocal() as session:
                 await _tt_cache_save(session, url, cache_url, sent.audio.file_id, "audiotrack")
@@ -597,8 +601,13 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
             entry["name"], entry["season"], entry["episode"], on_progress,
         )
         await _safe_edit(status, t("uploading", lang))
+        hr_title = entry["name"]
+        if entry.get("season") and entry.get("episode"):
+            hr_title = f"{hr_title} S{entry['season']:02d}E{entry['episode']:02d}"
         sent = await bot.send_video(
-            chat_id, tg_files.input_file(file_path),
+            chat_id,
+            tg_files.input_file(file_path, tg_files.display_name(
+                hr_title, str(quality or ""), os.path.splitext(file_path)[1] or ".mp4")),
             reply_to_message_id=entry["user_msg_id"],
             **await _video_kwargs(file_path),
         )
@@ -616,7 +625,8 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         ACTIVE_DOWNLOADS.discard(user_id)
 
 
-async def _handle_simple_video(message: Message, url: str, download_fn, cache_key: str, lang: str):
+async def _handle_simple_video(message: Message, url: str, download_fn, cache_key: str, lang: str,
+                               use_title: bool = True):
     """Качает короткое видео сразу (Shorts, Instagram Reel): кэш, лимит, отправка.
     Одну и ту же ссылку качает только один запрос — остальные ждут и берут из кэша
     (см. bot.utils.inflight)."""
@@ -633,7 +643,9 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
         await limits.acquire(limits.LIGHT)
         try:
             file_path = await asyncio.to_thread(download_fn, url)
-            sent = await message.reply_video(tg_files.input_file(file_path), **await _video_kwargs(file_path))
+            sent = await message.reply_video(
+                tg_files.input_file(file_path, await _nice_name(file_path, use_title=use_title)),
+                **await _video_kwargs(file_path))
             if sent.video:
                 async with SessionLocal() as session:
                     await save_cached_file_id(session, url, sent.video.file_id, cache_key)
@@ -670,15 +682,17 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
             if file_path.lower().endswith(".gif"):
                 # GIF → чистый mp4 (без грубой авто-конвертации Telegram), шлём анимацией
                 mp4 = await asyncio.to_thread(convert_gif_to_mp4, file_path)
-                sent = await message.reply_animation(tg_files.input_file(mp4))
+                sent = await message.reply_animation(tg_files.input_file(mp4, await _nice_name(mp4, quality="", use_title=False)))
                 fid = "A:" + sent.animation.file_id if sent.animation else None
                 if mp4 != file_path:
                     _cleanup(mp4)
             elif is_image(file_path):
-                sent = await message.reply_photo(tg_files.input_file(file_path))
+                sent = await message.reply_photo(tg_files.input_file(file_path, await _nice_name(file_path, quality="", use_title=False)))
                 fid = "P:" + sent.photo[-1].file_id if sent.photo else None
             else:
-                sent = await message.reply_video(tg_files.input_file(file_path), **await _video_kwargs(file_path))
+                sent = await message.reply_video(
+                tg_files.input_file(file_path, await _nice_name(file_path, use_title=False)),
+                **await _video_kwargs(file_path))
                 fid = "V:" + sent.video.file_id if sent.video else None
             if fid:
                 async with SessionLocal() as session:
@@ -763,24 +777,38 @@ async def _send_media_files(message: Message, files: list[str], lang: str) -> li
     """Отправляет файлы (фото/видео) одиночно или альбомом. Возвращает токены file_id
     ('P:' фото, 'V:' видео) для сохранения в кэш."""
     tokens: list[str] = []
+    # Имена по техническому номеру поста: подписи у этих площадок не гарантированы.
+    # Когда файлов несколько, к номеру добавляем порядковый — иначе все файлы поста
+    # получили бы ОДНО имя, и раскладывал бы их по порядку не бот, а Telegram.
+    multi = len(files) > 1
+
+    async def _nm(path: str, i: int):
+        return await _nice_name(path, quality="" if is_image(path) else None,
+                                use_title=False, index=(i + 1) if multi else None)
+
     if len(files) == 1:
         f = files[0]
         if is_image(f):
-            sent = await message.reply_photo(tg_files.input_file(f))
+            sent = await message.reply_photo(tg_files.input_file(f, await _nm(f, 0)))
             if sent.photo:
                 tokens.append("P:" + sent.photo[-1].file_id)
         else:
-            sent = await message.reply_video(tg_files.input_file(f), **await _video_kwargs(f))
+            sent = await message.reply_video(tg_files.input_file(f, await _nm(f, 0)),
+                                             **await _video_kwargs(f))
             if sent.video:
                 tokens.append("V:" + sent.video.file_id)
     else:
+        idx = 0
         for chunk in _chunked(files, 10):
             media = []
             for f in chunk:
+                name = await _nm(f, idx)
+                idx += 1
                 if is_image(f):
-                    media.append(InputMediaPhoto(media=tg_files.input_file(f)))
+                    media.append(InputMediaPhoto(media=tg_files.input_file(f, name)))
                 else:
-                    media.append(InputMediaVideo(media=tg_files.input_file(f), **await _video_kwargs(f)))
+                    media.append(InputMediaVideo(media=tg_files.input_file(f, name),
+                                                 **await _video_kwargs(f)))
             sent_msgs = await message.reply_media_group(media)
             for m in sent_msgs:
                 if m.photo:
@@ -1027,9 +1055,15 @@ async def _send_twitter(message: Message, items: list[dict], caption: str | None
     """Отправляет медиа твита (одно или альбомом) и возвращает токены file_id для кэша:
     [{'k': 'P'|'V'|'G', 'id': ...}]. Подпись крепится к первому элементу."""
     tokens: list[dict] = []
+    multi = len(items) > 1
+
+    async def _nm(path: str, kind: str, i: int):
+        return await _nice_name(path, quality="" if kind in ("photo", "gif") else None,
+                                use_title=False, index=(i + 1) if multi else None)
+
     if len(items) == 1:
         it = items[0]
-        f = tg_files.input_file(it["path"])
+        f = tg_files.input_file(it["path"], await _nm(it["path"], it["kind"], 0))
         if it["kind"] == "photo":
             sent = await message.reply_photo(f, caption=caption, parse_mode=parse_mode)
             if sent.photo:
@@ -1049,7 +1083,7 @@ async def _send_twitter(message: Message, items: list[dict], caption: str | None
     for i, it in enumerate(items):
         cap = caption if i == 0 else None
         pm = parse_mode if i == 0 else None
-        f = tg_files.input_file(it["path"])
+        f = tg_files.input_file(it["path"], await _nm(it["path"], it["kind"], i))
         if it["kind"] == "photo":
             media.append(InputMediaPhoto(media=f, caption=cap, parse_mode=pm))
         else:
@@ -1368,7 +1402,7 @@ async def _do_download_audio(
                 thumbnail = BufferedInputFile(thumb_bytes, filename="cover.jpg")
         sent = await bot.send_audio(
             chat_id,
-            tg_files.input_file(file_path),
+            tg_files.input_file(file_path, await _nice_name(file_path, quality="")),
             title=title,
             performer=performer,
             duration=duration,
@@ -1470,7 +1504,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
         await _safe_edit(progress_msg, t("uploading", lang))
         sent = await bot.send_video(
             chat_id,
-            tg_files.input_file(file_path),
+            tg_files.input_file(file_path, await _nice_name(file_path, quality=f"{quality}p" if quality else None)),
             reply_to_message_id=user_msg_id,
             **await _video_kwargs(file_path, duration),
         )
@@ -1490,6 +1524,46 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     finally:
         await limits.release(limits.HEAVY)
         ACTIVE_DOWNLOADS.discard(user_id)
+
+
+async def _nice_name(path: str, quality: str | None = None, *,
+                     use_title: bool = True, index: int | None = None) -> str | None:
+    """Имя, под которым файл придёт человеку.
+
+    Две схемы, и выбор между ними — про НАДЁЖНОСТЬ, а не про красоту:
+
+    • use_title=True — берём настоящее название площадки: «Название [1080p] @Бот.mp4».
+      Так делаем там, где название есть гарантированно: YouTube (включая Shorts),
+      PornHub, HDRezka.
+    • use_title=False — берём технический номер ролика: «7106594312292453675 [720p]
+      @Бот.mp4». Так делаем там, где вместо названия приходит подпись автора: её может
+      не быть вовсе, она бывает из одних хештегов или из одних эмодзи. Номер есть
+      всегда и не преподносит сюрпризов.
+
+    index — порядковый номер файла в посте из нескольких (карусель, слайдшоу, твит с
+    несколькими фото). Без него все файлы поста получили бы ОДНО имя, и раскладывал бы
+    их по порядку уже не бот, а Telegram — как придётся.
+
+    quality=None — определить по самому файлу; quality="" — не писать вовсе (у фото и
+    музыки качества нет).
+    """
+    title, ident = media_names.peek(path)
+    base = (title if use_title else None) or ident
+    if not base:
+        return None
+    if index is not None:
+        base = f"{base} ({index})"
+    ext = os.path.splitext(path)[1] or ".mp4"
+    if quality is None and ext.lower() in (".mp4", ".mov", ".mkv", ".webm"):
+        try:
+            meta = await asyncio.to_thread(probe_video, path)
+            # КОРОТКАЯ сторона кадра: у вертикального ролика 720x1280 качество — 720p.
+            # На этом в проекте уже обжигались, приняв за качество высоту.
+            side = min(meta.get("width") or 0, meta.get("height") or 0)
+            quality = f"{side}p" if side else None
+        except Exception:
+            quality = None
+    return tg_files.display_name(base, quality or "", ext)
 
 
 async def _video_kwargs(file_path: str, duration: int = 0) -> dict:

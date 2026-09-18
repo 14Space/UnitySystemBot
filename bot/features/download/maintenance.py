@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+import shutil
 import logging
 import subprocess
 import importlib.metadata as meta
@@ -20,6 +21,11 @@ def clean_downloads():
         try:
             if os.path.isfile(path):
                 os.remove(path)
+                removed += 1
+            elif os.path.isdir(path):
+                # Папка ссылок с «человеческими» именами (см. bot/utils/tg_files.py).
+                # Раньше чистились только файлы, и такие папки копились бы навсегда.
+                shutil.rmtree(path, ignore_errors=True)
                 removed += 1
         except OSError:
             pass

@@ -9,6 +9,8 @@ import subprocess
 import requests
 import yt_dlp
 
+from bot.utils import media_names
+
 logger = logging.getLogger(__name__)
 
 
@@ -262,6 +264,7 @@ def download_video(
                 filename = ydl.prepare_filename(extracted)
                 if not os.path.exists(filename):
                     filename = filename.rsplit(".", 1)[0] + ".mp4"
+                media_names.remember(filename, extracted.get("title"), extracted.get("id"))
                 # Страховка: если H.264 не нашлось (часто на 1440p/2160p — там только
                 # VP9/AV1), перекодируем в H.264, иначе на iPhone будет чёрный экран.
                 return _ensure_h264(filename, postprocess_callback)
@@ -484,10 +487,17 @@ def download_audio(
             if "entries" in extracted:
                 extracted = extracted["entries"][0]
             filename = ydl.prepare_filename(extracted)
+            # «Исполнитель – Трек», если исполнитель известен; иначе просто название.
+            # Тире именно среднее (–), как в подписях у площадок.
+            artist = extracted.get("artist") or extracted.get("uploader") or ""
+            track = extracted.get("track") or extracted.get("title") or ""
+            nice = f"{artist} – {track}" if artist and track else (track or artist)
             # после конвертации исходное расширение (webm/m4a) заменяется на mp3
             mp3_path = filename.rsplit(".", 1)[0] + ".mp3"
             if os.path.exists(mp3_path):
+                media_names.remember(mp3_path, nice, extracted.get("id"))
                 return mp3_path
+            media_names.remember(filename, nice, extracted.get("id"))
             return filename
 
     return _with_music_fallback(url, _op)
@@ -524,6 +534,7 @@ def download_media(url: str) -> str:
             filename = ydl.prepare_filename(info)
             if not os.path.exists(filename):
                 filename = filename.rsplit(".", 1)[0] + ".mp4"
+            media_names.remember(filename, info.get("title"), info.get("id"))
             return filename
 
         # Видео нет (фото-пин) — качаем картинку напрямую, СОХРАНЯЯ реальное расширение
@@ -633,6 +644,9 @@ def download_shorts(url: str, max_height: int | None = None) -> str:
                     filename = ydl.prepare_filename(extracted)
                     if not os.path.exists(filename):
                         filename = filename.rsplit(".", 1)[0] + ".mp4"
+                    # Название нужно на отправке, чтобы файл пришёл человеку не под
+                    # техническим именем; сюда оно доезжает только отсюда.
+                    media_names.remember(filename, extracted.get("title"), extracted.get("id"))
                     return filename
             except Exception as e:
                 last_err = e

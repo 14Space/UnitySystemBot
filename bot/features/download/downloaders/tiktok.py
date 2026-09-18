@@ -5,6 +5,7 @@ import time
 import uuid
 import requests
 from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
+from bot.utils import media_names
 
 try:
     from bot.config import SLIDE_SEC, SLIDE_AUDIO_FADE_SEC
@@ -115,9 +116,21 @@ def download_music(url: str) -> tuple[str, str] | None:
     if not (os.path.exists(out) and os.path.getsize(out) > 0):
         return None
     mi = data.get("music_info") or {}
-    title = mi.get("title") or "оригинальный звук"
-    author = mi.get("author")
-    return out, (f"{author} – {title}" if author else title)
+    author = (mi.get("author") or "").strip()
+    title = (mi.get("title") or "").strip()
+    # У авторского звука название — служебная заглушка вида «original sound - nimpliq»,
+    # то есть тот же автор второй раз. Клеить их значило бы получить «Nimpliq – original
+    # sound - nimpliq». Различить помогает флаг original: у лицензированного трека там
+    # False, и тогда название настоящее («Shape of You») — его и берём.
+    boiler = mi.get("original") or title.lower().startswith("original sound")
+    if boiler:
+        nice = f"{author} – original sound" if author else "original sound"
+    else:
+        nice = f"{author} – {title}" if author and title else (title or author or "original sound")
+    # У звука название есть всегда (у tikwm это music_info.title), поэтому имя файла
+    # строим по нему, а не по номеру — в отличие от самого ролика.
+    media_names.remember(out, nice, str(info.get("id") or ""))
+    return out, nice
 
 
 def _media_duration(path: str) -> float:
@@ -450,6 +463,15 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
     # используется ТОЛЬКО как имя файла, поэтому добавить случайный суффикс безопасно.
     item_id = f"{info['id']}_{uuid.uuid4().hex[:8]}"
 
+    def _remember(paths):
+        """Привязывает к скачанным файлам номер поста — по нему строится имя при
+        отправке. Названия у TikTok нет: приходит подпись автора, а она бывает пустой,
+        из одних хештегов или из одних эмодзи. Номер есть всегда."""
+        for pth in paths if isinstance(paths, (list, tuple)) else [paths]:
+            if pth:
+                media_names.remember(pth, None, str(info.get("id") or ""))
+        return paths
+
     # Live Photo: набор коротких видео — отдаём альбомом видео. Часть элементов
     # live_images бывает null (для статичных кадров) — их пропускаем.
     if info["kind"] == "live":
@@ -462,7 +484,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
             with open(path, "wb") as f:
                 f.write(content)
             files.append(path)
-        return files
+        return _remember(files)
 
     # Слайдшоу (фото-пост, возможно с «живыми фото»)
     if info["kind"] == "slideshow":
@@ -470,7 +492,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
 
         # Формат «фото»: отдаём как в оригинале — статичные кадры фото, живые видео.
         if mode == "photos":
-            return [p for p, _ in _download_slideshow_items(data, item_id)]
+            return _remember([p for p, _ in _download_slideshow_items(data, item_id)])
 
         # Формат «видео»/«авто»: собираем один ролик с музыкой. Если есть живые кадры —
         # с их движением (mixed), иначе обычное слайдшоу из фото.
@@ -490,11 +512,11 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
                         for f in all_files:
                             _safe_remove(f)
                         _safe_remove(audio_path)
-                        return [video_path]
+                        return _remember([video_path])
                     _safe_remove(audio_path)
                 except Exception:
                     pass  # не вышло собрать — отдадим смешанным альбомом
-            return all_files
+            return _remember(all_files)
 
         files = _download_images(data["images"], item_id)
         if music_url:
@@ -509,11 +531,11 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
                     for f in files:
                         _safe_remove(f)
                     _safe_remove(audio_path)
-                    return [video_path]
+                    return _remember([video_path])
                 _safe_remove(audio_path)
             except Exception:
                 pass  # не вышло собрать видео — отдадим картинки
-        return files  # музыки нет (или сборка не удалась) — отдаём фото
+        return _remember(files)  # музыки нет (или сборка не удалась) — отдаём фото
 
     # Обычное видео. При «сжатии шортс» берём облегчённую версию (play) вместо HD:
     # она примерно вдвое легче при том же ролике и качается не медленнее — замерено.
@@ -524,7 +546,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
     path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
     with open(path, "wb") as f:
         f.write(content)
-    return [path]
+    return _remember([path])
 
 
 def download_tiktok(url: str, mode: str = "auto") -> list[str]:
