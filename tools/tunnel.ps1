@@ -27,7 +27,12 @@
     Должен ответить ваш домашний адрес, а не адрес сервера.
 #>
 param(
-    [switch]$Install,                     # поставить задание в планировщик и выйти
+    # socks — рабочий режим: транспорт держит WireGuard (служба Windows, стартует сама),
+    #         а этот скрипт поднимает SOCKS-сервер на домашней стороне.
+    # ssh   — запасной режим: старый обратный SSH-туннель, если WireGuard недоступен.
+    [ValidateSet("socks", "ssh")]
+    [string]$Mode = "socks",
+    [switch]$Install,                     # поставить в автозапуск и выйти
     [string]$ServerHost = "212.47.73.9",
     [string]$ServerUser = "root",
     [string]$KeyPath = "$env:USERPROFILE\.ssh\contabo_key",
@@ -37,6 +42,7 @@ param(
 )
 
 $TaskName = "UnitySystemBot-tunnel"
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
 
 if ($Install) {
     $me = $MyInvocation.MyCommand.Path
@@ -48,7 +54,7 @@ if ($Install) {
     # печатал «поставлено» независимо от результата и врал.
     try {
         $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$me`""
+            -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$me`" -Mode $Mode"
         $trigger = New-ScheduledTaskTrigger -AtLogOn
         # Задание не должно выключаться по таймауту и должно пережить переход на батарею:
         # ноутбук без розетки — обычное дело, а туннель нужен всё время.
@@ -76,7 +82,7 @@ if ($Install) {
         # в нём превращалась в мусор.
         # В VBScript кавычка внутри строки удваивается — отсюда "" вокруг пути.
         $q = [char]34
-        $inner = "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $q$q$me$q$q"
+        $inner = "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $q$q$me$q$q -Mode $Mode"
         $line = "CreateObject(${q}Wscript.Shell${q}).Run ${q}${inner}${q}, 0, False"
         $text = "' UnitySystemBot: starts the SOCKS tunnel to the server at logon.`r`n" +
                 "' Created by tunnel.ps1 -Install. Delete this file to disable.`r`n" +
@@ -92,6 +98,22 @@ if ($Install) {
         }
     }
     return
+}
+
+if ($Mode -eq "socks") {
+    # WireGuard поднимается сам как служба Windows — здесь только SOCKS-сервер.
+    # Он слушает адрес внутри туннеля, поэтому из интернета недоступен.
+    $py = Join-Path $ProjectRoot "tools\socks_server.py"
+    if (-not (Test-Path $py)) { throw "Не нашёл $py" }
+    Write-Host "SOCKS-сервер на домашней стороне. Ctrl+C чтобы остановить."
+    while ($true) {
+        $started = Get-Date
+        & python $py
+        $lived = [int]((Get-Date) - $started).TotalSeconds
+        Write-Host ("[{0}] SOCKS упал (продержался {1}с), перезапуск через {2}с" -f `
+            (Get-Date -Format "HH:mm:ss"), $lived, $RetrySeconds)
+        Start-Sleep -Seconds $RetrySeconds
+    }
 }
 
 if (-not (Test-Path $KeyPath)) { throw "Не нашёл ключ: $KeyPath" }

@@ -2,6 +2,7 @@ import http.cookiejar
 import logging
 import os
 import re
+import shutil
 import uuid
 import requests
 import yt_dlp
@@ -11,15 +12,17 @@ from bot.features.download.downloaders.ytdlp_wrapper import (
 )
 from bot.utils import pw_thread
 
+# Одноразовые копии файла кук, отданные yt-dlp (см. _cookies_path).
+_COOKIE_COPIES: list[str] = []
+
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
 try:
-    from bot.config import INSTAGRAM_COOKIES, INSTAGRAM_PROXY, PROXY_FIRST as _PROXY_FIRST
+    from bot.config import INSTAGRAM_COOKIES, INSTAGRAM_PROXY
 except Exception:  # worker может запускаться отдельно от бота
     INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "data/instagram_cookies.txt")
     INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
-    _PROXY_FIRST = os.getenv("PROXY_FIRST", "false").lower() in ("1", "true", "yes")
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +41,14 @@ def _looks_blocked(err: Exception) -> bool:
 
 
 def _proxy_attempts() -> list[str]:
-    """Порядок попыток. По умолчанию сначала прямое соединение (''), затем прокси:
-    на домашнем IP хватает прямого. При PROXY_FIRST прямую попытку пропускаем — на
-    сервере с забаненным адресом она всё равно провалится, только время съест."""
-    if not INSTAGRAM_PROXY:
-        return [""]
-    return [INSTAGRAM_PROXY] if _PROXY_FIRST else ["", INSTAGRAM_PROXY]
+    """Сначала прямое соединение (''), затем — прокси, если он задан.
+
+    PROXY_FIRST здесь СОЗНАТЕЛЬНО не действует, в отличие от YouTube и TikTok. Instagram
+    с дата-центрового адреса отдаёт публичный контент как ни в чём не бывало, и прокси
+    ему только мешает — замер с сервера: напрямую 4.0с, через туннель 9.3с. Прокси нужен
+    лишь как запасной путь на случай, когда Instagram всё-таки упрётся в анти-бот.
+    """
+    return ["", INSTAGRAM_PROXY] if INSTAGRAM_PROXY else [""]
 
 
 # --- Запасной путь для одиночного ФОТО через браузер (Playwright) -------------
@@ -103,9 +108,29 @@ def _photo_via_browser(shortcode: str, proxies=None) -> list[str]:
 
 
 def _cookies_path() -> str | None:
-    """Путь к файлу кук, если он задан и существует.
-    Куки залогиненного аккаунта дают доступ к контенту «не для всех»."""
-    return INSTAGRAM_COOKIES if INSTAGRAM_COOKIES and os.path.exists(INSTAGRAM_COOKIES) else None
+    """Путь к ОДНОРАЗОВОЙ КОПИИ файла кук, если он задан и существует.
+
+    Копия, а не оригинал, потому что yt-dlp пишет файл кук ОБРАТНО по окончании работы,
+    сохраняя туда то, что прислал сервер. Instagram в ответ на часть запросов присылает
+    урезанный набор — и наш `sessionid` (ключ входа, живёт месяцами) затирался тем, что
+    вернула площадка. Со стороны это выглядело как «куки протухли сами по себе»: файл на
+    месте, размер похожий, а ключа входа внутри уже нет. Отдаём копию — оригинал yt-dlp
+    больше не видит и испортить не может.
+    """
+    if not INSTAGRAM_COOKIES or not os.path.exists(INSTAGRAM_COOKIES):
+        return None
+    tmp = os.path.join(DOWNLOADS_DIR, f"igck_{uuid.uuid4().hex[:8]}.txt")
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    shutil.copyfile(INSTAGRAM_COOKIES, tmp)
+    _COOKIE_COPIES.append(tmp)
+    # Копии одноразовые, но процесс живёт долго — не даём им копиться без предела.
+    while len(_COOKIE_COPIES) > 20:
+        old = _COOKIE_COPIES.pop(0)
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    return tmp
 
 
 def _shortcode(url: str) -> str | None:
