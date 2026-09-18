@@ -44,18 +44,24 @@ def format_stats(stats: dict, lang: str = "ru") -> str:
     """Текст отчёта по статистике на языке админа."""
     lines = [t("rep_title", lang), ""]
     lines.append(f"{t('rep_users', lang)}: <b>{stats['users']}</b>")
-    lines.append(f"{t('rep_requests', lang)}: <b>{stats['total_downloads']}</b>")
 
-    if stats["downloads"]:
-        lines.append(f"\n<b>{t('rep_platforms', lang)}</b>")
-        for platform, count in _grouped_downloads(stats["downloads"]):
-            lines.append(f"• {platform}: {count}")
-
+    # Порядок блоков: сперва про людей (сколько их и на каких языках), потом про
+    # запросы. Языки короткие, их не прячем; список площадок бывает длинным — он
+    # уезжает в раскрывающуюся цитату, чтобы отчёт читался с одного экрана.
     if stats["languages"]:
         total = sum(stats["languages"].values()) or 1
-        lines.append(f"\n<b>{t('rep_langs', lang)}</b>")
+        lines.append(t("rep_langs", lang))
         for code, cnt in sorted(stats["languages"].items(), key=lambda x: -x[1]):
             lines.append(f"• {code}: {cnt} ({cnt * 100 // total}%)")
+
+    lines.append(f"\n{t('rep_requests', lang)}: <b>{stats['total_downloads']}</b>")
+
+    if stats["downloads"]:
+        lines.append(t("rep_platforms", lang))
+        lines.append("<blockquote expandable>")
+        for platform, count in _grouped_downloads(stats["downloads"]):
+            lines.append(f"• {platform}: {count}")
+        lines.append("</blockquote>")
 
     if stats.get("traffic"):
         lines.append("\n" + t("rep_traffic", lang))

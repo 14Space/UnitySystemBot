@@ -69,7 +69,7 @@ _CHECK_NAMES = {
     "Instagram карусель":       {"ru": "Instagram карусель", "uk": "Instagram карусель", "en": "Instagram carousel"},
     "TikTok видео":             {"ru": "TikTok видео", "uk": "TikTok відео", "en": "TikTok video"},
     "TikTok слайдшоу":          {"ru": "TikTok слайдшоу", "uk": "TikTok слайдшоу", "en": "TikTok slideshow"},
-    "TikTok аудиодорожка":      {"ru": "TikTok аудиодорожка", "uk": "TikTok аудіодоріжка", "en": "TikTok audio track"},
+    "TikTok аудио":             {"ru": "TikTok аудио", "uk": "TikTok аудіо", "en": "TikTok audio"},
     "Pinterest фото":           {"ru": "Pinterest фото", "uk": "Pinterest фото", "en": "Pinterest photo"},
     "Pinterest видео":          {"ru": "Pinterest видео", "uk": "Pinterest відео", "en": "Pinterest video"},
     "Twitter видео":            {"ru": "Twitter видео", "uk": "Twitter відео", "en": "Twitter video"},
@@ -82,11 +82,12 @@ _CHECK_NAMES = {
     "ИИ-ассистент":             {"ru": "ИИ-ассистент", "uk": "ШІ-асистент", "en": "AI assistant"},
     "Конвертер валют":          {"ru": "Конвертер валют", "uk": "Конвертер валют", "en": "Currency converter"},
     "Расшифровка (Groq)":       {"ru": "Расшифровка (Groq)", "uk": "Розшифровка (Groq)", "en": "Transcription (Groq)"},
-    "Расшифровка (запасная)":   {"ru": "Расшифровка (запасная)", "uk": "Розшифровка (запасна)", "en": "Transcription (fallback)"},
-    "Расшифровка (посредник)":  {"ru": "Расшифровка (посредник)", "uk": "Розшифровка (посередник)", "en": "Transcription (relay)"},
+    "Расшифровка (Wisper)":     {"ru": "Расшифровка (Wisper)", "uk": "Розшифровка (Wisper)", "en": "Transcription (Whisper)"},
+    "Расшифровка (альтернативная)": {"ru": "Расшифровка (альтернативная)", "uk": "Розшифровка (альтернативна)", "en": "Transcription (alternative)"},
     "yt-dlp последний":         {"ru": "yt-dlp последний", "uk": "yt-dlp останній", "en": "yt-dlp up to date"},
     "Куки Instagram":           {"ru": "Куки Instagram", "uk": "Куки Instagram", "en": "Instagram cookies"},
-    "Куки X (Twitter)":         {"ru": "Куки X (Twitter)", "uk": "Куки X (Twitter)", "en": "X (Twitter) cookies"},
+    "Куки Twitter":             {"ru": "Куки Twitter", "uk": "Куки Twitter", "en": "Twitter cookies"},
+    "Куки YouTube":             {"ru": "Куки YouTube", "uk": "Куки YouTube", "en": "YouTube cookies"},
 }
 
 

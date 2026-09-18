@@ -2,7 +2,6 @@ import http.cookiejar
 import logging
 import os
 import re
-import shutil
 import uuid
 import requests
 import yt_dlp
@@ -12,9 +11,8 @@ from bot.features.download.downloaders.ytdlp_wrapper import (
 )
 from bot.utils import pw_thread
 from bot.utils import media_names
+from bot.utils import cookie_files
 
-# Одноразовые копии файла кук, отданные yt-dlp (см. _cookies_path).
-_COOKIE_COPIES: list[str] = []
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -118,27 +116,10 @@ def _photo_via_browser(shortcode: str, proxies=None) -> list[str]:
 def _cookies_path() -> str | None:
     """Путь к ОДНОРАЗОВОЙ КОПИИ файла кук, если он задан и существует.
 
-    Копия, а не оригинал, потому что yt-dlp пишет файл кук ОБРАТНО по окончании работы,
-    сохраняя туда то, что прислал сервер. Instagram в ответ на часть запросов присылает
-    урезанный набор — и наш `sessionid` (ключ входа, живёт месяцами) затирался тем, что
-    вернула площадка. Со стороны это выглядело как «куки протухли сами по себе»: файл на
-    месте, размер похожий, а ключа входа внутри уже нет. Отдаём копию — оригинал yt-dlp
-    больше не видит и испортить не может.
+    Копия, а не оригинал: yt-dlp пишет файл кук обратно и затирает ключ входа тем, что
+    прислал Instagram. Подробности — в bot/utils/cookie_files.py.
     """
-    if not INSTAGRAM_COOKIES or not os.path.exists(INSTAGRAM_COOKIES):
-        return None
-    tmp = os.path.join(DOWNLOADS_DIR, f"igck_{uuid.uuid4().hex[:8]}.txt")
-    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    shutil.copyfile(INSTAGRAM_COOKIES, tmp)
-    _COOKIE_COPIES.append(tmp)
-    # Копии одноразовые, но процесс живёт долго — не даём им копиться без предела.
-    while len(_COOKIE_COPIES) > 20:
-        old = _COOKIE_COPIES.pop(0)
-        try:
-            os.remove(old)
-        except OSError:
-            pass
-    return tmp
+    return cookie_files.disposable(INSTAGRAM_COOKIES, DOWNLOADS_DIR)
 
 
 def _shortcode(url: str) -> str | None:

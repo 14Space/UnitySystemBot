@@ -97,6 +97,12 @@ INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "data/instagram_cookies.txt")
 # для видео и контента, видимого только вошедшим. Публичные посты берём и без них.
 X_COOKIES = os.getenv("X_COOKIES", "data/x.com_cookies.txt")
 
+# Куки залогиненного аккаунта YouTube. Нужны ровно для одного: роликов с возрастным
+# ограничением — без входа yt-dlp отвечает «Sign in to confirm your age». Обычные
+# видео качаются и без них, POT-провайдер возрастной барьер не снимает (он про бот-чек).
+# Заводить под это лучше ОТДЕЛЬНЫЙ аккаунт: файл кук — это полный доступ к нему.
+YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES", "data/youtube_cookies.txt")
+
 # Прокси для обхода блокировок YouTube/YT Music (репутация IP сервера) и PornHub
 # (блок целой страны) — http:// или socks5://. Пусто = без прокси.
 # Пример: socks5://172.18.0.1:1080 (обратный SSH-туннель на домашний IP; адрес — это

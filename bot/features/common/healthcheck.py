@@ -75,6 +75,9 @@ U_TWITTER_TEXT = _url("TWITTER_TEXT", "https://x.com/jack/status/20")
 # PornHub сейчас отдаёт 403 (анти-бот площадки) — ссылки рабочие, проверка это покажет.
 U_PORNHUB    = _url("PORNHUB", "https://www.pornhub.com/view_video.php?viewkey=6a757d85f1e87")
 U_PORNHUB_SHORT = _url("PORNHUB_SHORT", "https://www.pornhub.com/shorties/6a16e8fcbb7ec")
+# Ролик с возрастным ограничением: на нём проверяются куки YouTube. Без входа yt-dlp
+# отвечает «Sign in to confirm your age» — проверено, это и есть признак мёртвых кук.
+U_YT_AGE     = _url("YT_AGE", "https://www.youtube.com/watch?v=qkO6iBwcoe4")
 U_HDREZKA    = _url("HDREZKA", "https://rezka.ag/films/fiction/45140-tron-sleduyuschiy-den-2011-latest.html")
 U_HDREZKA_SERIES = _url("HDREZKA_SERIES", "https://rezka.ag/cartoons/comedy/13469-multachki-bayki-metra-2008.html#t:56-s:1-e:1")
 
@@ -211,6 +214,47 @@ async def _check_ig_cookies():
         if r.status_code in (301, 302):
             return False, t("hc_ck_dead", _admin_lang())
         return True, t("hc_ck_unclear", _admin_lang(), code=r.status_code)
+
+    return await asyncio.to_thread(work)
+
+
+async def _check_yt_cookies():
+    """Живы ли куки YouTube.
+
+    Нужны ровно для одного: роликов с возрастным ограничением. Без входа yt-dlp
+    отвечает «Sign in to confirm your age», и ролик не скачивается совсем. Обычные
+    видео идут и без кук — поэтому все прочие пункты YouTube останутся зелёными, а
+    возрастные тихо перестанут работать. Заметить это можно только здесь.
+
+    Проверяем не запросом к сайту, а попыткой прочитать ВОЗРАСТНОЙ ролик: именно она
+    и отвечает на вопрос «работает ли то, ради чего куки нужны». Скачивания нет,
+    только чтение данных — трафик не тратим.
+    """
+    from bot.config import YOUTUBE_COOKIES
+    from bot.features.download.downloaders.ytdlp_wrapper import (
+        BASE_OPTS, _cookie_opts, _with_music_fallback)
+
+    if not _load_cookies(YOUTUBE_COOKIES):
+        return False, t("hc_ck_missing", _admin_lang(), path=YOUTUBE_COOKIES)
+    if not U_YT_AGE:
+        return True, t("hc_ck_alive", _admin_lang())   # ссылку не задали — проверять нечем
+
+    def work():
+        import yt_dlp
+
+        def op(proxy_opts: dict):
+            opts = {**BASE_OPTS, "skip_download": True, "noplaylist": True,
+                    **_cookie_opts(U_YT_AGE), **proxy_opts}
+            return yt_dlp.YoutubeDL(opts).extract_info(U_YT_AGE, download=False)
+
+        try:
+            # Тот же путь, что у боевого скачивания: при необходимости через прокси.
+            _with_music_fallback(U_YT_AGE, op)
+        except Exception as e:
+            if "confirm your age" in str(e).lower():
+                return False, t("hc_ck_dead", _admin_lang())
+            return False, f"{type(e).__name__}: {e}"[:120]
+        return True, t("hc_ck_alive", _admin_lang())
 
     return await asyncio.to_thread(work)
 
@@ -674,7 +718,7 @@ _CHECKS = [
     ("YouTube видео",           "YouTube",    lambda: _dl_probe(U_YT_VIDEO),               U_YT_VIDEO),
     ("YouTube Shorts",          "YouTube",    lambda: _dl_shorts(U_YT_SHORTS),             U_YT_SHORTS),
     ("YouTube Shorts (сжатие)",  "YouTube",   lambda: _dl_shorts_compressed(U_YT_SHORTS_HQ), U_YT_SHORTS_HQ),
-    ("YT Music",                "YT Music",   lambda: _dl_probe(U_YT_MUSIC, True),         U_YT_MUSIC),
+    ("YT Music",                "YouTube",    lambda: _dl_probe(U_YT_MUSIC, True),         U_YT_MUSIC),
     ("Spotify трек",            "Spotify",    _check_spotify,                               U_SPOTIFY),
     ("Spotify альбом/плейлист", "Spotify",    _check_spotify_collection,                    U_SPOTIFY_COL),
     ("SoundCloud трек",         "SoundCloud", lambda: _check_soundcloud_track(U_SOUNDCLOUD), U_SOUNDCLOUD),
@@ -684,7 +728,7 @@ _CHECKS = [
     ("Instagram карусель",      "Instagram",  lambda: _dl_ig_post(U_IG_CAROUSEL, True),    U_IG_CAROUSEL),
     ("TikTok видео",            "TikTok",     lambda: _check_tiktok(U_TIKTOK),             U_TIKTOK),
     ("TikTok слайдшоу",         "TikTok",     lambda: _check_tiktok(U_TIKTOK_SLIDE, True), U_TIKTOK_SLIDE),
-    ("TikTok аудиодорожка",     "TikTok",     _check_tiktok_music,                         U_TIKTOK_SLIDE),
+    ("TikTok аудио",            "TikTok",     _check_tiktok_music,                         U_TIKTOK_SLIDE),
     ("Pinterest фото",          "Pinterest",  lambda: _dl_media(U_PINTEREST_IMG),          U_PINTEREST_IMG),
     ("Pinterest видео",         "Pinterest",  lambda: _dl_media(U_PINTEREST_VID),          U_PINTEREST_VID),
     ("Twitter видео",           "Twitter",    lambda: _check_twitter(U_TWITTER_VIDEO),     U_TWITTER_VIDEO),
@@ -701,14 +745,15 @@ _CHECKS = [
     # Пустая ссылка = пункт пропускается. Локальный Whisper проверяем ТОЛЬКО если он
     # реально стоит в цепочке: иначе выключенная модель всё равно поднималась бы каждые
     # два часа и держала RAM, ради экономии которой её и выключали.
-    ("Расшифровка (запасная)",  None,         _check_stt_local,
+    ("Расшифровка (Wisper)",     None,         _check_stt_local,
      "x" if "local" in STT_ORDER else _OFF),
     # Как и локальный Whisper — проверяем, только если способ реально стоит в цепочке.
-    ("Расшифровка (посредник)", None,         _check_stt_relay,
+    ("Расшифровка (альтернативная)", None,     _check_stt_relay,
      "x" if "relay" in STT_ORDER else _OFF),
     ("yt-dlp последний",        None,         _check_ytdlp,                                 "x"),
     ("Куки Instagram",          None,         _check_ig_cookies,                            "x"),
-    ("Куки X (Twitter)",        None,         _check_x_cookies,                             "x"),
+    ("Куки YouTube",            None,         _check_yt_cookies,                            "x"),
+    ("Куки Twitter",            None,         _check_x_cookies,                             "x"),
 ]
 
 
@@ -909,6 +954,10 @@ def format_health(results: list[dict], platform_order: list[str] | None = None,
     if at is not None:
         head += f" ({t('hc_taken_at', lang, time=at.strftime('%H:%M'))})"
     lines = [f"<b>{head}: {ok_n}/{tested}</b>"]
+    # Сам список прячем в раскрывающуюся цитату: пунктов три десятка, развёрнутыми они
+    # занимают весь экран. Главное — «30/30», подробности по нажатию. Тег
+    # <blockquote expandable> Telegram показывает свёрнутым.
+    lines.append("<blockquote expandable>")
     for r in _display_order(results, platform_order):
         # Рабочие — чисто (только галочка + название). У сломанных/пропущенных оставляем
         # короткую причину (это не размер/время, а «что не так»), без времени.
@@ -921,6 +970,7 @@ def format_health(results: list[dict], platform_order: list[str] | None = None,
                 lines.append(f"✅ {t_check(r['name'], lang)}")
         else:
             lines.append(f"{icons[r['state']]} {t_check(r['name'], lang)} – {r['detail']}")
+    lines.append("</blockquote>")
     return "\n".join(lines)
 
 
