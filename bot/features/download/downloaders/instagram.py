@@ -31,8 +31,15 @@ VIDEO_EXTS = (".mp4", ".mov", ".webm")
 
 # Признаки, что Instagram отказал по анти-боту (а не «пост удалён»): при них есть смысл
 # повторить запрос через прокси с другого IP.
+# Признаки, по которым считаем, что Instagram нас отшил и стоит повторить через прокси.
+# «failed to parse json» и «expecting value» — это ПУСТОЙ ответ: Instagram отдаёт тело
+# нулевой длины, а падает уже разбор JSON внутри yt-dlp. Ровно тот же почерк, что у
+# tikwm на TikTok: формально запрос успешен, отказа не видно. Без этих двух строк
+# запасной путь через прокси не включался вовсе — ошибка не опознавалась как блокировка,
+# и проверка Instagram краснела, хотя через домашний адрес всё скачивалось.
 _BLOCK_MARKERS = ("403", "429", "400", "rate limit", "checkpoint",
-                  "login required", "empty media response", "temporarily")
+                  "login required", "empty media response", "temporarily",
+                  "failed to parse json", "expecting value")
 
 
 def _looks_blocked(err: Exception) -> bool:
