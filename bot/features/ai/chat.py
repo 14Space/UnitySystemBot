@@ -8,7 +8,6 @@
 """
 import asyncio
 import logging
-from datetime import datetime, timezone
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
@@ -16,7 +15,8 @@ from aiogram.types import Message
 
 from bot.config import AI_DAILY_LIMIT, AI_USER_DAILY_LIMIT
 from bot.database import SessionLocal
-from bot.database.repository import get_disabled_features
+from bot.database.repository import (
+    get_disabled_features, save_ai_thread, load_ai_thread, ai_usage_today, add_ai_usage)
 from bot.features.ai import client
 from bot.utils.i18n import t, lang_of
 
@@ -26,37 +26,29 @@ logger = logging.getLogger(__name__)
 GROUP_TYPES = ("group", "supergroup")
 MAX_LEN = 4000            # запас под лимит Telegram 4096
 _MAX_TURNS = 12           # сколько последних реплик держим в контексте
-_MAX_THREADS = 500        # ограничение памяти под треды
 
-# Треды диалога: message_id ответа бота -> история [{role, content}], чтобы уточнения
-# «ответом на ответ» продолжали разговор.
-_THREADS: dict[int, list[dict]] = {}
-
-# Суточные лимиты (в памяти, сброс в полночь UTC), чтобы не выйти за бесплатный тир.
-_usage = {"day": None, "total": 0, "users": {}}
-
-
-def _reset_if_new_day():
-    today = datetime.now(timezone.utc).date()
-    if _usage["day"] != today:
-        _usage.update(day=today, total=0, users={})
+# Ветки разговора и суточные счётчики лежат в БАЗЕ, а не в памяти. Причина одна и та
+# же для обоих: сообщения в чате живут дольше, чем процесс бота.
+#   • ветка — потому что ответить на вчерашнюю реплику бота человек может в любой
+#     момент, и после перезапуска разговор начинался с чистого листа;
+#   • счётчик — потому что лимит на сутки держит нас в бесплатном тире провайдера, а
+#     перезапуск обнулял его: лимит обходился ожиданием ближайшего деплоя.
 
 
-def _within_limits(user_id: int) -> bool:
-    _reset_if_new_day()
-    return (_usage["total"] < AI_DAILY_LIMIT
-            and _usage["users"].get(user_id, 0) < AI_USER_DAILY_LIMIT)
+async def _within_limits(user_id: int) -> bool:
+    async with SessionLocal() as session:
+        mine, total = await ai_usage_today(session, user_id)
+    return total < AI_DAILY_LIMIT and mine < AI_USER_DAILY_LIMIT
 
 
-def _count(user_id: int):
-    _usage["total"] += 1
-    _usage["users"][user_id] = _usage["users"].get(user_id, 0) + 1
+async def _count(user_id: int):
+    async with SessionLocal() as session:
+        await add_ai_usage(session, user_id)
 
 
-def _remember(msg_id: int, history: list[dict]):
-    if len(_THREADS) >= _MAX_THREADS:
-        _THREADS.pop(next(iter(_THREADS)), None)      # выкидываем самый старый
-    _THREADS[msg_id] = history[-_MAX_TURNS:]
+async def _remember(msg_id: int, chat_id: int, history: list[dict]):
+    async with SessionLocal() as session:
+        await save_ai_thread(session, msg_id, chat_id, history[-_MAX_TURNS:])
 
 
 async def _ai_disabled(chat) -> bool:
@@ -79,7 +71,8 @@ async def cmd_ai(message: Message, command: CommandObject):
     # если на чужое сообщение — берём его текстом как контекст.
     history: list[dict] = []
     if replied:
-        thread = _THREADS.get(replied.message_id)
+        async with SessionLocal() as session:
+            thread = await load_ai_thread(session, replied.message_id)
         if thread:
             history = list(thread)
         else:
@@ -93,7 +86,7 @@ async def cmd_ai(message: Message, command: CommandObject):
         await message.reply(t("ai_how", lang))
         return
 
-    if not _within_limits(message.from_user.id):
+    if not await _within_limits(message.from_user.id):
         await message.reply(t("ai_limit", lang))
         return
 
@@ -110,12 +103,17 @@ async def cmd_ai(message: Message, command: CommandObject):
         await _safe_edit(status, t("ai_error", lang))
         return
 
-    _count(message.from_user.id)
+    await _count(message.from_user.id)
     if len(text) > MAX_LEN:
         text = text[:MAX_LEN] + "…"
     sent = await _safe_edit(status, text)
+    if not sent:
+        # Правка не прошла (сообщение удалили, отобрали права) — ответ всё равно должен
+        # дойти, иначе человек остаётся с «Думаю…» и без ответа.
+        sent = await message.reply(text)
     if sent:
-        _remember(sent.message_id, history + [{"role": "assistant", "content": text}])
+        await _remember(sent.message_id, message.chat.id,
+                        history + [{"role": "assistant", "content": text}])
 
 
 async def _safe_edit(msg: Message, text: str) -> Message | None:

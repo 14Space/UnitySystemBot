@@ -22,17 +22,8 @@ from aiogram import BaseMiddleware
 from aiogram.types import Message
 
 from bot.config import THROTTLE_LIMIT, THROTTLE_QUEUE_MAX
-from bot.middlewares.routing import _msg_feature
+from bot.middlewares.routing import is_request as _is_request
 from bot.utils.i18n import t, lang_of
-
-
-def _is_request(m: Message) -> bool:
-    """Считаем только реальные запросы к боту: команды, ссылки, голосовые/кружки,
-    валютные запросы. Обычную переписку (в т.ч. пересланные сообщения) — не считаем,
-    иначе бот влезает со своими ограничениями в чужой флуд."""
-    if (m.text or "").startswith("/"):
-        return True
-    return _msg_feature(m) is not None
 
 
 class ThrottleMiddleware(BaseMiddleware):

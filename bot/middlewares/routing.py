@@ -11,6 +11,7 @@ from aiogram.types import Message, CallbackQuery, InlineQuery
 from bot.database import SessionLocal
 from bot.database.repository import get_disabled_features, current_bot_id
 from bot.features.currency.parser import parse as parse_currency
+from bot.utils.platform_detector import detect_platform, Platform
 
 
 def _msg_feature(m: Message) -> str | None:
@@ -18,11 +19,25 @@ def _msg_feature(m: Message) -> str | None:
     if m.voice or m.video_note:
         return "transcribe"
     text = m.text or ""
-    if text.startswith("http"):
+    # Именно НАША площадка, а не любая ссылка: чужие бот всё равно не качает, и
+    # считать их обращением к нему неправильно — по этому признаку человек попадал
+    # в статистику и занимал место в очереди, ничего у бота не попросив.
+    if text.startswith("http") and detect_platform(text) != Platform.UNKNOWN:
         return "download"
     if text and parse_currency(text):
         return "currency"
     return None
+
+
+def is_request(m: Message) -> bool:
+    """Это обращение К БОТУ, а не обычная переписка в чате?
+
+    Считаем обращением команду, ссылку, голосовое/кружок и валютный запрос. Всё
+    остальное — чужой разговор, который бот просто видит, потому что состоит в группе.
+    """
+    if (m.text or "").startswith("/"):
+        return True
+    return _msg_feature(m) is not None
 
 
 class RoutingMiddleware(BaseMiddleware):

@@ -24,5 +24,5 @@ def test_stash_survives_and_is_read_back(tmp_path, monkeypatch):
 
     found, missing = asyncio.run(scenario())
     assert found == {"url": "https://youtu.be/x", "chat_id": -100,
-                     "user_msg_id": 55, "premium": True}
+                     "user_msg_id": 55, "premium": True, "kind": "quality"}
     assert missing is None

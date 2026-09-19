@@ -606,6 +606,11 @@ TEXTS = {
         "en": "This invoice is out of date. Open /premium and pay a fresh one.",
     },
 
+    "err_no_space": {
+        "ru": "На сервере закончилось место — уже разбираюсь. Попробуй чуть позже.",
+        "uk": "На сервері закінчилося місце — вже розбираюся. Спробуй трохи пізніше.",
+        "en": "The server has run out of disk space — already looking into it. Try again a bit later.",
+    },
     "too_big_before": {
         "ru": "Это качество весит около {size} ГБ — больше, чем Telegram разрешает боту (2 ГБ). Выбери качество пониже.",
         "uk": "Ця якість важить близько {size} ГБ — більше, ніж Telegram дозволяє боту (2 ГБ). Обери якість нижче.",

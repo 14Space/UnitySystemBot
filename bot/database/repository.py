@@ -1,4 +1,6 @@
 import hashlib
+import json
+import logging
 import statistics
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -7,9 +9,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import (
     User, CachedFile, DownloadStat, MonthlyTraffic, ChatSettings, CheckTiming, Payment,
-    StashedLink,
+    StashedLink, AiThread, AiUsage,
 )
 from bot.utils.platform_detector import normalize_cache_url
+
+logger = logging.getLogger(__name__)
 
 # id бота, обрабатывающего текущий апдейт. Выставляет RoutingMiddleware на каждый
 # апдейт. file_id в Telegram привязан к отправившему боту, поэтому кэш ведём отдельно
@@ -365,12 +369,18 @@ CHECK_HISTORY_KEEP = 20
 
 
 async def save_link_stash(session: AsyncSession, key: str, url: str, chat_id: int,
-                          user_msg_id: int, premium: bool) -> None:
-    """Запоминает ссылку под экраном выбора качества — чтобы кнопки пережили
-    перезапуск бота. Заодно подчищаем совсем старые записи: экран, которому больше
-    недели, никто уже не нажмёт, а таблица расти без предела не должна."""
+                          user_msg_id: int, premium: bool = False,
+                          kind: str = "quality", payload: dict | None = None) -> None:
+    """Запоминает ссылку под экраном с кнопками — чтобы они пережили перезапуск бота.
+
+    kind говорит, какой это экран (выбор качества, HDRezka, слайдшоу TikTok), payload
+    хранит мелочи вида: сезон и серию, номер поста, кто именно нажал. Заодно подчищаем
+    совсем старые записи: экран, которому больше недели, никто уже не нажмёт, а таблица
+    расти без предела не должна.
+    """
     session.add(StashedLink(id=key, url=url, chat_id=chat_id,
-                            user_msg_id=user_msg_id, premium=premium))
+                            user_msg_id=user_msg_id, premium=premium, kind=kind,
+                            payload=json.dumps(payload, ensure_ascii=False) if payload else None))
     await session.execute(
         delete(StashedLink).where(
             StashedLink.at < datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)))
@@ -386,8 +396,72 @@ async def load_link_stash(session: AsyncSession, key: str) -> dict | None:
         select(StashedLink).where(StashedLink.id == key))).scalar_one_or_none()
     if row is None:
         return None
-    return {"url": row.url, "chat_id": row.chat_id,
-            "user_msg_id": row.user_msg_id, "premium": bool(row.premium)}
+    data = {"url": row.url, "chat_id": row.chat_id, "user_msg_id": row.user_msg_id,
+            "premium": bool(row.premium), "kind": row.kind or "quality"}
+    if row.payload:
+        try:
+            data.update(json.loads(row.payload))
+        except ValueError:            # мусор в колонке не повод терять саму ссылку
+            logger.warning("Не разобрал payload у кнопки %s", key)
+    return data
+
+
+async def save_ai_thread(session: AsyncSession, message_id: int, chat_id: int,
+                         history: list[dict]) -> None:
+    """Запоминает ветку разговора с ИИ. Старые (недельной давности) убираем: отвечать
+    на прошлогоднее сообщение никто не станет, а таблица расти без предела не должна."""
+    await session.merge(AiThread(message_id=message_id, chat_id=chat_id,
+                                 history=json.dumps(history, ensure_ascii=False)))
+    await session.execute(
+        delete(AiThread).where(
+            AiThread.at < datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)))
+    await session.commit()
+
+
+async def load_ai_thread(session: AsyncSession, message_id: int) -> list[dict] | None:
+    """История разговора по id ответа бота (None — такой ветки нет)."""
+    row = (await session.execute(
+        select(AiThread).where(AiThread.message_id == message_id))).scalar_one_or_none()
+    if row is None:
+        return None
+    try:
+        return json.loads(row.history)
+    except ValueError:
+        logger.warning("Не разобрал историю ветки ИИ %s", message_id)
+        return None
+
+
+def _ai_day() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+async def ai_usage_today(session: AsyncSession, user_id: int) -> tuple[int, int]:
+    """(запросов у этого человека, запросов всего) за сегодня."""
+    day = _ai_day()
+    mine = (await session.execute(
+        select(func.coalesce(AiUsage.count, 0))
+        .where(AiUsage.day == day, AiUsage.user_id == user_id))).scalar() or 0
+    total = (await session.execute(
+        select(func.coalesce(func.sum(AiUsage.count), 0))
+        .where(AiUsage.day == day))).scalar() or 0
+    return int(mine), int(total)
+
+
+async def add_ai_usage(session: AsyncSession, user_id: int) -> None:
+    """+1 к сегодняшнему счётчику. Вчерашние записи убираем — они больше не нужны."""
+    day = _ai_day()
+    row = (await session.execute(
+        select(AiUsage).where(AiUsage.day == day,
+                              AiUsage.user_id == user_id))).scalar_one_or_none()
+    if row is None:
+        session.add(AiUsage(day=day, user_id=user_id, count=1))
+    else:
+        row.count = (row.count or 0) + 1
+    await session.execute(delete(AiUsage).where(AiUsage.day != day))
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
 
 
 async def save_check_timings(session: AsyncSession, pairs: list[tuple[str, float]]) -> None:

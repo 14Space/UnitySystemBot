@@ -62,6 +62,17 @@ async def init_db():
                 "ALTER TABLE chat_settings ADD COLUMN compress_shorts BOOLEAN DEFAULT NULL"
             )
 
+        # Кнопки, пережившие перезапуск, теперь бывают трёх видов (выбор качества,
+        # HDRezka, слайдшоу TikTok) — таблице нужны две новые колонки.
+        res = await conn.exec_driver_sql("PRAGMA table_info(stashed_links)")
+        sl_cols = [r[1] for r in res.fetchall()]
+        if sl_cols and "kind" not in sl_cols:
+            await conn.exec_driver_sql(
+                "ALTER TABLE stashed_links ADD COLUMN kind VARCHAR DEFAULT 'quality'")
+        if sl_cols and "payload" not in sl_cols:
+            await conn.exec_driver_sql(
+                "ALTER TABLE stashed_links ADD COLUMN payload VARCHAR")
+
         # Кэш file_id теперь по каждому боту (id привязан к отправившему боту).
         res = await conn.exec_driver_sql("PRAGMA table_info(cached_files)")
         cf_cols = [r[1] for r in res.fetchall()]

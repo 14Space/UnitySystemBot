@@ -16,6 +16,18 @@ router = Router()
 # успевает, второе часто падает с «Не удалось скачать»).
 _recent_deeplinks: dict[str, float] = {}
 _DEEPLINK_COOLDOWN = 5.0
+# Записи нужны ровно эти пять секунд, но словарь до сих пор только рос: по строчке на
+# каждый переход из inline за всё время работы бота. Чистим устаревшее при каждом
+# заходе — заодно и потолок на случай всплеска.
+_DEEPLINK_MAX = 200
+
+
+def _forget_old_deeplinks(now: float) -> None:
+    for sid in [k for k, at in _recent_deeplinks.items()
+                if now - at > _DEEPLINK_COOLDOWN]:
+        _recent_deeplinks.pop(sid, None)
+    while len(_recent_deeplinks) > _DEEPLINK_MAX:
+        _recent_deeplinks.pop(next(iter(_recent_deeplinks)), None)
 
 
 @router.message(Command("help"))
@@ -37,6 +49,7 @@ async def cmd_start(message: Message, command: CommandObject):
         now = time.monotonic()
         if now - _recent_deeplinks.get(sid, 0.0) < _DEEPLINK_COOLDOWN:
             return  # повторный тап по той же кнопке — не качаем второй раз
+        _forget_old_deeplinks(now)
         _recent_deeplinks[sid] = now
         url = INLINE_LINKS.get(sid)
         if url:

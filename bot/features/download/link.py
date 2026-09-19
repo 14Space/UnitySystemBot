@@ -15,7 +15,7 @@ from bot.utils.platform_detector import detect_platform, Platform
 from bot.features.download.keyboards.quality import build_quality_keyboard, FREE_LIMIT
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar, ProgressThrottle
-from bot.config import SHORTS_CAP_HEIGHT
+from bot.config import SHORTS_CAP_HEIGHT, DOWNLOADS_DIR
 from bot.utils import limits, traffic, tg_files
 from bot.utils import inflight
 from bot.utils.cache_guard import send_cached_or_drop
@@ -277,6 +277,7 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
             pass  # не смогли определить номер — откатываемся на ссылку
 
     await limits.acquire(limits.LIGHT)
+    path = None
     try:
         result = await asyncio.to_thread(extract_audio_track, url, platform)
         if not result:
@@ -287,10 +288,12 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
         if sent.audio:
             async with SessionLocal() as session:
                 await _tt_cache_save(session, url, cache_url, sent.audio.file_id, "audiotrack")
-        _cleanup(path)
     except Exception:
         logger.exception("Не удалось отправить аудиодорожку")
     finally:
+        # Уборка именно здесь: файл скачан ещё до отправки, и если отправка упала,
+        # он оставался на диске до перезапуска бота.
+        _cleanup_all(path)
         await limits.release(limits.LIGHT)
 
 
@@ -398,6 +401,12 @@ async def _handle_hdrezka(message: Message, url: str, lang: str):
         "streams": {},  # tid -> объект потока (кэш между «озвучкой» и «качеством»)
     })
     entry = HDREZKA_STORE[sid]
+    # В базу — то, из чего экран собирается заново после перезапуска бота: ссылка и
+    # чей это запрос. Страницу HDRezka и объект сессии сохранить нельзя, но их можно
+    # открыть повторно — это и делает _hdrezka_entry.
+    async with SessionLocal() as session:
+        await save_link_stash(session, sid, url, message.chat.id, message.message_id,
+                              premium, kind="hdrezka")
     await status.delete()
 
     if info["is_series"]:
@@ -413,12 +422,60 @@ async def _handle_hdrezka(message: Message, url: str, lang: str):
         await message.answer(caption, reply_markup=keyboard)
 
 
+async def _hdrezka_entry(sid: str) -> dict | None:
+    """Экран HDRezka по его id: из памяти, а если бот перезапускался — собираем заново.
+
+    Восстановление стоит секунд: надо снова пройти анти-бот-проверку и прочитать
+    страницу. Зато кнопка работает, а не отвечает «ссылка устарела» — при том что
+    сообщение с ней висит в чате и выглядит живым.
+
+    Сезон и серию не восстанавливаем: человек выберет их теми же кнопками. Потоки
+    (streams) тоже — они добываются при выборе озвучки и живут недолго.
+    """
+    entry = HDREZKA_STORE.get(sid)
+    if entry:
+        return entry
+
+    async with SessionLocal() as session:
+        saved = await load_link_stash(session, sid)
+    if not saved or saved.get("kind") != "hdrezka":
+        return None
+
+    url = saved["url"]
+    try:
+        api = await asyncio.to_thread(hdrezka.open_media, url)
+        info = await asyncio.to_thread(hdrezka.get_info, api, url)
+    except Exception as e:
+        logger.warning("HDRezka: не смог восстановить экран %s", sid, exc_info=True)
+        alerts.note_failure(e)
+        return None
+
+    entry = {
+        "api": api,
+        "url": url,
+        "name": info["name"],
+        "is_series": info["is_series"],
+        "translators": info.get("translators", []),
+        "seasons": info.get("seasons", []),
+        "season": None,
+        "episode": None,
+        "thumbnail": info.get("thumbnail"),
+        "premium": saved.get("premium", False),
+        "chat_id": saved["chat_id"],
+        "user_msg_id": saved["user_msg_id"],
+        "streams": {},
+    }
+    _remember(HDREZKA_STORE, sid, entry)
+    logger.info("HDRezka: экран %s восстановлен после перезапуска", sid)
+    return entry
+
+
 @router.callback_query(F.data.startswith("hrss:"))
 async def handle_hdrezka_season(callback: CallbackQuery):
     """Сезон выбран — показываем серии"""
     lang = lang_of(callback.from_user)
     _, sid, season = callback.data.split(":")
-    entry = HDREZKA_STORE.get(sid)
+    entry = await _hdrezka_entry(sid)
     if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
@@ -436,7 +493,7 @@ async def handle_hdrezka_episode(callback: CallbackQuery):
     """Серия выбрана — показываем озвучки этой серии"""
     lang = lang_of(callback.from_user)
     _, sid, season, episode = callback.data.split(":")
-    entry = HDREZKA_STORE.get(sid)
+    entry = await _hdrezka_entry(sid)
     if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
@@ -457,7 +514,7 @@ async def handle_hdrezka_back(callback: CallbackQuery):
     """Назад к выбору сезона"""
     lang = lang_of(callback.from_user)
     _, sid = callback.data.split(":")
-    entry = HDREZKA_STORE.get(sid)
+    entry = await _hdrezka_entry(sid)
     if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
@@ -471,7 +528,7 @@ async def handle_hdrezka_page(callback: CallbackQuery):
     """Пагинация списка озвучек"""
     lang = lang_of(callback.from_user)
     _, sid, page = callback.data.split(":")
-    entry = HDREZKA_STORE.get(sid)
+    entry = await _hdrezka_entry(sid)
     if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
@@ -520,7 +577,7 @@ async def handle_hdrezka_translator(callback: CallbackQuery):
     """Озвучка выбрана — получаем поток (один запрос) и показываем качества"""
     lang = lang_of(callback.from_user)
     _, sid, tid = callback.data.split(":")
-    entry = HDREZKA_STORE.get(sid)
+    entry = await _hdrezka_entry(sid)
     if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
@@ -554,7 +611,7 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
     """Качество выбрано — качаем и отправляем"""
     lang = lang_of(callback.from_user)
     _, sid, tid, qidx = callback.data.split(":")
-    entry = HDREZKA_STORE.get(sid)
+    entry = await _hdrezka_entry(sid)
     if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
@@ -612,7 +669,9 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
                 _safe_edit(status, make_progress_bar(percent)), loop
             )
 
+    file_path = None
     try:
+        limits.check_disk_space(DOWNLOADS_DIR)      # фильм весит гигабайты (см. выше)
         file_path = await asyncio.to_thread(
             hdrezka.download_stream, stream, quality,
             entry["name"], entry["season"], entry["episode"], on_progress,
@@ -633,11 +692,13 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         if sent.video:
             async with SessionLocal() as session:
                 await save_cached_file_id(session, cache_url, sent.video.file_id, quality)
-        _cleanup(file_path)
     except Exception as e:
         logger.exception("HDRezka download failed")
         await _safe_edit(status, limits.friendly_error(e, lang))
     finally:
+        # Фильм весит гигабайты: оставить его на диске из-за сбоя отправки — самый
+        # дорогой из возможных мусоров.
+        _cleanup_all(file_path)
         await limits.release(limits.HEAVY)
         ACTIVE_DOWNLOADS.discard(user_id)
 
@@ -658,6 +719,7 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
         # Лёгкие задачи не ограничиваем «одна за раз» — можно кидать подряд, общий
         # лимит (limits.LIGHT) сам поставит лишние в очередь.
         await limits.acquire(limits.LIGHT)
+        file_path = None
         try:
             file_path = await asyncio.to_thread(download_fn, url)
             sent = await message.reply_video(
@@ -666,11 +728,11 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
             if sent.video:
                 async with SessionLocal() as session:
                     await save_cached_file_id(session, url, sent.video.file_id, cache_key)
-            _cleanup(file_path)
         except Exception as e:
             logger.exception("%s download failed", cache_key)
             await message.reply(limits.friendly_error(e, lang))
         finally:
+            _cleanup_all(file_path)
             await limits.release(limits.LIGHT)
 
     await inflight.deduped(url, cache_key, get_cached, send_cached, produce)
@@ -694,6 +756,7 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
 
     async def produce():
         await limits.acquire(limits.LIGHT)
+        file_path = mp4 = None
         try:
             file_path = await asyncio.to_thread(download_media, url)
             if file_path.lower().endswith(".gif"):
@@ -701,8 +764,6 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
                 mp4 = await asyncio.to_thread(convert_gif_to_mp4, file_path)
                 sent = await message.reply_animation(tg_files.input_file(mp4, await _nice_name(mp4, quality="", use_title=False)))
                 fid = "A:" + sent.animation.file_id if sent.animation else None
-                if mp4 != file_path:
-                    _cleanup(mp4)
             elif is_image(file_path):
                 sent = await message.reply_photo(tg_files.input_file(file_path, await _nice_name(file_path, quality="", use_title=False)))
                 fid = "P:" + sent.photo[-1].file_id if sent.photo else None
@@ -714,11 +775,13 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
             if fid:
                 async with SessionLocal() as session:
                     await save_cached_file_id(session, url, fid, cache_key)
-            _cleanup(file_path)
         except Exception as e:
             logger.exception("%s download failed", cache_key)
             await message.reply(limits.friendly_error(e, lang))
         finally:
+            # mp4 — результат конвертации гифки; если он совпал с исходником, повторная
+            # уборка того же пути безвредна (файла уже нет).
+            _cleanup_all(file_path, mp4 if mp4 != file_path else None)
             await limits.release(limits.LIGHT)
 
     await inflight.deduped(url, cache_key, get_cached, send_cached, produce)
@@ -758,6 +821,7 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
 
     async def produce():
         await limits.acquire(limits.LIGHT)
+        files = None
         try:
             files = await asyncio.to_thread(download_fn, url)
             if not files:
@@ -775,8 +839,6 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
                 async with SessionLocal() as session:
                     await save_cached_file_id(session, url, "\n".join(tokens), "post")
 
-            for f in files:
-                _cleanup(f)
         except Exception as e:
             logger.exception("%s download failed", url)
             msg = limits.friendly_error(e, lang)
@@ -785,6 +847,7 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
                 msg = t(error_key, lang)
             await message.reply(msg)
         finally:
+            _cleanup_all(files)
             await limits.release(limits.LIGHT)
 
     await inflight.deduped(url, "post", get_cached, send_cached, produce)
@@ -890,6 +953,13 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         if ss_mode == "ask":
             sid = uuid.uuid4().hex[:8]
             # запоминаем автора — в группе кнопки слушаются только его
+            # Тот же приём, что у HDRezka: в базу — ссылка и кто спросил, остальное
+            # (данные поста) перезапрашивается у TikTok, это быстро.
+            async with SessionLocal() as session:
+                await save_link_stash(session, sid, url, message.chat.id, message.message_id,
+                                      kind="tiktok",
+                                      payload={"cache_url": cache_url,
+                                               "owner": message.from_user.id})
             _remember(TIKTOK_STORE, sid, {"url": url, "cache_url": cache_url,
                                           "info": info, "owner": message.from_user.id})
             await message.reply(
@@ -918,6 +988,7 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
 
     async def produce():
         await limits.acquire(limits.LIGHT)
+        files = None
         try:
             files = await asyncio.to_thread(tiktok.download_from, info, mode, compress)
             tokens = await _send_media_files(message, files, lang)
@@ -926,15 +997,36 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
                     await _tt_cache_save(session, url, cache_url, "\n".join(tokens), cache_key)
             if mode == "photos":     # у фото нет звука — доложим музыку слайдшоу (если вкл)
                 await _maybe_send_audio_track(message, url, Platform.TIKTOK, lang)
-            for f in files:
-                _cleanup(f)
         except Exception as e:
             logger.exception("TikTok download failed")
             await message.reply(limits.friendly_error(e, lang))
         finally:
+            _cleanup_all(files)
             await limits.release(limits.LIGHT)
 
     await inflight.deduped(cache_url, cache_key, get_cached, send_cached, produce)
+
+
+async def _tiktok_entry(sid: str) -> dict | None:
+    """Экран выбора «видео или фото» по его id — из памяти или заново из базы.
+
+    Данные поста (ссылки на кадры и звук) живут у TikTok недолго, поэтому мы их не
+    храним, а перезапрашиваем: это один запрос к их API.
+    """
+    async with SessionLocal() as session:
+        saved = await load_link_stash(session, sid)
+    if not saved or saved.get("kind") != "tiktok":
+        return None
+    try:
+        info = await asyncio.to_thread(tiktok.fetch_tiktok, saved["url"])
+    except Exception:
+        logger.warning("TikTok: не смог восстановить экран %s", sid, exc_info=True)
+        return None
+    entry = {"url": saved["url"], "cache_url": saved.get("cache_url") or saved["url"],
+             "info": info, "owner": saved.get("owner")}
+    _remember(TIKTOK_STORE, sid, entry)
+    logger.info("TikTok: экран %s восстановлен после перезапуска", sid)
+    return entry
 
 
 @router.callback_query(F.data.startswith("ttdl:"))
@@ -943,6 +1035,8 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
     _, mode, sid = callback.data.split(":")
     entry = TIKTOK_STORE.get(sid)
+    if not entry:
+        entry = await _tiktok_entry(sid)
     if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
@@ -977,6 +1071,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     await callback.answer()
 
     await limits.acquire(limits.LIGHT)
+    files = None
     try:
         files = await asyncio.to_thread(tiktok.download_from, info, mode)
         tokens = await _send_media_files(target, files, lang)
@@ -986,12 +1081,11 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         await _safe_delete(callback.message)  # убираем сообщение с кнопками
         if mode == "photos":     # выбрали «Фото» — у них нет звука, доложим музыку (если вкл)
             await _maybe_send_audio_track(target, url, Platform.TIKTOK, lang)
-        for f in files:
-            _cleanup(f)
     except Exception as e:
         logger.exception("TikTok slideshow download failed")
         await _safe_edit(callback.message, limits.friendly_error(e, lang))
     finally:
+        _cleanup_all(files)
         await limits.release(limits.LIGHT)
 
 
@@ -1336,6 +1430,7 @@ async def _do_download_audio(
     # только «Скачать всё» (там статус «N / total»).
     await limits.acquire(limits.LIGHT)
 
+    file_path = None
     try:
         # cover_url — правильная обложка из оригинала (если есть), заменит обложку с YouTube
         cover_url = meta.get("cover") if meta else None
@@ -1443,11 +1538,11 @@ async def _do_download_audio(
         if sent.audio:
             async with SessionLocal() as session:
                 await save_cached_file_id(session, cache_url, sent.audio.file_id, "audio")
-        _cleanup(file_path)
     except Exception as e:
         logger.exception("Audio download failed")
         await bot.send_message(chat_id, limits.friendly_error(e, lang), reply_to_message_id=reply_to)
     finally:
+        _cleanup_all(file_path)
         await limits.release(limits.LIGHT)
 
 
@@ -1545,7 +1640,11 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
 
     duration = int(info.get("duration", 0) or 0) if info else 0
 
+    file_path = None
     try:
+        # Место на диске проверяем ДО загрузки: на забитом диске yt-dlp и ffmpeg падают
+        # с невнятным «errno 28», а человек видит бессмысленное «не удалось скачать».
+        limits.check_disk_space(DOWNLOADS_DIR)
         # info уже получен, когда показывали кнопки качества — передаём его, чтобы
         # yt-dlp не ходил к площадке за теми же метаданными второй раз (экономит ~1.5с).
         file_path = await asyncio.to_thread(
@@ -1560,11 +1659,11 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
             **await _video_kwargs(file_path, duration),
         )
         await progress_msg.delete()
-        # Сохраняем file_id в кэш и убираем локальный файл
+        # Сохраняем file_id в кэш (сам файл убирается в finally — в том числе когда
+        # отправка упала на полпути: раньше он оставался на диске до перезапуска).
         if sent.video:
             async with SessionLocal() as session:
                 await save_cached_file_id(session, url, sent.video.file_id, str(quality))
-        _cleanup(file_path)
     except Exception as e:
         logger.exception("Download failed")
         text = limits.friendly_error(e, lang)
@@ -1573,6 +1672,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
         except Exception:
             await bot.send_message(chat_id, text)
     finally:
+        _cleanup_all(file_path)
         await limits.release(limits.HEAVY)
         ACTIVE_DOWNLOADS.discard(user_id)
 
@@ -1653,6 +1753,22 @@ async def _safe_delete(msg):
         await msg.delete()
     except Exception:
         pass
+
+
+def _cleanup_all(*paths):
+    """Убирает всё, что скачали: принимает пути, списки путей и None.
+
+    Зачем отдельно от _cleanup: уборка должна стоять в finally, а туда переменная
+    попадает в любом состоянии — ещё не заведённая (скачивание упало на первой
+    строке), одиночный путь или список файлов поста.
+    """
+    for item in paths:
+        if item is None:
+            continue
+        if isinstance(item, (list, tuple, set)):
+            _cleanup_all(*item)
+        else:
+            _cleanup(item)
 
 
 def _cleanup(file_path: str):

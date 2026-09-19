@@ -1,4 +1,6 @@
 import asyncio
+import os
+import shutil
 
 from bot.utils.i18n import t
 
@@ -29,6 +31,40 @@ MAX_FILE_BYTES = 1_950_000_000
 
 class FileTooLargeError(Exception):
     """Файл больше лимита Telegram (2 ГБ)."""
+
+
+class NoDiskSpaceError(Exception):
+    """На диске не осталось места под загрузку."""
+
+
+# Сколько места должно оставаться свободным, чтобы браться за тяжёлую загрузку.
+# Фильм на HDRezka спокойно весит полтора гигабайта, плюс yt-dlp держит видео и звук
+# отдельными файлами и склеивает их третьим — пик занимает примерно вдвое больше
+# итогового размера.
+MIN_FREE_BYTES = int(os.getenv("MIN_FREE_BYTES", str(4 * 1024 ** 3)))
+
+
+def free_space(path: str) -> int:
+    """Свободно байт на диске, где лежит path (0 — узнать не вышло)."""
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return 0
+
+
+def check_disk_space(path: str, need: int = MIN_FREE_BYTES) -> None:
+    """Бросает NoDiskSpaceError, если места явно не хватит.
+
+    Зачем отдельной проверкой: когда диск забит, yt-dlp и ffmpeg падают с невнятными
+    ошибками уровня «errno 28», человек видит «не удалось скачать», а настоящая причина
+    остаётся только в логах. Тут мы говорим прямо и заранее — и заодно шлём тревогу
+    админу через общий путь friendly_error.
+    """
+    free = free_space(path)
+    if free and free < need:
+        raise NoDiskSpaceError(
+            f"на диске свободно {free / 1024 ** 3:.1f} ГБ, нужно хотя бы "
+            f"{need / 1024 ** 3:.1f} ГБ")
 
 
 class _SmartLimiter:
@@ -102,6 +138,8 @@ def friendly_error(exc: Exception, lang: str = "ru") -> str:
             pass
     text = str(exc).lower()
 
+    if isinstance(exc, NoDiskSpaceError) or "no space left" in text or "errno 28" in text:
+        return t("err_no_space", lang)
     if isinstance(exc, FileTooLargeError) or "too large" in text or "file is too big" in text \
             or "request entity too large" in text or "413" in text:
         return t("err_too_large", lang)

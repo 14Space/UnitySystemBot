@@ -112,8 +112,13 @@ class StashedLink(Base):
     данные о ссылке лежали в памяти, и после каждого обновления бота нажатие на
     вчерашние кнопки отвечало «ссылка устарела». Теперь то же самое лежит в базе.
 
-    Метаданные ролика (info) сюда НЕ пишем: это мегабайты служебного JSON ради
-    экономии полутора секунд. После перезапуска они просто запросятся заново.
+    Метаданные (info площадки, объект сессии HDRezka) сюда НЕ пишем: это мегабайты
+    служебного JSON и живые объекты, которые всё равно не сохранить. Храним лишь то,
+    из чего всё остальное добывается заново: саму ссылку и пару чисел.
+
+    kind — какой это экран: «quality» (выбор качества), «hdrezka» (озвучки/сезоны),
+    «tiktok» (слайдшоу: видео или фото). От вида зависит, что восстанавливать.
+    payload — мелочи этого вида (сезон и серия, номер поста, кто нажал), строкой JSON.
     """
     __tablename__ = "stashed_links"
 
@@ -122,4 +127,35 @@ class StashedLink(Base):
     chat_id = Column(Integer, nullable=False)
     user_msg_id = Column(Integer, nullable=False)
     premium = Column(Boolean, default=False)
+    kind = Column(String, default="quality")
+    payload = Column(String, nullable=True)
     at = Column(DateTime, server_default=func.now())
+
+
+class AiThread(Base):
+    """Ветка разговора с ИИ: ответ бота -> история реплик.
+
+    Уточнения задаются ОТВЕТОМ на сообщение бота, а сообщения в чате живут вечно —
+    в отличие от памяти бота. Раньше после перезапуска ответ на вчерашнюю реплику
+    начинал разговор с чистого листа, и человек не понимал, почему бот «забыл».
+    """
+    __tablename__ = "ai_threads"
+
+    message_id = Column(Integer, primary_key=True)   # id ответа бота, на который отвечают
+    chat_id = Column(Integer, nullable=False)
+    history = Column(String, nullable=False)          # список реплик, строкой JSON
+    at = Column(DateTime, server_default=func.now())
+
+
+class AiUsage(Base):
+    """Сколько запросов к ИИ сделал человек за сутки.
+
+    Лимиты держат нас в бесплатном тире провайдера. Раньше счётчик жил в памяти, и
+    любой перезапуск бота обнулял его — то есть лимит на день можно было обойти
+    просто дождавшись деплоя.
+    """
+    __tablename__ = "ai_usage"
+
+    day = Column(String, primary_key=True)            # «ГГГГ-ММ-ДД» по UTC
+    user_id = Column(Integer, primary_key=True)
+    count = Column(Integer, default=0)
