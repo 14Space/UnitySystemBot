@@ -64,6 +64,7 @@ U_SOUNDCLOUD = _url("SOUNDCLOUD", "https://soundcloud.com/edsheeran/shape-of-you
 U_SOUNDCLOUD_SET = _url("SOUNDCLOUD_SET", "https://soundcloud.com/edsheeran/sets/drunk-remixes")
 U_IG_REEL    = _url("IG_REEL", "https://www.instagram.com/reel/DbW4UlRF4mc/")
 U_IG_PHOTO   = _url("IG_PHOTO", "https://www.instagram.com/p/DcGauVjJtS8/")
+U_IG_REEL_HQ = _url("IG_REEL_HQ", "")
 U_IG_CAROUSEL = _url("IG_CAROUSEL", "https://www.instagram.com/p/DYAxmeBCLVz/")
 U_TIKTOK     = _url("TIKTOK", "https://www.tiktok.com/@tiktok/video/7106594312292453675")
 U_TIKTOK_SLIDE = _url("TIKTOK_SLIDE", "https://vt.tiktok.com/ZSVAe23Sh/")
@@ -534,6 +535,240 @@ async def _dl_shorts_compressed(url):
     return await asyncio.to_thread(work)
 
 
+async def _check_inline():
+    """Inline-режим: отдача уже скачанного файла прямо в чужой чат.
+
+    Отдельная ветка кода со своими правилами: ссылку надо узнать, привести к
+    каноничному виду и найти в кэше ЛЮБОГО качества. Проверками не покрывалась вовсе.
+    Сломается — человек напишет «@бот ссылка» и не увидит ничего, а отчёт останется
+    зелёным.
+
+    Ничего не отправляем: кладём запись в кэш и смотрим, что inline-путь её находит и
+    строит из неё результат. Мусор за собой убираем.
+    """
+    from bot.database import SessionLocal
+    from bot.database.repository import (
+        save_cached_file_id, get_any_cached_file, clear_cache_entry,
+        normalize_cache_url)
+    from bot.features.common.inline import _result_from_cache
+    from bot.utils.platform_detector import detect_platform, Platform
+
+    # Ссылка со «мусорным» хвостом: заодно проверяем приведение к каноничному виду —
+    # без него inline почти никогда не попадал бы в кэш (у Instagram и Spotify хвост
+    # меняется при каждом нажатии «Поделиться»).
+    probe = U_YT_SHORTS + "?si=healthcheck&utm_source=probe"
+    if detect_platform(probe) == Platform.UNKNOWN:
+        return False, "ссылка не опознана — inline её пропустит"
+
+    async with SessionLocal() as session:
+        try:
+            await save_cached_file_id(session, probe, "BAADBAADprobe", None)
+            cached = await get_any_cached_file(session, normalize_cache_url(probe))
+        finally:
+            try:
+                await clear_cache_entry(session, probe, None)
+            except Exception:
+                pass
+
+    if not cached:
+        return False, "кэш не найден по каноничной ссылке"
+    if _result_from_cache(cached, _admin_lang()) is None:
+        return False, "результат для inline не построился"
+    return True, "ссылка опознана, кэш найден, результат собран"
+
+
+async def _check_cache():
+    """Кэш file_id: запись и чтение.
+
+    Зачем: повторная ссылка — самый частый путь у пользователей, именно кэш отвечает
+    за мгновенную отдачу. Проверки его не касались вовсе, потому что все они качают
+    заново. Испортится кэш — люди получат ошибки, а отчёт останется зелёным.
+
+    Пишем заведомо фальшивую запись под несуществующей ссылкой и сразу читаем её:
+    настоящие записи не трогаем, мусор за собой убираем.
+    """
+    from bot.database import SessionLocal
+    from bot.database.repository import (
+        get_cached_file_id, save_cached_file_id, clear_cache_entry)
+
+    probe_url = "https://healthcheck.local/cache-probe"
+    token = f"probe_{int(time.time())}"
+    async with SessionLocal() as session:
+        try:
+            await save_cached_file_id(session, probe_url, token, "hc")
+            got = await get_cached_file_id(session, probe_url, "hc")
+        finally:
+            try:
+                await clear_cache_entry(session, probe_url, "hc")
+            except Exception:
+                pass
+    if got != token:
+        return False, f"записали «{token}», прочитали «{got}»"
+    return True, "запись и чтение работают"
+
+
+async def _check_send_path():
+    """Отправка файла в Telegram тем же путём, что и пользователю: имя, локальный
+    Bot API, превью.
+
+    Самая крупная дыра из найденных: проверки только СКАЧИВАЮТ. Сломается отправка —
+    все пункты зелёные, а людям не приходит ничего. Здесь берём настоящий маленький
+    файл, прогоняем через tg_files.input_file (то есть через имя и ссылку file://),
+    отдаём Telegram и смотрим, что он его принял.
+
+    Используем uploadStickerFile: он принимает файл, но НИКУДА его не отправляет —
+    в чатах ничего не появляется.
+    """
+    from bot.config import BOT_TOKEN, ADMIN_ID, TELEGRAM_LOCAL_API_URL
+    from bot.utils import tg_files
+    from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
+
+    if not (BOT_TOKEN and ADMIN_ID):
+        return True, "нечем проверить (нет токена или ADMIN_ID)"
+
+    # Крошечный настоящий PNG: формат, который принимает uploadStickerFile.
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000"
+        "000a49444154789c63000100000500010d0a2db40000000049454e44ae426082")
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    raw = os.path.join(DOWNLOADS_DIR, f"hc_send_{int(time.time())}.png")
+    with open(raw, "wb") as f:
+        f.write(png)
+
+    name = tg_files.display_name("Проверка отправки", "", ".png")
+    handle = tg_files.input_file(raw, name)
+    # Путь file:// нас и интересует: именно он ломался бы на пробелах и кириллице.
+    if not isinstance(handle, str):
+        _cleanup(raw)
+        return True, "локальный Bot API выключен, отправка обычной заливкой"
+
+    def work():
+        base = TELEGRAM_LOCAL_API_URL.rstrip("/")
+        r = requests.post(f"{base}/bot{BOT_TOKEN}/uploadStickerFile",
+                          data={"user_id": ADMIN_ID, "sticker": handle,
+                                "sticker_format": "static"}, timeout=30)
+        j = r.json()
+        if not j.get("ok"):
+            return False, str(j.get("description"))[:90]
+        return True, f"принят, имя «{name}»"
+
+    try:
+        return await asyncio.to_thread(work)
+    finally:
+        _cleanup(raw)
+
+
+async def _check_thumbnail():
+    """Превью и метаданные видео. Без них Telegram рисует «сплюснутый» кадр, а плеер
+    виснет до полной докачки — файл при этом приходит, и по размеру всё выглядит
+    исправным. Поэтому отдельный пункт: качаем самый лёгкий ролик и смотрим, что
+    ffprobe дал размеры кадра, а ffmpeg собрал постер."""
+    from bot.features.download.downloaders.ytdlp_wrapper import download_probe
+    from bot.features.download.downloaders.video_meta import probe_video, make_video_thumbnail
+
+    def work():
+        path = download_probe(U_YT_SHORTS)
+        try:
+            meta = probe_video(path)
+            thumb = make_video_thumbnail(path)
+            if not (meta.get("width") and meta.get("height")):
+                return False, "ffprobe не дал размеры кадра"
+            if not thumb:
+                return False, "постер-кадр не собрался"
+            return True, f"{meta['width']}x{meta['height']}, превью {_kb(len(thumb))}"
+        finally:
+            _cleanup(path)
+
+    return await asyncio.to_thread(work)
+
+
+async def _check_quality_pick(url):
+    """Путь «видео с выбором качества» целиком: метаданные → список кнопок → скачивание
+    в выбранном качестве.
+
+    Зачем отдельно от «YouTube видео»: тот пункт качает напрямую, минуя весь этот путь.
+    А у пользователя YouTube и PornHub идут ТОЛЬКО через кнопки, и сломаться может как
+    построение списка (пустые кнопки — человек ничего не выберет), так и само скачивание
+    в конкретном качестве (пришло не то, что нажали). До сих пор не проверялось ничего
+    из этого.
+
+    Берём САМОЕ НИЗКОЕ доступное качество: путь тот же, а трафика в разы меньше.
+    """
+    from bot.features.download.downloaders.ytdlp_wrapper import (
+        get_video_info, get_available_qualities, download_video)
+
+    def work():
+        info = get_video_info(url)
+        available = get_available_qualities(info)
+        if not available:
+            return False, "список качеств пуст — кнопки не из чего построить"
+        want = min(available)
+        path = download_video(url, want)
+        try:
+            side = _short_side(path)
+            if not side:
+                return False, f"кнопки: {available}, но кадр не читается"
+            # Допуск на ступень: площадка может отдать соседнее качество, если точного
+            # нет. Грубое расхождение — уже поломка выбора.
+            if side > want * 1.5:
+                return False, f"просили {want}p, пришло {side}p"
+            return True, f"кнопки: {available}, взяли {want}p → {side}p"
+        finally:
+            _cleanup(path)
+
+    return await asyncio.to_thread(work)
+
+
+async def _dl_reel_compressed(url):
+    """Reel со «Сжатием шортс». Отдельный пункт, потому что механизм у Instagram СВОЙ:
+    там мы задаём потолок качества, а не просим у площадки облегчённую версию, как у
+    TikTok. Сломаться они могут независимо, а до сих пор не проверялся ни один из них —
+    зелёный отчёт при неработающем сжатии никто бы не заметил.
+
+    Ссылка обязана быть ВЫШЕ потолка, иначе срезать нечего и пункт зеленел бы впустую.
+    """
+    from bot.features.download.downloaders.instagram import download_reel
+    from bot.config import SHORTS_CAP_HEIGHT
+
+    cap = SHORTS_CAP_HEIGHT
+
+    def work():
+        path = download_reel(url, max_height=cap)
+        try:
+            return _judge_video(path, min_side=cap // 2 + 1, max_side=cap)
+        finally:
+            _cleanup(path)
+
+    return await asyncio.to_thread(work)
+
+
+async def _check_tiktok_compressed(url):
+    """TikTok со сжатием. Здесь потолок не задаётся: у площадки просится облегчённая
+    версия поста, и какую именно она отдаст — её дело (видели 576x1024 вместо 1080x1920).
+    Поэтому сверяем не попадание в потолок, а сам факт: со сжатием кадр МЕНЬШЕ, чем без
+    него. Это и есть то, ради чего тумблер существует.
+    """
+    from bot.features.download.downloaders import tiktok
+
+    def work():
+        full = tiktok.download_from(tiktok.fetch_tiktok(url, True), "auto", False)
+        small = tiktok.download_from(tiktok.fetch_tiktok(url, False), "auto", True)
+        try:
+            a, b = _short_side(full[0]), _short_side(small[0])
+            if not a or not b:
+                return False, "не удалось измерить кадр"
+            if b > a:
+                return False, f"сжатое КРУПНЕЕ обычного: {b} против {a}"
+            if b == a:
+                return True, f"{a}p, площадка отдала ту же версию"
+            return True, f"{a}p → {b}p, {_kb(_size_of(small))}"
+        finally:
+            _cleanup(full)
+            _cleanup(small)
+
+    return await asyncio.to_thread(work)
+
+
 async def _dl_pornhub_short(url):
     """PornHub shorties — это обычное видео с другим URL. Переписываем в стандартный
     (как это делает боевой обработчик) и качаем самый лёгкий формат."""
@@ -723,6 +958,7 @@ _CHECKS = [
     # (название, платформа-для-порядка, проверка, тестовая ссылка). Платформа=None —
     # это функция (не площадка): такие всегда идут в конце.
     ("YouTube видео",           "YouTube",    lambda: _dl_probe(U_YT_VIDEO),               U_YT_VIDEO),
+    ("YouTube выбор качества",  "YouTube",    lambda: _check_quality_pick(U_YT_VIDEO),     U_YT_VIDEO),
     ("YouTube Shorts",          "YouTube",    lambda: _dl_shorts(U_YT_SHORTS),             U_YT_SHORTS),
     ("YouTube Shorts (сжатие)",  "YouTube",   lambda: _dl_shorts_compressed(U_YT_SHORTS_HQ), U_YT_SHORTS_HQ),
     ("YouTube Music",                "YouTube",    lambda: _dl_probe(U_YT_MUSIC, True),         U_YT_MUSIC),
@@ -731,9 +967,11 @@ _CHECKS = [
     ("SoundCloud трек",         "SoundCloud", lambda: _check_soundcloud_track(U_SOUNDCLOUD), U_SOUNDCLOUD),
     ("SoundCloud альбом",          "SoundCloud", _check_soundcloud_set,                        U_SOUNDCLOUD_SET),
     ("Instagram Reels",         "Instagram",  lambda: _dl_reel(U_IG_REEL),                 U_IG_REEL),
+    ("Instagram Reels (сжатие)", "Instagram", lambda: _dl_reel_compressed(U_IG_REEL_HQ), U_IG_REEL_HQ),
     ("Instagram фото-пост",     "Instagram",  lambda: _dl_ig_post(U_IG_PHOTO),             U_IG_PHOTO),
     ("Instagram карусель",      "Instagram",  lambda: _dl_ig_post(U_IG_CAROUSEL, True),    U_IG_CAROUSEL),
     ("TikTok видео",            "TikTok",     lambda: _check_tiktok(U_TIKTOK),             U_TIKTOK),
+    ("TikTok видео (сжатие)",   "TikTok",     lambda: _check_tiktok_compressed(U_TIKTOK), U_TIKTOK),
     ("TikTok слайдшоу",         "TikTok",     lambda: _check_tiktok(U_TIKTOK_SLIDE, True), U_TIKTOK_SLIDE),
     ("TikTok аудио",            "TikTok",     _check_tiktok_music,                         U_TIKTOK_SLIDE),
     ("Pinterest фото",          "Pinterest",  lambda: _dl_media(U_PINTEREST_IMG),          U_PINTEREST_IMG),
@@ -758,6 +996,10 @@ _CHECKS = [
     # Как и локальный Whisper — проверяем, только если способ реально стоит в цепочке.
     ("Расшифровка (посредник)", None,     _check_stt_relay,
      "x" if "relay" in STT_ORDER else _OFF),
+    ("Кэш file_id",             None,         _check_cache,                                 "x"),
+    ("Inline-режим",            None,         _check_inline,                                "x"),
+    ("Отправка в Telegram",     None,         _check_send_path,                             "x"),
+    ("Превью видео",            None,         _check_thumbnail,                             "x"),
     ("yt-dlp последний",        None,         _check_ytdlp,                                 "x"),
     ("Куки Instagram",          None,         _check_ig_cookies,                            "x"),
     ("Куки YouTube",            None,         _check_yt_cookies,                            "x"),

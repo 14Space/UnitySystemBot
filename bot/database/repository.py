@@ -303,6 +303,18 @@ async def save_cached_file_id(session: AsyncSession, url: str, file_id: str, qua
     await session.commit()
 
 
+async def clear_cache_entry(session: AsyncSession, url: str, quality: str = None) -> None:
+    """Удаляет ОДНУ запись кэша. Нужна проверке функционала: она пишет заведомо
+    фальшивую запись, читает её и обязана убрать за собой, чтобы не копить мусор
+    в боевой таблице."""
+    url_hash = _cache_hash(url, quality, current_bot_id.get())
+    row = (await session.execute(
+        select(CachedFile).where(CachedFile.url_hash == url_hash))).scalar_one_or_none()
+    if row:
+        await session.delete(row)
+        await session.commit()
+
+
 # Сколько последних прогонов держим по каждой проверке. Норма считается по медиане
 # этого окна: одиночный выброс (чужой сервер тормознул) её не сдвигает, а устойчивое
 # замедление – сдвигает.

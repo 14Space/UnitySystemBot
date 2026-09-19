@@ -77,6 +77,8 @@ if FFMPEG_DIR:
 # заранее, поэтому сразу идём через прокси, не тратя время на заведомо мёртвую попытку.
 _PROXY = os.getenv("PROXY_URL", "")
 _PROXY_FIRST = os.getenv("PROXY_FIRST", "false").lower() in ("1", "true", "yes")
+# Через туннель данные идут медленнее — стандартных 20с yt-dlp не хватает.
+_PROXY_TIMEOUT = int(os.getenv("PROXY_SOCKET_TIMEOUT", "60"))
 
 
 def _needs_proxy(url: str) -> bool:
@@ -104,8 +106,8 @@ def _with_music_fallback(url: str, op):
     # Остальные — сразу, если включён PROXY_FIRST (на сервере с забаненным адресом
     # прямая попытка всё равно провалится, а время съест).
     if _PROXY_FIRST or "pornhub.com" in (url or ""):
-        return op({"proxy": _PROXY})
-    attempts: list[dict] = [{}, {"proxy": _PROXY}]
+        return op({"proxy": _PROXY, "socket_timeout": _PROXY_TIMEOUT})
+    attempts: list[dict] = [{}, {"proxy": _PROXY, "socket_timeout": _PROXY_TIMEOUT}]
     for i, proxy_opts in enumerate(attempts):
         try:
             return op(proxy_opts)
@@ -694,7 +696,12 @@ def download_shorts(url: str, max_height: int | None = None) -> str:
             # На промежуточных попытках не терпим долгие залипания: если тяжёлый файл встал,
             # быстрее откатиться на качество пониже, чем ждать 25с ради максимума. На ПОСЛЕДНЕЙ
             # попытке возвращаем обычное терпение yt-dlp — сдаваться раньше времени нельзя.
-            impatient = {"socket_timeout": 10, "retries": 1} if i < len(attempts) - 1 else {}
+            # Промежуточные попытки нарочно нетерпеливы: быстрее откатиться на качество
+            # пониже, чем ждать. Но через прокси даже здоровая загрузка идёт медленнее,
+            # и прежние 10с приводили к откату на ровном месте — поэтому порог зависит
+            # от того, работаем мы напрямую или через туннель.
+            quick = 10 if not proxy_opts.get("proxy") else max(10, _PROXY_TIMEOUT // 2)
+            impatient = {"socket_timeout": quick, "retries": 1} if i < len(attempts) - 1 else {}
             ydl_opts = {
                 **BASE_OPTS,
                 **_quality_opts(h),
