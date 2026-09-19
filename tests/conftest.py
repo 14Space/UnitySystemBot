@@ -1,0 +1,14 @@
+"""Общая подготовка для тестов.
+
+Код бота читает настройки из окружения прямо при импорте (bot.config). На машине,
+где тесты гоняются без .env (например, в GitHub Actions), импорт бы упал ещё до
+первой проверки — поэтому подставляем безобидные значения заранее.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+os.environ.setdefault("BOT_TOKEN", "0:test")
+os.environ.setdefault("ADMIN_ID", "0")
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")

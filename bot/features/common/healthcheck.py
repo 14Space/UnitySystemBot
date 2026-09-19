@@ -935,15 +935,44 @@ async def _check_twitter(url, expect_text=False, expect_kind=None):
     return await asyncio.to_thread(work)
 
 
-async def _check_hdrezka(url):
-    """HDRezka: открываем страницу и читаем инфо (озвучки/сезоны). Само видео не качаем."""
+async def _check_hdrezka(url, expect_series=False):
+    """HDRezka: открываем страницу и убеждаемся, что с неё СЧИТАЛОСЬ то, без чего
+    скачивание невозможно.
+
+    Раньше пункт отвечал «работает», если страница просто не бросила ошибку. Это и
+    была дыра: сайт закрыт анти-ботом Anubis, и при протухшем пропуске он отдаёт
+    заглушку — разбор проходит, название пустое, список озвучек пустой, а галочка
+    зелёная. У пользователя при этом кнопки не появляются вовсе.
+
+    Поэтому требуем три вещи: непустое название; для фильма — хотя бы одну озвучку,
+    для сериала — хотя бы один сезон; и правильный тип страницы (фильм не должен
+    приходить вместо сериала — это признак того, что мы читаем не ту страницу).
+    """
     from bot.features.download.downloaders import hdrezka
 
     def work():
         api = hdrezka.open_media(url)
         info = hdrezka.get_info(api, url)
-        title = info.get("title") or info.get("name") or "?"
-        return True, f"открыт: {title}"
+        title = (info.get("name") or info.get("title") or "").strip()
+        if not title:
+            return False, "страница открылась, но названия нет — похоже на заглушку анти-бота"
+
+        is_series = bool(info.get("is_series"))
+        if is_series != expect_series:
+            kind = "сериал" if is_series else "фильм"
+            want = "сериал" if expect_series else "фильм"
+            return False, f"ожидался {want}, страница отдала {kind} «{title}»"
+
+        if is_series:
+            seasons = info.get("seasons") or []
+            if not seasons:
+                return False, f"«{title}»: список сезонов пуст — выбирать будет не из чего"
+            return True, f"{title}: сезонов {len(seasons)}"
+
+        translators = info.get("translators") or []
+        if not translators:
+            return False, f"«{title}»: нет ни одной озвучки — кнопки не построятся"
+        return True, f"{title}: озвучек {len(translators)}"
 
     return await asyncio.to_thread(work)
 
@@ -983,7 +1012,7 @@ _CHECKS = [
     ("PornHub видео",           "PornHub",    lambda: _dl_probe(U_PORNHUB),                U_PORNHUB),
     ("PornHub Shorties",        "PornHub",    lambda: _dl_pornhub_short(U_PORNHUB_SHORT),  U_PORNHUB_SHORT),
     ("HDRezka фильм",           "HDRezka",    lambda: _check_hdrezka(U_HDREZKA),           U_HDREZKA),
-    ("HDRezka сериал",          "HDRezka",    lambda: _check_hdrezka(U_HDREZKA_SERIES),    U_HDREZKA_SERIES),
+    ("HDRezka сериал",          "HDRezka",    lambda: _check_hdrezka(U_HDREZKA_SERIES, True), U_HDREZKA_SERIES),
     # Функции (не площадки) — всегда в конце
     ("ИИ-ассистент",            None,         _check_ai,                                    "x"),
     ("Конвертер валют",         None,         _check_currency,                              "x"),

@@ -111,6 +111,13 @@ TEXTS = {
     # --- Отчёт админу: статистика и проверка функционала ---
     "rep_title":      {"ru": "📊 <b>Статистика UnitySystem</b>", "uk": "📊 <b>Статистика UnitySystem</b>", "en": "📊 <b>UnitySystem statistics</b>"},
     "rep_users":      {"ru": "👥 Пользователей", "uk": "👥 Користувачів", "en": "👥 Users"},
+    "rep_premium":    {"ru": "⭐️ Премиум пользователей", "uk": "⭐️ Преміум користувачів", "en": "⭐️ Premium users"},
+    "rep_payments":   {"ru": "💰 Покупок", "uk": "💰 Покупок", "en": "💰 Purchases"},
+    "rep_stars":      {"ru": "звёзд", "uk": "зірок", "en": "stars"},
+    "rep_refunded":   {"ru": "возвратов", "uk": "повернень", "en": "refunded"},
+    "rep_backup":     {"ru": "🗄 Резервная копия базы за {date}",
+                       "uk": "🗄 Резервна копія бази за {date}",
+                       "en": "🗄 Database backup for {date}"},
     "rep_requests":   {"ru": "⬇️ Всего запросов", "uk": "⬇️ Усього запитів", "en": "⬇️ Total requests"},
     "rep_platforms":  {"ru": "По платформам:", "uk": "За платформами:", "en": "By platform:"},
     "rep_langs":      {"ru": "Языки пользователей:", "uk": "Мови користувачів:", "en": "User languages:"},
@@ -586,6 +593,17 @@ TEXTS = {
         "ru": "✨ Спасибо за покупку! Premium активирован 🎉\nВсе функции открыты.",
         "uk": "✨ Дякуємо за покупку! Premium активовано 🎉\nУсі функції відкриті.",
         "en": "✨ Thanks for your purchase! Premium activated 🎉\nAll features unlocked.",
+    },
+
+    "payment_refunded": {
+        "ru": "Звёзды возвращены, Premium отключён. Купить снова — /premium",
+        "uk": "Зірки повернено, Premium вимкнено. Купити знову — /premium",
+        "en": "Stars refunded, Premium turned off. Buy again with /premium",
+    },
+    "payment_stale": {
+        "ru": "Этот счёт устарел. Открой /premium и оплати новый.",
+        "uk": "Цей рахунок застарів. Відкрий /premium і сплати новий.",
+        "en": "This invoice is out of date. Open /premium and pay a fresh one.",
     },
 
     # --- Inline-режим ---

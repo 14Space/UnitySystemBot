@@ -40,14 +40,24 @@ async def _run_groq(path: str) -> str:
     return await asyncio.to_thread(groq_stt.transcribe, path)
 
 
+def _clean(text: str) -> str:
+    """Общая очистка результата — одна на все способы (см. whisper_transcriber).
+
+    Отдельной функцией, потому что раньше её проходили только своя модель и чужой
+    бот, а ответ Groq — основного способа! — уходил человеку как есть. Из-за этого
+    на записи без речи (мимо проходили музыканты) бот отвечал «...» вместо молчания.
+    """
+    from bot.features.transcribe.transcriber.whisper_transcriber import _clean as clean
+    return clean(text or "")
+
+
 async def _run_relay(path: str) -> str:
     from bot.features.transcribe.transcriber import relay_stt
     if not relay_stt.available():
         raise RuntimeError("нет сессии-посредника")
-    from bot.features.transcribe.transcriber.whisper_transcriber import _clean
-    # Текст чужого бота проходит нашу очистку: фразы-титры и мусор убираем так же,
-    # как у своих способов — качество вывода остаётся нашим, чей бы ни был движок.
-    return _clean(await relay_stt.transcribe(path))
+    # Чужой бот вдобавок отвечает «...», когда сам ничего не разобрал, — очистка
+    # считает такой ответ молчанием.
+    return await relay_stt.transcribe(path)
 
 
 _METHODS = {"groq": _run_groq, "local": _run_local, "relay": _run_relay}
@@ -70,5 +80,7 @@ async def transcribe_audio(file_path: str) -> str:
             continue
         if name != STT_ORDER[0]:
             logger.info("Расшифровка выполнена запасным способом «%s»", name)
-        return text
+        # Очистка — здесь, в одной точке на все способы: так новый движок не сможет
+        # появиться в обход правил о том, что показывать человеку.
+        return _clean(text)
     raise RuntimeError("все способы расшифровки отказали -> " + "; ".join(errors))

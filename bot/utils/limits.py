@@ -116,7 +116,10 @@ def friendly_error(exc: Exception, lang: str = "ru") -> str:
         return t("err_restricted", lang)
     if "login" in text or "private" in text or "приватн" in text or "not available for guest" in text:
         return t("err_private", lang)
-    if "geo" in text or "not available in your country" in text or "geoblock" in text:
+    # YouTube пишет это по-разному: «not available in your country» и длиннее —
+    # «the uploader has not made this video available in your country». Ловим по
+    # общему куску, иначе второй вариант уезжал в «не удалось скачать».
+    if "geo" in text or "available in your country" in text or "geoblock" in text:
         return t("err_geo", lang)
     if "age" in text and "confirm" in text:
         return t("err_age", lang)

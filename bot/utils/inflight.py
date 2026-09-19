@@ -19,6 +19,7 @@ import asyncio
 import logging
 
 from bot.database.repository import current_bot_id
+from bot.utils.cache_guard import send_cached_or_drop
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,10 @@ async def deduped(url, cache_key, get_cached, send_cached, produce):
     """
     cached = await get_cached()
     if cached is not None:
-        await send_cached(cached)
-        return
+        # Если Telegram скажет, что такого файла у него нет, запись выбрасывается и
+        # мы идём качать заново — как будто кэша и не было.
+        if await send_cached_or_drop(lambda: send_cached(cached), url, cache_key):
+            return
 
     key = _key(url, cache_key)
     while True:
@@ -63,8 +66,9 @@ async def deduped(url, cache_key, get_cached, send_cached, produce):
             try:
                 # Пока ждали своей очереди, кэш мог уже появиться — не дублируем.
                 cached = await get_cached()
-                if cached is not None:
-                    await send_cached(cached)
+                if cached is not None and await send_cached_or_drop(
+                        lambda: send_cached(cached), url, cache_key):
+                    pass
                 else:
                     await produce()
             finally:
@@ -79,7 +83,7 @@ async def deduped(url, cache_key, get_cached, send_cached, produce):
         except asyncio.TimeoutError:
             logger.warning("Ожидание ведущей загрузки затянулось: %s", (url, cache_key))
         cached = await get_cached()
-        if cached is not None:
-            await send_cached(cached)
+        if cached is not None and await send_cached_or_drop(
+                lambda: send_cached(cached), url, cache_key):
             return
         # Ведущий не оставил кэша (ошибка/таймаут) — пробуем стать ведущим сами.

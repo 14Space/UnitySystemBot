@@ -18,6 +18,7 @@ from bot.utils.progress_bar import make_progress_bar
 from bot.config import SHORTS_CAP_HEIGHT
 from bot.utils import limits, traffic, tg_files
 from bot.utils import inflight
+from bot.utils.cache_guard import send_cached_or_drop
 from bot.utils import media_names
 from bot.features.common import alerts
 from bot.utils.i18n import t, lang_of, t_kind
@@ -25,6 +26,7 @@ from bot.database import SessionLocal
 from bot.database.repository import (
     get_cached_file_id, save_cached_file_id, increment_download, is_premium,
     get_slideshow_mode, get_audio_track, get_compress_shorts,
+    save_link_stash, load_link_stash,
 )
 from bot.features.download.downloaders.audio_extract import extract_audio_track
 from bot.features.download.downloaders.ytdlp_wrapper import (
@@ -331,6 +333,12 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
             "info": info,  # сохраняем метаданные — не запрашиваем источник второй раз
             "premium": premium,
         })
+        # То же самое в базу, но без метаданных: кнопки в Telegram живут дольше, чем
+        # память бота, и после перезапуска нажатие должно работать, а не отвечать
+        # «ссылка устарела». Метаданные при таком возврате запросятся заново.
+        async with SessionLocal() as session:
+            await save_link_stash(session, url_id, url, message.chat.id,
+                                  message.message_id, premium)
 
         caption = t("choose_quality", lang, title=title)
 
@@ -842,8 +850,14 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         for ck in ("tt_auto", "tt_video", "tt_photos"):
             cached = await get_cached_file_id(session, url, ck)
             if cached:
-                await _send_cached_post(message, cached)
-                return
+                break
+        else:
+            cached, ck = None, None
+    # Отправляем ВНЕ сессии базы: если расписка окажется мёртвой, её надо удалить
+    # своим запросом, а вложенная сессия на том же файле — лишний повод для блокировки.
+    if cached and await send_cached_or_drop(
+            lambda: _send_cached_post(message, cached), url, ck):
+        return
 
     # По ссылке не нашли — узнаём данные поста (запрос к TikTok, кэшируется в памяти):
     # из них берём НАСТОЯЩИЙ номер видео — по нему кэшируем как запасной ключ.
@@ -991,8 +1005,8 @@ async def _handle_twitter(message: Message, url: str, lang: str):
     """
     # Кэш: этот твит уже отправляли — мгновенно переотправляем по file_id
     cached = await _twitter_cache_get(url)
-    if cached:
-        await _send_cached_tweet(message, cached)
+    if cached and await send_cached_or_drop(
+            lambda: _send_cached_tweet(message, cached), url, "tw"):
         return
 
     try:
@@ -1443,6 +1457,11 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
 
     entry = URL_STORE.get(url_id)
     if not entry:
+        # В памяти нет — бот перезапускался. Поднимаем ссылку из базы: метаданных там
+        # нет, поэтому качество скачается на полторы секунды дольше, зато кнопка живая.
+        async with SessionLocal() as session:
+            entry = await load_link_stash(session, url_id)
+    if not entry:
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
@@ -1466,12 +1485,17 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     if cached_id:
         await callback.answer()
         await callback.message.delete()
-        await bot.send_video(
-            chat_id, cached_id,
-            supports_streaming=True,
-            reply_to_message_id=user_msg_id
-        )
-        return
+
+        async def _resend():
+            await bot.send_video(
+                chat_id, cached_id,
+                supports_streaming=True,
+                reply_to_message_id=user_msg_id
+            )
+
+        if await send_cached_or_drop(_resend, url, str(quality)):
+            return
+        # Расписка оказалась мёртвой — качаем это качество заново, как в первый раз.
 
     # Один пользователь — одна активная загрузка. Меню не удаляем, чтобы можно было повторить.
     if user_id in ACTIVE_DOWNLOADS:

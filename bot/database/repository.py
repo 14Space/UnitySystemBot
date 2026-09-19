@@ -1,12 +1,13 @@
 import hashlib
 import statistics
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import (
-    User, CachedFile, DownloadStat, MonthlyTraffic, ChatSettings, CheckTiming,
+    User, CachedFile, DownloadStat, MonthlyTraffic, ChatSettings, CheckTiming, Payment,
+    StashedLink,
 )
 from bot.utils.platform_detector import normalize_cache_url
 
@@ -58,6 +59,44 @@ async def set_premium(session: AsyncSession, user_id: int, value: bool = True) -
         await session.commit()
 
 
+async def add_payment(session: AsyncSession, user_id: int, charge_id: str,
+                      stars: int) -> None:
+    """Записывает покупку. charge_id — номер платежа у Telegram: без него возврат
+    звёзд сделать нельзя, Telegram требует именно его.
+
+    Повторную запись того же charge_id молча пропускаем: Telegram может доставить
+    одно и то же сообщение об оплате дважды (если наш ответ не дошёл), и от этого
+    в истории не должно появляться двух покупок.
+    """
+    session.add(Payment(user_id=user_id, charge_id=charge_id, stars=stars))
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+
+
+async def refund_payment(session: AsyncSession, charge_id: str) -> int | None:
+    """Помечает платёж возвращённым и возвращает id покупателя (или None, если такого
+    платежа у нас нет). Премиум снимает вызывающий код."""
+    row = (await session.execute(
+        select(Payment).where(Payment.charge_id == charge_id))).scalar_one_or_none()
+    if row is None:
+        return None
+    row.refunded = True
+    await session.commit()
+    return row.user_id
+
+
+async def get_payment_summary(session: AsyncSession) -> dict:
+    """Сводка по покупкам: сколько оплачено, сколько возвращено, сколько звёзд."""
+    paid = (await session.execute(
+        select(func.count(Payment.id), func.coalesce(func.sum(Payment.stars), 0))
+        .where(Payment.refunded.is_(False)))).one()
+    refunded = (await session.execute(
+        select(func.count(Payment.id)).where(Payment.refunded.is_(True)))).scalar() or 0
+    return {"count": paid[0] or 0, "stars": paid[1] or 0, "refunded": refunded}
+
+
 async def increment_download(session: AsyncSession, platform: str) -> None:
     """Увеличивает счётчик запросов для платформы"""
     row = await session.execute(
@@ -105,6 +144,8 @@ async def get_stats(session: AsyncSession) -> dict:
     downloads = {r.platform: r.count for r in rows}
 
     users = (await session.execute(select(func.count(User.id)))).scalar() or 0
+    premium = (await session.execute(
+        select(func.count(User.id)).where(User.is_premium.is_(True)))).scalar() or 0
 
     lang_rows = (await session.execute(
         select(User.language, func.count(User.id)).group_by(User.language)
@@ -115,7 +156,9 @@ async def get_stats(session: AsyncSession) -> dict:
         "downloads": downloads,
         "total_downloads": sum(downloads.values()),
         "users": users,
+        "premium": premium,
         "languages": languages,
+        "payments": await get_payment_summary(session),
         "traffic": await get_traffic(session),
     }
 
@@ -319,6 +362,32 @@ async def clear_cache_entry(session: AsyncSession, url: str, quality: str = None
 # этого окна: одиночный выброс (чужой сервер тормознул) её не сдвигает, а устойчивое
 # замедление – сдвигает.
 CHECK_HISTORY_KEEP = 20
+
+
+async def save_link_stash(session: AsyncSession, key: str, url: str, chat_id: int,
+                          user_msg_id: int, premium: bool) -> None:
+    """Запоминает ссылку под экраном выбора качества — чтобы кнопки пережили
+    перезапуск бота. Заодно подчищаем совсем старые записи: экран, которому больше
+    недели, никто уже не нажмёт, а таблица расти без предела не должна."""
+    session.add(StashedLink(id=key, url=url, chat_id=chat_id,
+                            user_msg_id=user_msg_id, premium=premium))
+    await session.execute(
+        delete(StashedLink).where(
+            StashedLink.at < datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)))
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+
+
+async def load_link_stash(session: AsyncSession, key: str) -> dict | None:
+    """Достаёт сохранённую ссылку по id из кнопки (None — такой нет)."""
+    row = (await session.execute(
+        select(StashedLink).where(StashedLink.id == key))).scalar_one_or_none()
+    if row is None:
+        return None
+    return {"url": row.url, "chat_id": row.chat_id,
+            "user_msg_id": row.user_msg_id, "premium": bool(row.premium)}
 
 
 async def save_check_timings(session: AsyncSession, pairs: list[tuple[str, float]]) -> None:

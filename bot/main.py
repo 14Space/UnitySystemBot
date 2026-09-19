@@ -9,7 +9,7 @@ from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import (
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
     BotCommandScopeAllChatAdministrators, BotCommandScopeAllPrivateChats,
-    ErrorEvent,
+    ErrorEvent, FSInputFile,
 )
 from bot.config import (
     BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ,
@@ -17,12 +17,13 @@ from bot.config import (
 )
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
-from bot.utils import traffic, limits
+from bot.utils import traffic, limits, heartbeat
 from bot.features.common import alerts
 from bot.utils.i18n import t
 from bot.middlewares.register_user import RegisterUserMiddleware
 from bot.middlewares.throttle import ThrottleMiddleware
 from bot.middlewares.routing import RoutingMiddleware
+from bot.middlewares.retry import RetryAfterMiddleware
 from bot.features.common import start, admin, payment, inline
 from bot.features.download import link
 from bot.features.transcribe import transcribe
@@ -31,6 +32,7 @@ from bot.features.ai import chat as ai_chat
 from bot.features.config import setconfig
 from bot.features.common.admin import format_stats, platform_ranking
 from bot.features.common.healthcheck import run_and_cache, format_health, format_alert
+from bot.features.common.backup import dump_database
 from bot.features.download.maintenance import clean_downloads, update_ytdlp
 
 logging.basicConfig(level=logging.INFO)
@@ -70,11 +72,17 @@ def _seconds_until_slot(every_hours: int, skip_hour: int | None = None) -> float
 
 
 def _make_bot(token: str) -> Bot:
-    """Создаёт Bot; если задан локальный API-сервер — с ним (файлы до 2 ГБ)."""
+    """Создаёт Bot; если задан локальный API-сервер — с ним (файлы до 2 ГБ).
+
+    На сессию вешаем повтор запросов: Telegram при всплеске отправок отвечает «подожди
+    столько-то секунд», и без повтора часть файлов просто не доходит (см. retry.py).
+    """
     if TELEGRAM_LOCAL_API_URL:
         session = AiohttpSession(api=TelegramAPIServer.from_base(TELEGRAM_LOCAL_API_URL))
-        return Bot(token=token, session=session)
-    return Bot(token=token)
+    else:
+        session = AiohttpSession()
+    session.middleware(RetryAfterMiddleware())
+    return Bot(token=token, session=session)
 
 
 async def _setup_commands(bot: Bot):
@@ -170,10 +178,33 @@ async def _daily_tasks(bot: Bot):
             report = (f"{format_stats(stats, ADMIN_LANG)}\n\n"
                       f"{format_health(health, platform_ranking(stats), lang=ADMIN_LANG)}")
             await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
+            await _send_backup(bot)
         except Exception:
             logger.exception("Не удалось отправить дневной отчёт")
         if old != new:
             await _restart_for_ytdlp(bot, old, new)
+
+
+async def _send_backup(bot: Bot):
+    """Шлёт админу свежую копию базы файлом — сразу под суточным отчётом.
+
+    Отдельной функцией и со своим перехватом ошибок: сбой копии не должен утянуть за
+    собой отчёт, который уже ушёл. Файл после отправки удаляем — он временный.
+    """
+    path = await dump_database()
+    if not path:
+        return
+    try:
+        await bot.send_document(
+            ADMIN_ID, FSInputFile(path),
+            caption=t("rep_backup", ADMIN_LANG, date=datetime.now(_ADMIN_ZONE).strftime("%d.%m.%Y")))
+    except Exception:
+        logger.exception("Не удалось отправить резервную копию базы")
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 async def _periodic_healthcheck(bot: Bot):
@@ -328,6 +359,11 @@ async def main():
     # limits.friendly_error). Контекст (ссылку) выставляет обработчик ссылок.
     alerts.configure(bot, ADMIN_ID)
     limits.set_failure_hook(alerts.note_failure)
+
+    # Пульс: задача отмечает, что основной цикл жив, а сторож в отдельном потоке
+    # перезапускает процесс, если отметки перестали появляться (см. heartbeat.py).
+    asyncio.create_task(heartbeat.beat())
+    heartbeat.start_watchdog()
 
     asyncio.create_task(_daily_tasks(bot))
     asyncio.create_task(_periodic_healthcheck(bot))

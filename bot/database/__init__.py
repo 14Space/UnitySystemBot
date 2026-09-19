@@ -1,9 +1,39 @@
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from bot.config import DATABASE_URL
 from bot.database.models import Base
 
 engine = create_async_engine(DATABASE_URL)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _sqlite_pragmas(dbapi_connection, _record):
+    """Настройки SQLite, без которых база отказывает под нагрузкой.
+
+    По умолчанию SQLite пускает к файлу либо одного пишущего, либо читающих — но не
+    вместе. У нас в один момент пишут статистика, кэш file_id и счётчик трафика, а
+    читают обработчики сообщений, и любой второй получал «database is locked».
+
+      • journal_mode=WAL — пишущий больше не блокирует читающих (записи идут в
+        отдельный журнал). Настройка ЗАПИСЫВАЕТСЯ В ФАЙЛ базы один раз и остаётся
+        в нём навсегда, повторный вызов ничего не портит.
+      • busy_timeout=5000 — если файл всё же занят, ждать до 5 секунд вместо
+        мгновенного отказа. Дальше — ошибка, и это правильно: значит что-то зависло.
+      • synchronous=NORMAL — обычный для WAL компромисс: при падении процесса данные
+        целы, теряется максимум последняя транзакция при отключении питания.
+
+    Вешаем на событие «подключились», а не выполняем один раз при старте: пул
+    открывает соединения по мере надобности, и каждому новому нужны свои настройки
+    (busy_timeout и synchronous живут в соединении, а не в файле).
+    """
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    cur = dbapi_connection.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.close()
 
 
 async def init_db():

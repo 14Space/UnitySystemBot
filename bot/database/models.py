@@ -85,3 +85,41 @@ class CheckTiming(Base):
     name = Column(String, nullable=False, index=True)
     sec = Column(Float, nullable=False)
     at = Column(DateTime, server_default=func.now())
+
+
+class Payment(Base):
+    """Покупка премиума за звёзды Telegram.
+
+    Зачем хранить: без charge_id вернуть звёзды нельзя — именно этот номер требует
+    Telegram у того, кто делает возврат. Плюс без записей не ответить на простой
+    вопрос «сколько всего купили».
+    """
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    charge_id = Column(String, unique=True, nullable=False)  # номер платежа у Telegram
+    stars = Column(Integer, default=0)
+    at = Column(DateTime, server_default=func.now())
+    # Возврат: премиум снимается, а запись остаётся — чтобы история покупок не врала.
+    refunded = Column(Boolean, default=False)
+
+
+class StashedLink(Base):
+    """Ссылка, за которой стоит показанный экран выбора качества.
+
+    Кнопки в Telegram живут вечно, а память бота — только до перезапуска. Раньше
+    данные о ссылке лежали в памяти, и после каждого обновления бота нажатие на
+    вчерашние кнопки отвечало «ссылка устарела». Теперь то же самое лежит в базе.
+
+    Метаданные ролика (info) сюда НЕ пишем: это мегабайты служебного JSON ради
+    экономии полутора секунд. После перезапуска они просто запросятся заново.
+    """
+    __tablename__ = "stashed_links"
+
+    id = Column(String, primary_key=True)          # тот самый короткий id из кнопки
+    url = Column(String, nullable=False)
+    chat_id = Column(Integer, nullable=False)
+    user_msg_id = Column(Integer, nullable=False)
+    premium = Column(Boolean, default=False)
+    at = Column(DateTime, server_default=func.now())

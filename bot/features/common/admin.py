@@ -44,6 +44,7 @@ def format_stats(stats: dict, lang: str = "ru") -> str:
     """Текст отчёта по статистике на языке админа."""
     lines = [t("rep_title", lang), ""]
     lines.append(f"{t('rep_users', lang)}: <b>{stats['users']}</b>")
+    lines.append(f"{t('rep_premium', lang)}: <b>{stats.get('premium', 0)}</b>")
 
     # Порядок блоков: сперва про людей (сколько их и на каких языках), потом про
     # запросы. Языки короткие, их не прячем; список площадок бывает длинным — он
@@ -53,6 +54,16 @@ def format_stats(stats: dict, lang: str = "ru") -> str:
         lines.append(t("rep_langs", lang))
         for code, cnt in sorted(stats["languages"].items(), key=lambda x: -x[1]):
             lines.append(f"• {code}: {cnt} ({cnt * 100 // total}%)")
+
+    # Покупки показываем, только когда они есть: у бота без единой продажи строка
+    # «Покупок: 0» каждый день — лишний шум в отчёте.
+    pay = stats.get("payments") or {}
+    if pay.get("count") or pay.get("refunded"):
+        row = (f"\n{t('rep_payments', lang)}: <b>{pay['count']}</b>"
+               f" ({pay['stars']} {t('rep_stars', lang)})")
+        if pay.get("refunded"):
+            row += f", {pay['refunded']} {t('rep_refunded', lang)}"
+        lines.append(row)
 
     lines.append(f"\n{t('rep_requests', lang)}: <b>{stats['total_downloads']}</b>")
 

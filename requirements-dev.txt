@@ -1,0 +1,3 @@
+# Только для разработки и тестов — в образ бота не ставится.
+# Запуск: pip install -r requirements-dev.txt && python -m pytest
+pytest==8.4.2
