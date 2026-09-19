@@ -14,7 +14,7 @@ from aiogram.types import (
 from bot.utils.platform_detector import detect_platform, Platform
 from bot.features.download.keyboards.quality import build_quality_keyboard, FREE_LIMIT
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
-from bot.utils.progress_bar import make_progress_bar
+from bot.utils.progress_bar import make_progress_bar, ProgressThrottle
 from bot.config import SHORTS_CAP_HEIGHT
 from bot.utils import limits, traffic, tg_files
 from bot.utils import inflight
@@ -32,6 +32,7 @@ from bot.features.download.downloaders.audio_extract import extract_audio_track
 from bot.features.download.downloaders.ytdlp_wrapper import (
     youtube_search_query,
     get_video_info, get_available_qualities, download_video, download_shorts,
+    estimate_size,
     download_audio, search_audio, search_audio_candidates, get_soundcloud_set,
     download_media, convert_gif_to_mp4,
 )
@@ -601,11 +602,12 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
     status = await bot.send_message(chat_id, make_progress_bar(0), reply_to_message_id=entry["user_msg_id"])
 
     loop = asyncio.get_running_loop()
-    last_percent = [-1]
+    # Полоску обновляем не чаще раза в пару секунд: правка на каждый процент — это до
+    # сотни правок за загрузку, и Telegram на такую частоту отвечает «подожди».
+    throttle = ProgressThrottle()
 
     def on_progress(percent: int):
-        if percent != last_percent[0]:
-            last_percent[0] = percent
+        if throttle.should_send(percent):
             asyncio.run_coroutine_threadsafe(
                 _safe_edit(status, make_progress_bar(percent)), loop
             )
@@ -1497,6 +1499,17 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
             return
         # Расписка оказалась мёртвой — качаем это качество заново, как в первый раз.
 
+    # Размер известен заранее — не тратим полчаса и гигабайты домашнего канала на файл,
+    # который Telegram всё равно не примет. Оценка приблизительная, поэтому берём запас:
+    # предупреждаем только при явном превышении потолка.
+    if info:
+        approx = estimate_size(info, quality)
+        if approx and approx > limits.MAX_FILE_BYTES:
+            await callback.answer(
+                t("too_big_before", lang, size=f"{approx / 1024 / 1024 / 1024:.1f}"),
+                show_alert=True)
+            return
+
     # Один пользователь — одна активная загрузка. Меню не удаляем, чтобы можно было повторить.
     if user_id in ACTIVE_DOWNLOADS:
         await callback.answer(t("wait_current", lang), show_alert=True)
@@ -1514,11 +1527,10 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     )
 
     loop = asyncio.get_running_loop()
-    last_percent = [-1]
+    throttle = ProgressThrottle()          # не чаще раза в пару секунд (см. выше)
 
     def on_progress(percent: int):
-        if percent != last_percent[0]:
-            last_percent[0] = percent
+        if throttle.should_send(percent):
             asyncio.run_coroutine_threadsafe(
                 _safe_edit(progress_msg, make_progress_bar(percent)),
                 loop

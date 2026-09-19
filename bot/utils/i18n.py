@@ -606,6 +606,12 @@ TEXTS = {
         "en": "This invoice is out of date. Open /premium and pay a fresh one.",
     },
 
+    "too_big_before": {
+        "ru": "Это качество весит около {size} ГБ — больше, чем Telegram разрешает боту (2 ГБ). Выбери качество пониже.",
+        "uk": "Ця якість важить близько {size} ГБ — більше, ніж Telegram дозволяє боту (2 ГБ). Обери якість нижче.",
+        "en": "This quality is about {size} GB — more than Telegram lets a bot send (2 GB). Pick a lower one.",
+    },
+
     # --- Inline-режим ---
     "inline_cached_video_title": {
         "ru": "Скачать видео", "uk": "Завантажити відео", "en": "Download video",

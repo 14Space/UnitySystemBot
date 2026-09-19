@@ -266,6 +266,37 @@ def get_available_qualities(info: dict) -> list[int]:
     return sorted(buckets)
 
 
+def estimate_size(info: dict, quality: int) -> int | None:
+    """Сколько примерно весит ролик в этом качестве, байт (None — оценить нечем).
+
+    Зачем: у Telegram потолок 2 ГБ, и раньше мы узнавали о превышении ТОЛЬКО после
+    полной загрузки — то есть уже потратив полчаса и гигабайты домашнего канала на
+    файл, который всё равно не уйдёт. Площадка обычно сообщает размер заранее, так
+    что честнее предупредить до начала.
+
+    Считаем как и качаем: лучшая видеодорожка нужной высоты плюс лучшая звуковая.
+    Точного размера не обещаем (у части форматов он лишь приблизительный) — поэтому
+    вызывающий код использует оценку только как повод предупредить, а не как запрет.
+    """
+    video, audio = 0, 0
+    for fmt in info.get("formats") or []:
+        size = fmt.get("filesize") or fmt.get("filesize_approx") or 0
+        if not size:
+            continue
+        vcodec = fmt.get("vcodec", "none")
+        acodec = fmt.get("acodec", "none")
+        height = fmt.get("height")
+        if vcodec != "none" and height and _snap_to_standard(height) == quality:
+            video = max(video, size)
+            if acodec != "none":          # формат «всё в одном» — звук уже внутри
+                audio = max(audio, 0)
+        elif vcodec == "none" and acodec != "none":
+            audio = max(audio, size)
+    if not video:
+        return None
+    return video + audio
+
+
 def download_video(
     url: str,
     quality: int,

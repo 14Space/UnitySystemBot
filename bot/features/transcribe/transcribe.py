@@ -28,8 +28,54 @@ from bot.features.transcribe.transcriber import transcribe_audio
 router = Router()
 logger = logging.getLogger(__name__)
 
-# Telegram ограничивает caption/text 4096 символами – длинную расшифровку режем.
+# Telegram ограничивает одно сообщение 4096 символами. Длинную расшифровку НЕ режем:
+# получасовое голосовое даёт куда больше, и обрывать человека на полуслове нельзя —
+# продолжение уходит следующими сообщениями.
 MAX_TEXT = 4096
+_QUOTE_OPEN = "<blockquote expandable>"
+_QUOTE_CLOSE = "</blockquote>"
+# Сколько «сырого» текста влезает в одно сообщение вместе с тегами цитаты. Считаем по
+# ЭКРАНИРОВАННОЙ длине: «<» превращается в «&lt;» и занимает четыре символа вместо
+# одного, поэтому наивный срез по len(text) иногда вылезал бы за лимит.
+_ROOM = MAX_TEXT - len(_QUOTE_OPEN) - len(_QUOTE_CLOSE)
+
+
+def _split_for_telegram(text: str, room: int = _ROOM) -> list[str]:
+    """Режет длинный текст на части, влезающие в сообщение.
+
+    Рвём по границам, а не по символам: сначала пробуем закончить часть на конце
+    предложения, если не выходит — на пробеле, и только в самом безнадёжном случае
+    (сплошной поток без пробелов) режем жёстко. Так продолжение читается как
+    продолжение, а не как обрубок на середине слова.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    parts: list[str] = []
+    while text:
+        if len(html.escape(text)) <= room:
+            parts.append(text)
+            break
+        # Подбираем самый длинный кусок, который влезает после экранирования.
+        cut = room
+        while cut > 0 and len(html.escape(text[:cut])) > room:
+            cut -= max(1, (len(html.escape(text[:cut])) - room) // 4)
+        chunk = text[:cut]
+        # Граница предложения, затем пробел — ищем во второй половине куска, чтобы
+        # не делать части неприлично короткими.
+        edge = max(chunk.rfind(". "), chunk.rfind("! "), chunk.rfind("? "),
+                   chunk.rfind("… "), chunk.rfind("\n"))
+        if edge < len(chunk) // 2:
+            edge = chunk.rfind(" ")
+        if edge > len(chunk) // 2:
+            chunk = chunk[:edge + 1]
+        parts.append(chunk.strip())
+        text = text[len(chunk):].strip()
+    return [p for p in parts if p]
+
+
+def _quoted(part: str) -> str:
+    return f"{_QUOTE_OPEN}{html.escape(part)}{_QUOTE_CLOSE}"
 
 
 async def _handle(message: Message, file_id: str, suffix: str):
@@ -55,12 +101,19 @@ async def _handle(message: Message, file_id: str, suffix: str):
                 pass
             return
 
-        # Оформляем расшифровку «цитатой» (как голосовое-первоисточник). Берём с
-        # запасом под теги blockquote и экранирование спецсимволов HTML.
-        if len(text) > MAX_TEXT - 100:
-            text = text[:MAX_TEXT - 100] + "…"
-        quoted = f"<blockquote expandable>{html.escape(text)}</blockquote>"
-        await _safe_edit(status, quoted, parse_mode="HTML")
+        # Оформляем расшифровку «цитатой» (как голосовое-первоисточник). Длинный текст
+        # уходит несколькими сообщениями подряд — обрывать расшифровку на полуслове
+        # нельзя, а в одно сообщение Telegram больше 4096 символов не пускает.
+        parts = _split_for_telegram(text)
+
+        # Первую часть вписываем в «Расшифровываю…», остальные досылаем ответами.
+        # Если правка не прошла (человек удалил своё голосовое, у бота забрали права),
+        # текст НЕ теряем: отправляем отдельным сообщением. Раньше он в этом случае
+        # исчезал молча, а «Расшифровываю…» оставалось висеть.
+        if not await _safe_edit(status, _quoted(parts[0]), parse_mode="HTML"):
+            await message.reply(_quoted(parts[0]), parse_mode="HTML")
+        for part in parts[1:]:
+            await message.reply(_quoted(part), parse_mode="HTML")
     except Exception as e:
         logger.exception("Transcription failed")
         alerts.note_failure(e)            # раньше сбои расшифровки молчали в алертах
@@ -182,11 +235,16 @@ async def handle_video_note(message: Message):
     await _handle(message, message.video_note.file_id, ".mp4")
 
 
-async def _safe_edit(msg, text: str, parse_mode: str | None = None):
+async def _safe_edit(msg, text: str, parse_mode: str | None = None) -> bool:
+    """Правит сообщение. False — не вышло (сообщение удалили, отобрали права и т.п.),
+    и тогда вызывающий решает, как доставить текст другим путём."""
     try:
         await msg.edit_text(text, parse_mode=parse_mode)
+        return True
     except Exception:
-        pass
+        logger.info("Не смог отредактировать сообщение — отдам текст отдельно",
+                    exc_info=True)
+        return False
 
 
 def _cleanup(file_path: str):

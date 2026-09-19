@@ -68,3 +68,54 @@ def test_retries_telegram_server_error(_no_real_sleep):
 
     assert asyncio.run(RetryAfterMiddleware()(make_request, None, _FakeMethod())) == "ушло"
     assert len(calls) == 3
+
+
+def _send_video_with_file(tmp_path):
+    """Настоящий запрос отправки видео с ЗАЛИВКОЙ файла."""
+    from aiogram.methods import SendVideo
+    from aiogram.types import FSInputFile
+
+    probe = tmp_path / "v.mp4"
+    probe.write_bytes(b"0" * 10)
+    return SendVideo(chat_id=1, video=FSInputFile(str(probe)))
+
+
+def _send_video_by_file_id():
+    """Тот же метод, но файл уже у Telegram — заливки нет."""
+    from aiogram.methods import SendVideo
+    return SendVideo(chat_id=1, video="BAADBAADfile_id")
+
+
+def test_upload_is_recognized(tmp_path):
+    assert retry._is_upload(_send_video_with_file(tmp_path))
+    assert not retry._is_upload(_send_video_by_file_id())
+    assert not retry._is_upload(_FakeMethod())
+
+
+def test_network_error_during_upload_is_not_retried(tmp_path, _no_real_sleep):
+    """Обрыв посреди заливки — повтор означал бы вторую полную заливку того же файла."""
+    from aiogram.exceptions import TelegramNetworkError
+
+    calls = []
+
+    async def make_request(bot, method):
+        calls.append(1)
+        raise TelegramNetworkError(method=_FakeMethod(), message="обрыв")
+
+    with pytest.raises(TelegramNetworkError):
+        asyncio.run(RetryAfterMiddleware()(make_request, None, _send_video_with_file(tmp_path)))
+    assert len(calls) == 1
+
+
+def test_flood_limit_during_upload_is_retried_once(tmp_path, _no_real_sleep):
+    calls = []
+
+    async def make_request(bot, method):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TelegramRetryAfter(method=_FakeMethod(), message="flood", retry_after=3)
+        return "ушло"
+
+    result = asyncio.run(
+        RetryAfterMiddleware()(make_request, None, _send_video_with_file(tmp_path)))
+    assert result == "ушло" and len(calls) == 2
