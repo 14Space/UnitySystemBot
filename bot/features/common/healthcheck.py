@@ -962,23 +962,39 @@ def format_health(results: list[dict], platform_order: list[str] | None = None,
     if at is not None:
         head += f" ({t('hc_taken_at', lang, time=at.strftime('%H:%M'))})"
     lines = [f"<b>{head}: {ok_n}/{tested}</b>"]
-    # Сам список прячем в раскрывающуюся цитату: пунктов три десятка, развёрнутыми они
-    # занимают весь экран. Главное — «30/30», подробности по нажатию. Тег
-    # <blockquote expandable> Telegram показывает свёрнутым.
-    lines.append("<blockquote expandable>")
+    # Список прячем в раскрывающуюся цитату: пунктов три десятка, развёрнутыми они
+    # занимают весь экран. Главное — счёт, подробности по нажатию.
+    #
+    # Открывающий тег ПРИКЛЕИВАЕМ к первой строке, а не кладём отдельным элементом:
+    # иначе после join между тегом и первым пунктом появляется перевод строки, и
+    # Telegram рисует внутри цитаты пустую строку сверху.
+    body, problems = [], []
     for r in _display_order(results, platform_order):
         # Рабочие — чисто (только галочка + название). У сломанных/пропущенных оставляем
         # короткую причину (это не размер/время, а «что не так»), без времени.
         if r["state"] == "ok":
             # Работает, но резко медленнее своей нормы — молча пропускать такое нельзя.
             if r.get("slow"):
-                lines.append(f"🐢 {t_check(r['name'], lang)} – "
-                             f"{t('hc_slow', lang, sec=r['sec'], base=r['baseline'])}")
+                line = (f"🐢 {t_check(r['name'], lang)} – "
+                        f"{t('hc_slow', lang, sec=r['sec'], base=r['baseline'])}")
+                problems.append(line)
             else:
-                lines.append(f"✅ {t_check(r['name'], lang)}")
+                line = f"✅ {t_check(r['name'], lang)}"
         else:
-            lines.append(f"{icons[r['state']]} {t_check(r['name'], lang)} – {r['detail']}")
-    lines.append("</blockquote>")
+            line = f"{icons[r['state']]} {t_check(r['name'], lang)} – {r['detail']}"
+            # Пропущенные (⚪) в проблемы не берём: это не поломка, а сознательно
+            # выключенный настройкой пункт.
+            if r["state"] != "skip":
+                problems.append(line)
+        body.append(line)
+
+    if body:
+        body[0] = "<blockquote expandable>" + body[0]
+        body[-1] = body[-1] + "</blockquote>"
+    lines += body
+    # Что не работает — ПОД цитатой обычным текстом: это должно быть видно сразу,
+    # не разворачивая список.
+    lines += problems
     return "\n".join(lines)
 
 

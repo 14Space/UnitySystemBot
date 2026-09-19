@@ -58,10 +58,12 @@ def format_stats(stats: dict, lang: str = "ru") -> str:
 
     if stats["downloads"]:
         lines.append(t("rep_platforms", lang))
-        lines.append("<blockquote expandable>")
-        for platform, count in _grouped_downloads(stats["downloads"]):
-            lines.append(f"• {platform}: {count}")
-        lines.append("</blockquote>")
+        # Тег приклеиваем к первой и последней строке, а не кладём отдельными
+        # элементами: иначе после join внутри цитаты появляются пустые строки.
+        rows = [f"• {p}: {c}" for p, c in _grouped_downloads(stats["downloads"])]
+        rows[0] = "<blockquote expandable>" + rows[0]
+        rows[-1] = rows[-1] + "</blockquote>"
+        lines += rows
 
     if stats.get("traffic"):
         lines.append("\n" + t("rep_traffic", lang))
