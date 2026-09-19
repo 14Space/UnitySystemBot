@@ -184,7 +184,9 @@ async def _periodic_healthcheck(bot: Bot):
     его проверку делает _daily_tasks.
 
     Первый прогон — вскоре после старта, чтобы наполнить кэш для /statistics и сразу
-    поймать поломку; дальше строго по слотам. Стартовый прогон идёт в любой час, в том
+    поймать поломку; по его итогам уходит ПОЛНЫЙ отчёт (как суточный), потому что
+    перезапуск — это почти всегда деплой и надо видеть, что доехало целым. Дальше
+    строго по слотам и снова только тревогами. Стартовый прогон идёт в любой час, в том
     числе в час отчёта: раньше он там пропускался (боялись столкнуться с _daily_tasks),
     и после перезапуска в этот час /statistics оставалась без проверки до следующего
     слота. Теперь сталкиваться нечем — run_and_cache пускает только один прогон разом,
@@ -202,13 +204,26 @@ async def _periodic_healthcheck(bot: Bot):
             # _daily_tasks. Пропуск заложен прямо в расчёт слота (детерминированно),
             # иначе два прогона могли столкнуться в 12:00 (двойная нагрузка → ложные сбои).
             await asyncio.sleep(_seconds_until_slot(HEALTHCHECK_EVERY_HOURS, skip_hour=REPORT_HOUR))
-        startup = False
+        first = startup      # снимаем флаг ДО прогона: упади он с ошибкой, следующий
+        startup = False      # виток всё равно должен уйти спать до слота, а не крутиться
         try:
             results = await run_and_cache()
             if ADMIN_ID:
-                alert = format_alert(results, ADMIN_LANG)
-                if alert:
-                    await bot.send_message(ADMIN_ID, alert)
+                if first:
+                    # После перезапуска шлём ПОЛНЫЙ отчёт, а не тревогу: перезапуск —
+                    # это почти всегда деплой, и первое, что нужно знать, — доехала ли
+                    # сборка целой. Тревога отвечала только «что сломалось», и после
+                    # удачного деплоя бот молчал: не отличить «всё хорошо» от «отчёт
+                    # не дошёл».
+                    async with SessionLocal() as session:
+                        stats = await get_stats(session)
+                    report = (f"{format_stats(stats, ADMIN_LANG)}\n\n"
+                              f"{format_health(results, platform_ranking(stats), lang=ADMIN_LANG)}")
+                    await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
+                else:
+                    alert = format_alert(results, ADMIN_LANG)
+                    if alert:
+                        await bot.send_message(ADMIN_ID, alert)
         except Exception:
             logger.exception("Периодическая проверка функционала упала")
         if HEALTHCHECK_EVERY_HOURS <= 0:

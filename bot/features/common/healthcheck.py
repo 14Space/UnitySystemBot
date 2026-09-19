@@ -1013,7 +1013,7 @@ _CHECKS = [
 _PLAYWRIGHT_CHECKS = {"HDRezka фильм", "HDRezka сериал"}
 # TikTok API (tikwm) держит лимит «1 запрос/сек» — гоняем TikTok-чеки строго по одному
 # с паузой между ними, иначе видео+слайдшоу сталкиваются и ловят «Free Api Limit».
-_TIKTOK_CHECKS = {"TikTok видео", "TikTok слайдшоу", "TikTok аудиодорожка"}
+_TIKTOK_CHECKS = {"TikTok видео", "TikTok видео (сжатие)", "TikTok слайдшоу", "TikTok аудио"}
 # Instagram-чеки читают ОДИН файл кук; при параллельном доступе yt-dlp может писать его
 # обратно и портить — ловится как «failed to load cookies». Поэтому тоже по одному.
 _INSTAGRAM_CHECKS = {"Instagram Reels", "Instagram фото-пост", "Instagram карусель"}
