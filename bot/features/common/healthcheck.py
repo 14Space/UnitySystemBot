@@ -725,11 +725,11 @@ _CHECKS = [
     ("YouTube видео",           "YouTube",    lambda: _dl_probe(U_YT_VIDEO),               U_YT_VIDEO),
     ("YouTube Shorts",          "YouTube",    lambda: _dl_shorts(U_YT_SHORTS),             U_YT_SHORTS),
     ("YouTube Shorts (сжатие)",  "YouTube",   lambda: _dl_shorts_compressed(U_YT_SHORTS_HQ), U_YT_SHORTS_HQ),
-    ("YT Music",                "YouTube",    lambda: _dl_probe(U_YT_MUSIC, True),         U_YT_MUSIC),
+    ("YouTube Music",                "YouTube",    lambda: _dl_probe(U_YT_MUSIC, True),         U_YT_MUSIC),
     ("Spotify трек",            "Spotify",    _check_spotify,                               U_SPOTIFY),
-    ("Spotify альбом/плейлист", "Spotify",    _check_spotify_collection,                    U_SPOTIFY_COL),
+    ("Spotify альбом", "Spotify",    _check_spotify_collection,                    U_SPOTIFY_COL),
     ("SoundCloud трек",         "SoundCloud", lambda: _check_soundcloud_track(U_SOUNDCLOUD), U_SOUNDCLOUD),
-    ("SoundCloud сет",          "SoundCloud", _check_soundcloud_set,                        U_SOUNDCLOUD_SET),
+    ("SoundCloud альбом",          "SoundCloud", _check_soundcloud_set,                        U_SOUNDCLOUD_SET),
     ("Instagram Reels",         "Instagram",  lambda: _dl_reel(U_IG_REEL),                 U_IG_REEL),
     ("Instagram фото-пост",     "Instagram",  lambda: _dl_ig_post(U_IG_PHOTO),             U_IG_PHOTO),
     ("Instagram карусель",      "Instagram",  lambda: _dl_ig_post(U_IG_CAROUSEL, True),    U_IG_CAROUSEL),
@@ -756,7 +756,7 @@ _CHECKS = [
     ("Расшифровка (Wisper)",     None,         _check_stt_local,
      "x" if "local" in STT_ORDER else _OFF),
     # Как и локальный Whisper — проверяем, только если способ реально стоит в цепочке.
-    ("Расшифровка (альтернативная)", None,     _check_stt_relay,
+    ("Расшифровка (посредник)", None,     _check_stt_relay,
      "x" if "relay" in STT_ORDER else _OFF),
     ("yt-dlp последний",        None,         _check_ytdlp,                                 "x"),
     ("Куки Instagram",          None,         _check_ig_cookies,                            "x"),
@@ -955,7 +955,7 @@ def format_health(results: list[dict], platform_order: list[str] | None = None,
     """Блок «проверка функционала» для отчёта (HTML). platform_order — платформы по
     убыванию использования (порядок как в «По платформам»). at — время, когда проверка
     была снята: если задано, в заголовок добавляется «(была в ЧЧ:ММ)» (для /statistics)."""
-    icons = {"ok": "✅", "fail": "❌", "skip": "⚪"}
+    icons = {"ok": "✅", "fail": "❌", "skip": "⚫️"}
     ok_n = sum(1 for r in results if r["state"] == "ok")
     tested = sum(1 for r in results if r["state"] != "skip")
     head = t("hc_title", lang)
