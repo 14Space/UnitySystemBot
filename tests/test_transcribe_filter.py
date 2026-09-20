@@ -67,7 +67,8 @@ def test_every_method_goes_through_the_same_filter():
 
     async def scenario(answer):
         async def fake(path):
-            return answer
+            # Способ возвращает (текст, уверенность); None = «уверенность неизвестна».
+            return answer, None
         cascade._METHODS["fake"] = fake
         try:
             return await cascade.transcribe_audio("не важно")
