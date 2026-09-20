@@ -31,3 +31,8 @@ data/instagram_cookies.txt
 # В репозиторий попасть не должна никогда.
 *.session
 *.session-journal
+
+# Профиль браузера для автообновления кук (tools/cookie_sync.py) — это живые сессии
+# аккаунтов, то же самое, что пароли. И выгруженные из него файлы кук.
+data/cookie-profile/
+data/cookies-out/
