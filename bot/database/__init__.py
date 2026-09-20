@@ -62,6 +62,14 @@ async def init_db():
                 "ALTER TABLE chat_settings ADD COLUMN compress_shorts BOOLEAN DEFAULT NULL"
             )
 
+        # Отметка последней активности: раньше её не было, и «активных за месяц»
+        # посчитать было не из чего. У старых записей остаётся пустой — это честно:
+        # мы правда не знаем, когда эти люди последний раз пользовались ботом.
+        res = await conn.exec_driver_sql("PRAGMA table_info(users)")
+        user_cols = [r[1] for r in res.fetchall()]
+        if user_cols and "last_seen" not in user_cols:
+            await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN last_seen DATETIME")
+
         # Кнопки, пережившие перезапуск, теперь бывают трёх видов (выбор качества,
         # HDRezka, слайдшоу TikTok) — таблице нужны две новые колонки.
         res = await conn.exec_driver_sql("PRAGMA table_info(stashed_links)")

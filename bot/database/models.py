@@ -16,6 +16,10 @@ class User(Base):
     is_premium = Column(Boolean, default=False)
     language = Column(String, default="ru")
     created_at = Column(DateTime, server_default=func.now())
+    # Когда человек последний раз ОБРАЩАЛСЯ к боту. Нужно, чтобы отличать живых
+    # пользователей от накопленных за всё время: «всего 43» — цифра историческая, в неё
+    # попали и те, кто когда-то просто оказался в группе с ботом.
+    last_seen = Column(DateTime, nullable=True)
 
 
 class DownloadStat(Base):

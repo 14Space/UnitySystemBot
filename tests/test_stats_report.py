@@ -7,6 +7,7 @@ from bot.features.common.admin import format_stats
 
 BASE = {
     "users": 43,
+    "active": 12,
     "premium": 2,
     "languages": {"ru": 41, "en": 2},
     "downloads": {"tiktok": 10, "youtube_video": 5},
@@ -22,9 +23,12 @@ def test_report_shows_users_and_premium():
     assert "⭐️ Премиум пользователей: <b>2</b>" in text
 
 
-def test_premium_line_goes_right_after_users():
+def test_people_lines_go_in_order():
+    """Сначала сколько всего, потом сколько живых, потом премиум."""
     lines = [l for l in format_stats(BASE, "ru").split("\n") if l]
-    assert lines[1].startswith("👥") and lines[2].startswith("⭐️")
+    assert lines[1].startswith("\U0001f465")   # всего
+    assert lines[2].startswith("\U0001f525")   # активных за месяц
+    assert lines[3].startswith("\u2b50")       # премиум
 
 
 def test_languages_have_percentages():
@@ -90,3 +94,12 @@ def test_platform_names_match_the_functionality_check():
     assert "YouTube Music" in in_stats
     assert not {n for n in in_stats if n.replace("YouTube", "YT") in in_checks and
                 n not in in_checks and n != "YouTube Music"}
+
+
+def test_active_users_are_shown():
+    assert "🔥 Активных за месяц: <b>12</b>" in format_stats(BASE, "ru")
+
+
+def test_old_stats_without_active_field_do_not_break():
+    old = {k: v for k, v in BASE.items() if k != "active"}
+    assert "🔥 Активных за месяц: <b>0</b>" in format_stats(old, "ru")

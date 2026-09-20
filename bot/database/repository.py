@@ -29,14 +29,21 @@ def _cache_hash(url: str, quality, bot_id: int | None) -> str:
         f"{bot_id}:{normalize_cache_url(url)}:{quality}".encode()).hexdigest()
 
 
+# Как часто обновляем отметку активности. Чаще незачем: человек, приславший десять
+# ссылок подряд, — это один активный человек, а запись в базу на каждое сообщение
+# ничего не уточняет и только греет диск.
+_SEEN_EVERY = timedelta(minutes=30)
+
+
 async def get_or_create_user(
     session: AsyncSession, user_id: int, username: str, language: str = "ru"
 ) -> User:
-    """Возвращает пользователя из БД, или создаёт нового"""
+    """Возвращает пользователя из БД, или создаёт нового. Заодно отмечает активность."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     result = await session.execute(select(User).where(User.user_id == user_id))
     user = result.scalar_one_or_none()
     if not user:
-        user = User(user_id=user_id, username=username, language=language)
+        user = User(user_id=user_id, username=username, language=language, last_seen=now)
         session.add(user)
         try:
             await session.commit()
@@ -45,6 +52,11 @@ async def get_or_create_user(
             await session.rollback()
             result = await session.execute(select(User).where(User.user_id == user_id))
             user = result.scalar_one()
+        return user
+
+    if user.last_seen is None or now - user.last_seen > _SEEN_EVERY:
+        user.last_seen = now
+        await session.commit()
     return user
 
 
@@ -150,6 +162,12 @@ async def get_stats(session: AsyncSession) -> dict:
     users = (await session.execute(select(func.count(User.id)))).scalar() or 0
     premium = (await session.execute(
         select(func.count(User.id)).where(User.is_premium.is_(True)))).scalar() or 0
+    # Активные — те, кто обращался к боту за последний месяц. У старых записей отметки
+    # нет вовсе (её завели позже), и они сюда не попадают — это честно: когда они
+    # пользовались ботом в последний раз, мы не знаем.
+    month_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+    active = (await session.execute(
+        select(func.count(User.id)).where(User.last_seen >= month_ago))).scalar() or 0
 
     lang_rows = (await session.execute(
         select(User.language, func.count(User.id)).group_by(User.language)
@@ -160,6 +178,7 @@ async def get_stats(session: AsyncSession) -> dict:
         "downloads": downloads,
         "total_downloads": sum(downloads.values()),
         "users": users,
+        "active": active,
         "premium": premium,
         "languages": languages,
         "payments": await get_payment_summary(session),

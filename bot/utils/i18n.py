@@ -152,6 +152,7 @@ TEXTS = {
     # --- Отчёт админу: статистика и проверка функционала ---
     "rep_title":      {"ru": "📊 <b>Статистика UnitySystem</b>", "uk": "📊 <b>Статистика UnitySystem</b>", "en": "📊 <b>UnitySystem statistics</b>"},
     "rep_users":      {"ru": "👥 Пользователей", "uk": "👥 Користувачів", "en": "👥 Users"},
+    "rep_active":     {"ru": "🔥 Активных за месяц", "uk": "🔥 Активних за місяць", "en": "🔥 Active this month"},
     "rep_premium":    {"ru": "⭐️ Премиум пользователей", "uk": "⭐️ Преміум користувачів", "en": "⭐️ Premium users"},
     "rep_payments":   {"ru": "💰 Покупок", "uk": "💰 Покупок", "en": "💰 Purchases"},
     "rep_stars":      {"ru": "звёзд", "uk": "зірок", "en": "stars"},

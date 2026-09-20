@@ -52,6 +52,9 @@ def format_stats(stats: dict, lang: str = "ru") -> str:
     """Текст отчёта по статистике на языке админа."""
     lines = [t("rep_title", lang), ""]
     lines.append(f"{t('rep_users', lang)}: <b>{stats['users']}</b>")
+    # «Всего» — цифра историческая: в ней и те, кто когда-то просто оказался в группе с
+    # ботом. Живую картину показывает вторая строка.
+    lines.append(f"{t('rep_active', lang)}: <b>{stats.get('active', 0)}</b>")
     lines.append(f"{t('rep_premium', lang)}: <b>{stats.get('premium', 0)}</b>")
 
     # Порядок блоков: сперва про людей (сколько их и на каких языках), потом про
