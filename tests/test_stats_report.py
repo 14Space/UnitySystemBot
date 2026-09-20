@@ -49,3 +49,44 @@ def test_survives_old_stats_without_new_fields():
     old = {k: v for k, v in BASE.items() if k not in ("premium", "payments")}
     text = format_stats(old, "ru")
     assert "⭐️ Премиум пользователей: <b>0</b>" in text
+
+
+def test_unused_platforms_are_shown_with_zero():
+    """«Не пользуются» и «сломалось» должны различаться на глаз.
+
+    Раньше площадка без единого запроса просто исчезала из отчёта, и понять, почему
+    Pinterest не видно — им не пользуются или он перестал распознавать ссылки, — было
+    нельзя.
+    """
+    text = format_stats(BASE, "ru")
+    assert "• Pinterest: 0" in text
+    assert "• SoundCloud: 0" in text
+    assert "• YouTube Music: 0" in text
+
+
+def test_platforms_are_sorted_by_usage_then_alphabetically():
+    from bot.features.common.admin import _grouped_downloads
+
+    rows = _grouped_downloads({"tiktok": 10, "youtube_video": 5})
+    assert rows[0] == ("TikTok", 10)
+    assert rows[1] == ("YouTube", 5)
+    # Дальше нули по алфавиту — иначе они скакали бы между отчётами.
+    zeros = [name for name, count in rows if count == 0]
+    assert zeros == sorted(zeros)
+
+
+def test_platform_names_match_the_functionality_check():
+    """Одно и то же в двух списках одного отчёта не должно называться по-разному.
+
+    Было: в проверке пункт «YouTube Music», а в статистике площадка «YT Music».
+    """
+    from bot.features.common.admin import PLATFORM_GROUP
+    from bot.features.common.healthcheck import _CHECKS
+
+    in_checks = {platform for _name, platform, _fn, _url in _CHECKS if platform}
+    in_stats = set(PLATFORM_GROUP.values())
+    # У площадок из статистики, чьё имя встречается и в проверке, написание совпадает —
+    # сравнение идёт по точному значению, так что расхождение вида «YT Music» всплывёт.
+    assert "YouTube Music" in in_stats
+    assert not {n for n in in_stats if n.replace("YouTube", "YT") in in_checks and
+                n not in in_checks and n != "YouTube Music"}

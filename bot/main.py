@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import (
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
@@ -177,29 +178,58 @@ async def _daily_tasks(bot: Bot):
             # самой проверки функционала («yt-dlp последний»).
             report = (f"{format_stats(stats, ADMIN_LANG)}\n\n"
                       f"{format_health(health, platform_ranking(stats), lang=ADMIN_LANG)}")
-            await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
-            await _send_backup(bot)
+            await _send_report(bot, report)
         except Exception:
             logger.exception("Не удалось отправить дневной отчёт")
         if old != new:
             await _restart_for_ytdlp(bot, old, new)
 
 
-async def _send_backup(bot: Bot):
-    """Шлёт админу свежую копию базы файлом — сразу под суточным отчётом.
+async def _send_report(bot: Bot, report: str):
+    """Отправляет суточный отчёт вместе с копией базы.
 
-    Отдельной функцией и со своим перехватом ошибок: сбой копии не должен утянуть за
-    собой отчёт, который уже ушёл. Файл после отправки удаляем — он временный.
+    Одним сообщением: отчёт идёт ПОДПИСЬЮ к файлу — так в чате одна карточка вместо
+    двух, и не нужна отдельная строка «резервная копия», дата и так в имени файла.
+
+    Но подпись к файлу у Telegram ограничена 1024 символами против 4096 у обычного
+    сообщения, а список из сорока пунктов проверки бывает длиннее. Считать символы
+    самим ненадёжно (в лимит идёт видимый текст, а правила разбора у Telegram свои),
+    поэтому просто пробуем — и на отказ откатываемся на два сообщения. Файл при этом
+    всё равно уходит без подписи.
+
+    Отчёт важнее копии. Что бы ни случилось с файлом — не снялся, не ушёл, отвергнут
+    Telegram — отчёт всё равно отправляется отдельным сообщением. Раньше он уходил
+    первым и это выходило само собой; теперь, когда он стал подписью к файлу, за этим
+    приходится следить отдельно.
     """
     path = await dump_database()
     if not path:
+        await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
         return
+
     try:
-        await bot.send_document(
-            ADMIN_ID, FSInputFile(path),
-            caption=t("rep_backup", ADMIN_LANG, date=datetime.now(_ADMIN_ZONE).strftime("%d.%m.%Y")))
+        # Лучший случай: одна карточка — файл, а под ним весь отчёт.
+        try:
+            await bot.send_document(ADMIN_ID, FSInputFile(path),
+                                    caption=report, parse_mode="HTML")
+            return
+        except TelegramBadRequest as e:
+            if "caption is too long" in str(e).lower():
+                logger.info("Отчёт не влез в подпись к файлу — шлю двумя сообщениями")
+            else:
+                logger.warning("Файл с отчётом не ушёл (%s) — шлю отчёт отдельно",
+                               str(e)[:120])
+        except Exception:
+            logger.exception("Файл с отчётом не ушёл — шлю отчёт отдельно")
+
+        # Отчёт важнее копии: он уходит в любом случае, что бы ни случилось с файлом.
+        await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
+        try:
+            await bot.send_document(ADMIN_ID, FSInputFile(path))
+        except Exception:
+            logger.exception("Копия базы не отправилась")
     except Exception:
-        logger.exception("Не удалось отправить резервную копию базы")
+        logger.exception("Не удалось отправить дневной отчёт")
     finally:
         try:
             os.remove(path)

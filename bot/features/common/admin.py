@@ -10,7 +10,7 @@ from bot.utils.i18n import t, lang_of
 router = Router()
 
 # Подразделы площадок сводим в одну платформу для статистики (например, instagram_reel
-# и instagram_post → Instagram). YouTube и YT Music держим раздельно — это по сути два
+# и instagram_post → Instagram). YouTube и YouTube Music держим раздельно — это по сути два
 # разных сервиса. Ключи слева — как их пишет БД (см. platform_detector).
 PLATFORM_GROUP = {
     "tiktok": "TikTok",
@@ -18,7 +18,9 @@ PLATFORM_GROUP = {
     "hdrezka": "HDRezka",
     "twitter": "Twitter",
     "youtube_video": "YouTube", "youtube_shorts": "YouTube",
-    "yt_music": "YT Music",
+    # Пишем ровно так же, как называется пункт в проверке функционала: одно и то же
+    # в двух списках одного отчёта не должно называться по-разному.
+    "yt_music": "YouTube Music",
     "spotify": "Spotify", "spotify_collection": "Spotify",
     "pinterest": "Pinterest",
     "pornhub": "PornHub", "pornhub_short": "PornHub",
@@ -27,12 +29,18 @@ PLATFORM_GROUP = {
 
 
 def _grouped_downloads(downloads: dict) -> list[tuple[str, int]]:
-    """Сводит подразделы в платформы и сортирует по убыванию запросов."""
-    agg: dict[str, int] = {}
+    """Сводит подразделы в платформы и сортирует по убыванию запросов.
+
+    Площадки с нулём тоже показываем. Раньше их просто не было в списке, и «Pinterest
+    не пользуются» выглядело неотличимо от «Pinterest сломался и ссылки перестали
+    распознаваться». Ноль — это тоже информация.
+    """
+    agg: dict[str, int] = {name: 0 for name in PLATFORM_GROUP.values()}
     for key, cnt in (downloads or {}).items():
         name = PLATFORM_GROUP.get(key, key)
         agg[name] = agg.get(name, 0) + cnt
-    return sorted(agg.items(), key=lambda x: -x[1])
+    # При равном числе — по алфавиту, иначе нулевые площадки скакали бы между отчётами.
+    return sorted(agg.items(), key=lambda x: (-x[1], x[0]))
 
 
 def platform_ranking(stats: dict) -> list[str]:
