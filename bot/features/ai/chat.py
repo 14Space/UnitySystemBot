@@ -1,7 +1,10 @@
 """
 Команда /ai — ИИ-ассистент. Ответь этой командой на любое сообщение (тогда оно —
-контекст), либо напиши вопрос прямо: «/ai сколько лететь до Марса». Уточнения —
-ответом на ответ бота (тред как у Грока в твиттере).
+контекст), либо напиши вопрос прямо: «/ai сколько лететь до Марса».
+
+Уточнения командой НЕ требуют: достаточно ответить реплаем на сообщение бота, и
+разговор продолжится — как в обычной переписке. Команда нужна только чтобы начать
+новую ветку или подсунуть чужое сообщение как контекст.
 
 Работает, если функция «ai» не выключена в чате через /setconfig. Держится в
 бесплатном тире: свои суточные лимиты + мягкая обработка «лимит провайдера исчерпан».
@@ -9,7 +12,8 @@
 import asyncio
 import logging
 
-from aiogram import Router
+from aiogram import F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
@@ -86,6 +90,41 @@ async def cmd_ai(message: Message, command: CommandObject):
         await message.reply(t("ai_how", lang))
         return
 
+    await _answer(message, history, lang)
+
+
+@router.message(F.text, F.reply_to_message)
+async def ai_followup(message: Message):
+    """Ответ реплаем на сообщение бота продолжает разговор — без команды.
+
+    Разговор с ИИ так и ведут: спросил, получил ответ, уточнил. Требовать «/ai» на
+    каждую реплику — то же самое, что здороваться в каждом сообщении.
+
+    Отвечаем ТОЛЬКО если сообщение, на которое ответили, — наш же ответ ИИ (он лежит
+    в ai_threads). Реплай на что угодно другое — на скачанное видео, на расшифровку,
+    на чужое сообщение — нас не касается: поднимаем SkipHandler, и апдейт идёт
+    дальше по цепочке обработчиков, как будто нас тут нет. Без этого реплай со
+    ссылкой перестал бы скачиваться: в aiogram сработавший обработчик забирает
+    сообщение себе, даже если ничего с ним не сделал.
+    """
+    text = (message.text or "").strip()
+    replied = message.reply_to_message
+    if text.startswith("/") or not replied.from_user or not replied.from_user.is_bot:
+        raise SkipHandler
+
+    async with SessionLocal() as session:
+        thread = await load_ai_thread(session, replied.message_id)
+    if not thread:
+        raise SkipHandler                 # не наша ветка — пусть разбираются другие
+
+    if await _ai_disabled(message.chat):
+        return
+    await _answer(message, list(thread) + [{"role": "user", "content": text}],
+                  lang_of(message.from_user))
+
+
+async def _answer(message: Message, history: list[dict], lang: str):
+    """Спрашивает модель и отдаёт ответ, запоминая ветку разговора."""
     if not await _within_limits(message.from_user.id):
         await message.reply(t("ai_limit", lang))
         return

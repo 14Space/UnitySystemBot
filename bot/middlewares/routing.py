@@ -27,6 +27,16 @@ def _msg_feature(m: Message) -> str | None:
         return "download"
     if text and parse_currency(text):
         return "currency"
+    # Ответ реплаем на сообщение бота — продолжение разговора с ИИ (см. features/ai).
+    # Проверяем последним: реплай со ссылкой или валютой — это всё-таки скачивание и
+    # конвертер, они разобрались выше. Здесь нам важно, что такой реплай ВООБЩЕ
+    # считается обращением к боту: иначе он не попадёт ни в очередь, ни под тумблер
+    # «ИИ-ассистент», ни в статистику — для них он выглядел бы чужой болтовнёй.
+    replied = getattr(m, "reply_to_message", None)
+    # from_user может не быть вовсе: анонимный админ группы, пост из канала.
+    author = getattr(replied, "from_user", None)
+    if text and not text.startswith("/") and getattr(author, "is_bot", False):
+        return "ai"
     return None
 
 
