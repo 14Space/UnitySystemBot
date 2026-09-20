@@ -46,15 +46,28 @@ def _looks_blocked(err: Exception) -> bool:
     return any(m in s for m in _BLOCK_MARKERS)
 
 
-def _proxy_attempts() -> list[str]:
-    """Сначала прямое соединение (''), затем — прокси, если он задан.
+def _attempts(cookies: str | None) -> list[tuple[str, str | None]]:
+    """Пары (прокси, куки) по порядку попыток.
 
-    PROXY_FIRST здесь СОЗНАТЕЛЬНО не действует, в отличие от YouTube и TikTok. Instagram
-    с дата-центрового адреса отдаёт публичный контент как ни в чём не бывало, и прокси
-    ему только мешает — замер с сервера: напрямую 4.0с, через туннель 9.3с. Прокси нужен
-    лишь как запасной путь на случай, когда Instagram всё-таки упрётся в анти-бот.
+    Главное правило: ЗАПРОС С КУКАМИ ИДЁТ ТОЛЬКО ЧЕРЕЗ ДОМ. Instagram смотрит, откуда
+    работает сессия, и вход из дата-центра считает угоном — закрывает её. Именно это у
+    нас и происходило: сессия жила ровно до ближайшего деплоя, потому что сразу после
+    запуска проверка стучалась в Instagram с серверного адреса (пять обращений подряд:
+    Reels, Reels со сжатием, фото-пост, карусель, сами куки). Выглядело как «куки опять
+    протухли», хотя срок у них до 2027 года — их просто отзывали.
+
+    Без кук прямой заход остаётся: публичный контент так качается быстрее (замер с
+    сервера: напрямую 4.0с, через туннель 9.3с), а светить нечего.
+
+    Порядок: сначала дом с куками (всё, что умеем), затем — прямой заход БЕЗ кук.
+    Второй нужен на случай, когда туннель лежит: открытый пост скачается и так, а
+    сессию мы при этом не подставим.
     """
-    return ["", INSTAGRAM_PROXY] if INSTAGRAM_PROXY else [""]
+    if cookies and INSTAGRAM_PROXY:
+        return [(INSTAGRAM_PROXY, cookies), ("", None)]
+    if cookies:                      # туннель не настроен — работаем как раньше
+        return [("", cookies)]
+    return [("", None)]
 
 
 # --- Запасной путь для одиночного ФОТО через браузер (Playwright) -------------
@@ -146,10 +159,14 @@ def download_reel(url: str, max_height: int | None = None) -> str:
         base_opts["cookiefile"] = cookies
 
     last_err: Exception | None = None
-    for proxy in _proxy_attempts():
+    for proxy, use_cookies in _attempts(cookies):
         ydl_opts = dict(base_opts)
         if proxy:
             ydl_opts["proxy"] = proxy
+        if use_cookies:
+            ydl_opts["cookiefile"] = use_cookies
+        else:
+            ydl_opts.pop("cookiefile", None)
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 extracted = ydl.extract_info(url, download=True)
@@ -161,8 +178,8 @@ def download_reel(url: str, max_height: int | None = None) -> str:
         except Exception as e:
             last_err = e
             # Прямой доступ заблокирован анти-ботом, а прокси ещё не пробовали — повторим.
-            if not proxy and INSTAGRAM_PROXY and _looks_blocked(e):
-                logger.info("Instagram: прямой доступ заблокирован (%s) — пробуем через прокси",
+            if proxy and INSTAGRAM_PROXY:
+                logger.info("Instagram: через дом не вышло (%s) — пробую напрямую без кук",
                             str(e)[:60])
                 continue
             # «Доступ не для всех» — почти всегда вопрос кук. Подсказываем в лог, что делать.
@@ -219,12 +236,16 @@ def download_post(url: str) -> list[str]:
     if cookies:
         base_opts["cookiefile"] = cookies
 
-    # Прямой доступ, при анти-бот отказе — повтор через прокси (см. _proxy_attempts).
+    # С куками — через дом, запасной заход — напрямую без кук (см. _attempts).
     info, used_proxy, last_err = None, "", None
-    for proxy in _proxy_attempts():
+    for proxy, use_cookies in _attempts(cookies):
         opts = dict(base_opts)
         if proxy:
             opts["proxy"] = proxy
+        if use_cookies:
+            opts["cookiefile"] = use_cookies
+        else:
+            opts.pop("cookiefile", None)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 # process=False — не даём yt-dlp падать на фото («No video formats found»);
@@ -235,8 +256,8 @@ def download_post(url: str) -> list[str]:
         if info:
             used_proxy = proxy
             break
-        if not proxy and INSTAGRAM_PROXY:
-            logger.info("Instagram: пост не отдался напрямую — пробуем через прокси")
+        if proxy and INSTAGRAM_PROXY:
+            logger.info("Instagram: пост не отдался через дом — пробую напрямую без кук")
 
     if not info:
         # Частый случай — одиночное ФОТО: yt-dlp падает («There is no video in this post»).

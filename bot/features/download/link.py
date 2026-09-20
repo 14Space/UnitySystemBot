@@ -11,7 +11,7 @@ from aiogram.types import (
     Message, CallbackQuery, BufferedInputFile,
     InputMediaPhoto, InputMediaVideo,
 )
-from bot.utils.platform_detector import detect_platform, Platform
+from bot.utils.platform_detector import detect_platform, Platform, extract_url
 from bot.features.download.keyboards.quality import build_quality_keyboard, FREE_LIMIT
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar, ProgressThrottle
@@ -93,7 +93,9 @@ def stash_inline_link(url: str) -> str:
 
 @router.message(F.text)
 async def handle_link(message: Message):
-    await process_link(message, message.text.strip())
+    # Берём из сообщения именно ССЫЛКУ, а не весь текст: рядом с ней почти всегда
+    # идёт подпись, и раньше она уезжала на площадку как часть адреса.
+    await process_link(message, extract_url(message.text))
 
 
 async def process_link(message: Message, url: str):

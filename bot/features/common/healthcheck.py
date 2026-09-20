@@ -162,6 +162,17 @@ async def _check_ytdlp():
 
 
 # Браузерный User-Agent: с «python-requests» площадки отвечают иначе и проверка соврёт.
+def _home_proxies() -> dict | None:
+    """Через что ходить с КУКАМИ — домашний туннель, если он настроен.
+
+    Проверка кук обязана идти тем же путём, что и боевой запрос. Иначе она сама себе
+    вредит: площадка видит сессию из дата-центра и закрывает её — то есть проверка
+    «жива ли сессия» эту сессию и убивает. Каждые два часа и сразу после деплоя.
+    """
+    proxy = os.getenv("PROXY_URL", "")
+    return {"http": proxy, "https": proxy} if proxy else None
+
+
 _COOKIE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/131.0 Safari/537.36")
 # Открытый ключ веб-клиента X: с ним ходит сам сайт, и без него его API не отвечает.
@@ -210,7 +221,7 @@ async def _check_ig_cookies():
     def work():
         r = requests.get("https://www.instagram.com/accounts/edit/", cookies=jar,
                          headers={"User-Agent": _COOKIE_UA}, timeout=25,
-                         allow_redirects=False)
+                         proxies=_home_proxies(), allow_redirects=False)
         if r.status_code == 200:
             return True, t("hc_ck_alive", _admin_lang())
         if r.status_code in (301, 302):
@@ -281,6 +292,7 @@ async def _check_x_cookies():
 
     def work():
         r = requests.get("https://api.x.com/1.1/account/verify_credentials.json",
+                         proxies=_home_proxies(),
                          cookies=jar, timeout=25,
                          headers={"User-Agent": _COOKIE_UA,
                                   "Authorization": f"Bearer {_X_BEARER}",

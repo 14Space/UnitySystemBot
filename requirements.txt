@@ -9,7 +9,10 @@ aiogram==3.20.0
 yt-dlp>=2025.6.9
 bgutil-ytdlp-pot-provider  # клиент к «выдавателю пропусков» (PO-токенов) для YouTube
 curl_cffi>=0.7             # маскировка под браузер (yt-dlp impersonate) — обход Cloudflare на PornHub
-requests==2.34.2
+# requests[socks] — поддержка SOCKS5 (пакет PySocks). Нужна, чтобы запросы С КУКАМИ
+# уходили через домашний туннель: площадки убивают сессию, которую видят из
+# дата-центра. Без этого requests отвечает «Missing dependencies for SOCKS support».
+requests[socks]==2.34.2
 
 # База данных (кэш file_id, пользователи)
 SQLAlchemy==2.0.41

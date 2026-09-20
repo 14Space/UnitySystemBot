@@ -11,7 +11,7 @@ from aiogram.types import Message, CallbackQuery, InlineQuery
 from bot.database import SessionLocal
 from bot.database.repository import get_disabled_features, current_bot_id
 from bot.features.currency.parser import parse as parse_currency
-from bot.utils.platform_detector import detect_platform, Platform
+from bot.utils.platform_detector import detect_platform, Platform, extract_url
 
 
 def _msg_feature(m: Message) -> str | None:
@@ -22,7 +22,8 @@ def _msg_feature(m: Message) -> str | None:
     # Именно НАША площадка, а не любая ссылка: чужие бот всё равно не качает, и
     # считать их обращением к нему неправильно — по этому признаку человек попадал
     # в статистику и занимал место в очереди, ничего у бота не попросив.
-    if text.startswith("http") and detect_platform(text) != Platform.UNKNOWN:
+    link = extract_url(text)
+    if link and detect_platform(link) != Platform.UNKNOWN:
         return "download"
     if text and parse_currency(text):
         return "currency"
