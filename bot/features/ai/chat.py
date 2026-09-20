@@ -22,7 +22,7 @@ from bot.database import SessionLocal
 from bot.database.repository import (
     get_disabled_features, save_ai_thread, load_ai_thread, ai_usage_today, add_ai_usage)
 from bot.features.ai import client
-from bot.utils.i18n import t, lang_of
+from bot.utils.i18n import t, lang_of, lang_of_text
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -93,6 +93,16 @@ async def cmd_ai(message: Message, command: CommandObject):
     await _answer(message, history, lang)
 
 
+def _reply_lang(history: list[dict], ui_lang: str) -> str:
+    """На каком языке отвечать. Смотрим на ПОСЛЕДНЮЮ реплику человека, а не на язык
+    интерфейса: спросили по-русски — отвечаем по-русски, даже если Telegram у человека
+    английский. Не разобрали язык (короткое «ок», одни цифры) — держимся интерфейса."""
+    for item in reversed(history):
+        if item.get("role") == "user":
+            return lang_of_text(item.get("content", ""), ui_lang)
+    return ui_lang
+
+
 @router.message(F.text, F.reply_to_message)
 async def ai_followup(message: Message):
     """Ответ реплаем на сообщение бота продолжает разговор — без команды.
@@ -124,13 +134,17 @@ async def ai_followup(message: Message):
 
 
 async def _answer(message: Message, history: list[dict], lang: str):
-    """Спрашивает модель и отдаёт ответ, запоминая ветку разговора."""
+    """Спрашивает модель и отдаёт ответ, запоминая ветку разговора.
+
+    lang — язык ИНТЕРФЕЙСА (служебные надписи вроде «Думаю…»). Язык самого ответа
+    определяется отдельно, по тексту вопроса.
+    """
     if not await _within_limits(message.from_user.id):
         await message.reply(t("ai_limit", lang))
         return
 
     status = await message.reply(t("ai_thinking", lang))
-    text, st = await asyncio.to_thread(client.ask, history, lang)
+    text, st = await asyncio.to_thread(client.ask, history, _reply_lang(history, lang))
 
     if st == "no_provider":
         await _safe_edit(status, t("ai_not_configured", lang))
