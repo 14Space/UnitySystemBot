@@ -187,6 +187,10 @@ def _cookie_opts(url: str) -> dict:
     (У Instagram задача обратная — там сервер присылает УРЕЗАННЫЙ набор и затирает
     ключ входа, поэтому ему по-прежнему достаётся одноразовая копия.)
 
+    Живёт копия РЯДОМ С ОРИГИНАЛОМ, а не в папке загрузок: ту вычищают при каждом
+    старте бота, и вместе с хвостами загрузок улетала вся накопленная ротация —
+    после любого деплоя мы шли с выгрузки многодневной давности.
+
     Другим площадкам куки YouTube не отдаём: это чужая учётная запись, ей незачем
     уезжать на PornHub или SoundCloud вместе с запросом.
     """
@@ -195,7 +199,8 @@ def _cookie_opts(url: str) -> dict:
         return {}
     if not (u.startswith("ytsearch") or "youtube.com" in u or "youtu.be" in u):
         return {}
-    copy = cookie_files.working(YOUTUBE_COOKIES, DOWNLOADS_DIR)
+    copy = cookie_files.working(YOUTUBE_COOKIES,
+                                os.path.dirname(YOUTUBE_COOKIES) or ".")
     return {"cookiefile": copy} if copy else {}
 
 

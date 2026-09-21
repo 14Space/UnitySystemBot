@@ -3,17 +3,27 @@
 если у одного кончился дневной бесплатный лимит (429) — пробуем следующий. В платные
 вызовы не уходим никогда. Провайдеры включаются наличием ключа в .env.
 
+Порядок задаётся AI_ORDER (по умолчанию groq → gemini): Groq отвечает за полсекунды,
+Gemini на том же вопросе — за 36-46с, но вкусы к ответам у всех разные, поэтому
+порядок живёт в .env, а не в коде.
+
 ask(history, lang) -> (text|None, status), где status:
   "ok" — есть ответ; "quota" — бесплатный лимит исчерпан; "error" — сбой;
   "no_provider" — не задан ни один ключ.
+
+Провайдер, который не ответил вовремя или сломался, отставляется на AI_COOLDOWN —
+см. _rest. Без этого за тормоза одного платят все: 21.09.2026 Gemini отвечал по
+36-46с, и столько же ждал каждый спрашивающий, хотя Groq рядом отвечает за полсекунды.
 """
 import logging
 import re
+import time
 
 import requests
 
 from bot.config import (
     GEMINI_API_KEY, GROQ_API_KEY, GEMINI_MODEL, GROQ_MODEL,
+    AI_TIMEOUT, AI_COOLDOWN, AI_ORDER,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,7 +79,7 @@ def _gemini(history: list[dict], lang: str) -> tuple[str | None, str]:
     }
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
-    r = requests.post(url, json=body, timeout=60)
+    r = requests.post(url, json=body, timeout=AI_TIMEOUT)
     if r.status_code == 429:
         return None, "quota"
     if r.status_code != 200:
@@ -91,7 +101,7 @@ def _groq(history: list[dict], lang: str) -> tuple[str | None, str]:
         headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
         json={"model": GROQ_MODEL, "messages": msgs, "max_tokens": 800,
               "temperature": 0.85, "reasoning_format": "hidden"},
-        timeout=60,
+        timeout=AI_TIMEOUT,
     )
     if r.status_code == 429:
         return None, "quota"
@@ -102,25 +112,70 @@ def _groq(history: list[dict], lang: str) -> tuple[str | None, str]:
     return (text, "ok") if text else (None, "error")
 
 
+# Провайдеры, отставленные до указанного момента (монотонные часы — перевод системного
+# времени не должен ни продлевать отдых, ни отменять его).
+_resting: dict[str, float] = {}
+
+
+def _rest(name: str, seconds: int, why: str) -> None:
+    """Отставляет провайдера: пусть отдохнёт, а люди пока ходят к соседнему."""
+    _resting[name] = time.monotonic() + seconds
+    logger.info("ИИ: «%s» отставлен на %dс (%s)", name, seconds, why)
+
+
+def _awake(name: str) -> bool:
+    until = _resting.get(name)
+    return until is None or time.monotonic() >= until
+
+
+def _queue() -> list[tuple[str, object]]:
+    """Провайдеры в порядке AI_ORDER — только те, у кого есть ключ.
+
+    Неизвестное имя в настройке пропускаем с предупреждением: опечатка в .env не
+    должна оставлять бота вовсе без ИИ.
+    """
+    known = {"gemini": (_gemini, GEMINI_API_KEY), "groq": (_groq, GROQ_API_KEY)}
+    queue = []
+    for name in AI_ORDER:
+        if name not in known:
+            logger.warning("Неизвестный провайдер ИИ в AI_ORDER: %s", name)
+            continue
+        call, key = known[name]
+        if key:
+            queue.append((name, call))
+    return queue
+
+
 def ask(history: list[dict], lang: str = "ru") -> tuple[str | None, str]:
-    """Спрашивает у первого доступного провайдера; при исчерпании лимита — у следующего."""
-    providers = []
-    if GEMINI_API_KEY:
-        providers.append(_gemini)
-    if GROQ_API_KEY:
-        providers.append(_groq)
+    """Спрашивает у первого доступного провайдера; при исчерпании лимита — у следующего.
+
+    Отдыхающих пропускаем. Если отдыхают все — идём к ним всё равно: лучше медленный
+    ответ, чем никакого, а отдых на то и отдых, что мог уже помочь.
+    """
+    providers = _queue()
     if not providers:
         return None, "no_provider"
+    queue = [p for p in providers if _awake(p[0])] or providers
 
     last = "error"
-    for call in providers:
+    for name, call in queue:
         try:
             text, status = call(history, lang)
+        except requests.Timeout:
+            # Не ошибка провайдера, а именно «не успел»: ждать его снова смысла нет.
+            _rest(name, AI_COOLDOWN, f"не ответил за {AI_TIMEOUT}с")
+            last = "error"
+            continue
         except Exception:
             logger.exception("Провайдер ИИ упал")
+            _rest(name, AI_COOLDOWN, "сбой")
             last = "error"
             continue
         if status == "ok":
+            _resting.pop(name, None)
             return _clean(text), "ok"
+        # Кончился лимит — до полуночи UTC он не восстановится, но и запирать
+        # провайдера на весь день не станем: лимиты бывают минутные.
+        _rest(name, AI_COOLDOWN * (6 if status == "quota" else 1), status)
         last = status                 # quota/error — пробуем следующего провайдера
     return None, last
