@@ -41,9 +41,13 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = 60
 
 
-def _ffmpeg() -> str:
+def ffmpeg_bin() -> str:
     """Путь к ffmpeg. Ищется тем же способом, что и для скачивания: в контейнере он в
-    системных путях, на Windows может лежать рядом с проектом."""
+    системных путях, на Windows может лежать рядом с проектом.
+
+    Наружу — потому что тем же ffmpeg пользуется relay_stt: ему нужно перегнать
+    подготовленную запись обратно в голосовое (см. relay_stt._as_voice).
+    """
     from bot.features.download.downloaders.ytdlp_wrapper import FFMPEG_DIR
     return os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
 
@@ -59,7 +63,7 @@ def prepare(path: str) -> tuple[str, bool]:
         return path, False
 
     out = os.path.join(DOWNLOADS_DIR, f"prep_{uuid.uuid4().hex[:8]}.wav")
-    cmd = [_ffmpeg(), "-y", "-i", path, "-ar", "16000", "-ac", "1"]
+    cmd = [ffmpeg_bin(), "-y", "-i", path, "-ar", "16000", "-ac", "1"]
     if STT_FILTERS:
         cmd += ["-af", STT_FILTERS]
     cmd += [out]

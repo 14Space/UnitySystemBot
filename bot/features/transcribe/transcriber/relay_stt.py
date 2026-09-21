@@ -21,8 +21,11 @@ import asyncio
 import logging
 import os
 import re
+import subprocess
+import uuid
 
 from bot.config import (
+    DOWNLOADS_DIR,
     RELAY_STT_BOT, RELAY_STT_SESSION, RELAY_STT_TIMEOUT,
     RELAY_STT_CONCURRENCY, RELAY_STT_MIN_GAP,
     TELEGRAM_API_ID, TELEGRAM_API_HASH,
@@ -32,6 +35,32 @@ logger = logging.getLogger(__name__)
 
 # Подтверждение приёма, а не результат: увидев такое, продолжаем ждать правку.
 _ACK = re.compile(r"принято|обрабат|получен|ожидай|подожд|секунд", re.I)
+
+# Отказ чужого бота приходит обычным сообщением, а не ошибкой, и внешне ничем не
+# отличается от расшифровки. Раньше мы такой ответ показывали человеку — 20.09.2026
+# на видео-кружок бот процитировал «Не удалось ничего распознать. Вы прислали аудио
+# без речи.», будто это и есть сказанные слова.
+#
+# Узнаём отказ ТОЛЬКО в начале короткого сообщения. Те же слова звучат и в живой
+# речи: «Слушай, у меня ошибка в отчёте» — это расшифровка, а не отказ, и потерять
+# её было бы хуже исходной беды. Заготовка бота с них начинается, человек — почти
+# никогда. Впереди допускаем значки: бот любит начать с «❌».
+_NO_SPEECH = re.compile(
+    r"\W*(не удалось (ничего )?(распознать|расслышать)"
+    r"|не (смог|удаётся|удается|могу) (ничего )?(распознать|расслышать)"
+    r"|(в )?(аудио|записи|файле|сообщении) (нет|без) речи"
+    r"|аудио без речи|речь не (найден|обнаруж)"
+    r"|тишина\W*$|no speech)", re.I)
+# Отказ по другой причине (формат, размер, лимит) — это сбой: пусть каскад так его и
+# запишет, а человек увидит честное «расшифровка не работает», а не пустоту.
+_REFUSAL = re.compile(
+    r"\W*((произошла )?ошибк|сбой|файл слишком|слишком (длин|больш|велик)"
+    r"|превышен|лимит|попробуй(те)? (позже|ещ)"
+    r"|(формат )?не поддерживается|не удалось (обработать|скачать)"
+    r"|сервис недоступен|недоступен)", re.I)
+# Длиннее — это уже расшифровка, в которой такие слова просто прозвучали. Отказы
+# чужого бота — короткие заготовки в одну-две фразы.
+_VERDICT_MAX = 160
 
 _client = None
 # Сколько отправок идёт разом. Ограничиваем не бота, а аккаунт-посредник: Telegram
@@ -45,6 +74,9 @@ _last_sent = 0.0
 # Сколько наших отправок сейчас ждут ответа: по нему решаем, можно ли
 # доверять позиционному поиску ответа (см. _await_answer).
 _inflight = 0
+# Сколько ждём ffmpeg на сборку голосового. Кодирование идёт в десятки раз быстрее
+# реального времени, так что минуты хватает и на часовую запись.
+_CONVERT_TIMEOUT = 60
 
 
 class _NoGate:
@@ -104,21 +136,77 @@ async def authorized() -> bool:
     return True
 
 
+def _as_voice(path: str) -> tuple[str, bool]:
+    """Перегоняет запись в ogg/opus — формат настоящего голосового.
+
+    Чужой бот разбирает голосовые, а к нам он попадает уже ПОСЛЕ подготовки звука,
+    которая отдаёт wav (см. audio_prep). Голосовым Telegram такой файл не считает —
+    он уходит вложением, и бот отвечает «Вы прислали аудио без речи». Когда каскад
+    писали, подготовки ещё не было, и голосовое доезжало до него как есть.
+
+    Возвращает (путь, наш_ли_это_файл) — как audio_prep.prepare. Конвертация не
+    обязана удаться: не вышла — шлём что есть, хуже прежнего не будет.
+    """
+    if path.lower().endswith((".ogg", ".oga", ".opus")):
+        return path, False
+    from bot.features.transcribe.audio_prep import ffmpeg_bin
+
+    out = os.path.join(DOWNLOADS_DIR, f"relay_{uuid.uuid4().hex[:8]}.ogg")
+    cmd = [ffmpeg_bin(), "-y", "-i", path, "-ac", "1", "-ar", "48000",
+           "-c:a", "libopus", "-b:a", "32k", out]
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=_CONVERT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.info("Не собрал голосовое для бота-расшифровщика (%s) — шлю как есть",
+                    type(e).__name__)
+        return path, False
+    if res.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+        logger.info("Не собрал голосовое для бота-расшифровщика (ffmpeg %s) — шлю как есть",
+                    res.returncode)
+        _drop(out)
+        return path, False
+    return out, True
+
+
+def _drop(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _as_result(text: str) -> str:
+    """Отделяет расшифровку от отказа. Пустая строка = речи нет, исключение = сбой."""
+    text = (text or "").strip()
+    if len(text) <= _VERDICT_MAX:
+        if _NO_SPEECH.match(text):
+            logger.info("Бот-расшифровщик: речи нет (%r)", text[:80])
+            return ""
+        if _REFUSAL.match(text):
+            raise RuntimeError(f"бот-расшифровщик отказал: {text[:80]}")
+    return text
+
+
 async def transcribe(file_path: str) -> str:
     """Шлёт файл чужому боту и ждёт расшифровку. Бросает исключение, если не вышло."""
     global _inflight
     client = await _get_client()
-    async with (_gate or _NoGate()):
-        await _space_out()
-        last = await client.get_messages(RELAY_STT_BOT, limit=1)
-        last_id = last[0].id if last else 0
-        sent = await client.send_file(RELAY_STT_BOT, file_path, voice_note=True)
-        my_id = getattr(sent, "id", 0)
-        _inflight += 1
-        try:
-            return await _await_answer(client, last_id, my_id)
-        finally:
-            _inflight -= 1
+    voice, ours = await asyncio.to_thread(_as_voice, file_path)
+    try:
+        async with (_gate or _NoGate()):
+            await _space_out()
+            last = await client.get_messages(RELAY_STT_BOT, limit=1)
+            last_id = last[0].id if last else 0
+            sent = await client.send_file(RELAY_STT_BOT, voice, voice_note=True)
+            my_id = getattr(sent, "id", 0)
+            _inflight += 1
+            try:
+                return _as_result(await _await_answer(client, last_id, my_id))
+            finally:
+                _inflight -= 1
+    finally:
+        if ours:
+            _drop(voice)
 
 
 def _answers_me(msg, my_id: int) -> bool:

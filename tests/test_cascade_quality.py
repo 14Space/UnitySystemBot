@@ -109,3 +109,15 @@ def test_all_failed_raises():
 ])
 def test_threshold(confidence, expected):
     assert cascade._good_enough(confidence) is expected
+
+
+def test_empty_second_opinion_does_not_erase_the_first():
+    """20.09.2026: облако разобрало неуверенно, чужой бот ответил «речи нет» — и
+    человек не получил ничего, хотя слова в записи были и облако их разобрало."""
+    async def first(path):
+        return "слова всё-таки были", -0.9
+
+    async def second(path):
+        return "", None
+
+    assert _run(["a", "b"], {"a": first, "b": second}) == "слова всё-таки были"
