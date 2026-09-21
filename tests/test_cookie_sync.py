@@ -72,14 +72,66 @@ def test_every_site_has_a_login_key():
         assert site["key"] and site["file"] and site["domains"]
 
 
-def test_every_site_is_refreshed_by_visiting():
-    """Заход на площадку — это и есть обновление сессии, и он нужен всем трём.
+def test_nobody_is_visited_anymore():
+    """По сайтам не ходим вовсе.
 
-    История вопроса: на ПРОТУХШЕМ наборе кук Google заход выглядел разрушительным
-    (SID, HSID, APISID пропадали), и YouTube временно исключили. Перепроверка на
-    свежих куках показала обратное: не пропало ни одной куки, добавились новые, и
-    возрастной ролик после захода открывается. То есть заход не ломает сессию — он
-    ломается сам, когда сессии уже нет.
+    Первая версия «обновляла» куки заходом на страницу. 20.09.2026 это проверилось на
+    живом расписании: в 22:00 прогон, в 00:01 отчёт красный, в профиле не осталось ни
+    sessionid, ни SID — Instagram и Google сочли заход из автоматизированного окна
+    угоном сессии. Сессию нельзя освежить снаружи, её обновляет только тот браузер, в
+    котором человек реально сидит.
     """
     for site in cs.SITES:
-        assert site.get("visit", True) is True
+        assert "visit" not in site
+        assert "probe" in site and "alive" in site
+
+
+def test_alive_rules_are_sane():
+    """Проверка живости должна признавать вход только по явному «да»."""
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+    for site in cs.SITES:
+        assert site["alive"](_Resp(200)) is True
+        assert site["alive"](_Resp(302)) is False
+        assert site["alive"](_Resp(401)) is False
+
+
+def test_dead_session_is_detected_even_when_the_cookie_is_there(tmp_path, monkeypatch):
+    """Главная ловушка: sessionid остаётся в файле и после того, как сессию закрыли.
+
+    Именно так на сервер уезжали мёртвые куки — формально «ключ входа есть».
+    """
+    path = _write(tmp_path, ".instagram.com\tTRUE\t/\tTRUE\t1790000000\tsessionid\tabc\n")
+    site = next(s for s in cs.SITES if s["name"] == "Instagram")
+
+    class _Resp:
+        status_code = 302          # Instagram уводит гостя на вход
+
+    monkeypatch.setattr(cs.requests, "get", lambda *a, **kw: _Resp())
+    assert cs._session_is_alive(site, path) is False
+
+
+def test_live_session_passes(tmp_path, monkeypatch):
+    path = _write(tmp_path, ".instagram.com\tTRUE\t/\tTRUE\t1790000000\tsessionid\tabc\n")
+    site = next(s for s in cs.SITES if s["name"] == "Instagram")
+
+    class _Resp:
+        status_code = 200
+
+    monkeypatch.setattr(cs.requests, "get", lambda *a, **kw: _Resp())
+    assert cs._session_is_alive(site, path) is True
+
+
+def test_our_own_network_failure_does_not_block_upload(tmp_path, monkeypatch):
+    """Не смогли проверить — считаем живой: лучше залить рабочие куки, чем не залить
+    из-за собственного обрыва связи."""
+    path = _write(tmp_path, ".instagram.com\tTRUE\t/\tTRUE\t1790000000\tsessionid\tabc\n")
+    site = next(s for s in cs.SITES if s["name"] == "Instagram")
+
+    def boom(*a, **kw):
+        raise OSError("сеть легла")
+
+    monkeypatch.setattr(cs.requests, "get", boom)
+    assert cs._session_is_alive(site, path) is True

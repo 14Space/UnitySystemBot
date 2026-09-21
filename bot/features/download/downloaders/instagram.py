@@ -114,8 +114,67 @@ def _embed_image_src(browser, shortcode: str) -> str | None:
         ctx.close()
 
 
+# Где в HTML поста лежит ссылка на картинку. Instagram время от времени перекладывает
+# её и меняет вёрстку, поэтому ищем НЕСКОЛЬКИМИ способами и берём первый сработавший.
+_IMG_PATTERNS = (
+    re.compile(r'"display_url":"([^"]+)"'),
+    re.compile(r'property="og:image"\s+content="([^"]+)"'),
+    re.compile(r'"src":"(https://[^"]*cdninstagram[^"]*)"'),
+)
+
+
+def _image_from_html(html: str) -> str | None:
+    """Ссылка на картинку из HTML страницы поста."""
+    for pattern in _IMG_PATTERNS:
+        found = pattern.search(html or "")
+        if found:
+            # В JSON внутри HTML символы экранированы: \u0026 вместо & и \/ вместо /.
+            return found.group(1).replace("\\u0026", "&").replace("\\/", "/")
+    return None
+
+
+def _photo_via_page(shortcode: str, cookies: str | None, proxies=None) -> list[str]:
+    """Одиночное фото: берём ссылку прямо из HTML поста, С КУКАМИ.
+
+    yt-dlp такие посты не умеет вовсе («There is no video in this post»), а эмбед,
+    на который мы раньше опирались, Instagram с некоторых пор гостю не отдаёт — вместо
+    страницы приходит проверка на вход. С куками вошедшего страница открывается как
+    обычно, и ссылка на картинку есть прямо в её тексте: браузер для этого не нужен.
+    """
+    jar = None
+    if cookies and os.path.exists(cookies):
+        jar = http.cookiejar.MozillaCookieJar(cookies)
+        try:
+            jar.load(ignore_discard=True, ignore_expires=True)
+        except OSError:
+            jar = None
+
+    for url in (f"https://www.instagram.com/p/{shortcode}/",
+                f"https://www.instagram.com/p/{shortcode}/embed/captioned/"):
+        try:
+            r = requests.get(url, headers={"User-Agent": _UA}, cookies=jar,
+                             proxies=proxies, timeout=30)
+            src = _image_from_html(r.text)
+        except Exception:
+            logger.info("Instagram: %s не отдал картинку", url, exc_info=True)
+            continue
+        if not src:
+            continue
+        path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{uuid.uuid4().hex[:8]}_dl.jpg")
+        data = requests.get(src, timeout=60, proxies=proxies,
+                            headers={"User-Agent": _UA}).content
+        if not data:
+            continue
+        with open(path, "wb") as f:
+            f.write(data)
+        return [path]
+    return []
+
+
 def _photo_via_browser(shortcode: str, proxies=None) -> list[str]:
-    """Одиночное фото Instagram: добываем картинку рендером эмбеда браузером и качаем."""
+    """Тот же кадр, но рендером эмбеда в браузере. Оставлен последним шансом: тяжелее
+    (поднимает Chromium) и ломается от смены вёрстки, зато иногда добирается там, где
+    обычный запрос упирается в проверку."""
     src = pw_thread.run_with_browser(_embed_image_src, shortcode)
     if not src:
         return []
@@ -261,13 +320,19 @@ def download_post(url: str) -> list[str]:
 
     if not info:
         # Частый случай — одиночное ФОТО: yt-dlp падает («There is no video in this post»).
-        # Пробуем добыть картинку рендером эмбеда браузером (карусели/видео сюда не доходят).
-        try:
-            photo = _photo_via_browser(shortcode)
-            if photo:
-                return photo
-        except Exception:
-            logger.info("Instagram: браузерный фолбэк для фото не сработал", exc_info=True)
+        # Сначала пробуем просто прочитать страницу поста с куками, и лишь потом —
+        # браузер: он тяжелее и ломается от каждой смены вёрстки.
+        ig_proxies = ({"http": INSTAGRAM_PROXY, "https": INSTAGRAM_PROXY}
+                      if INSTAGRAM_PROXY else None)
+        for attempt, grab in (("страницей", lambda: _photo_via_page(shortcode, cookies, ig_proxies)),
+                              ("браузером", lambda: _photo_via_browser(shortcode, ig_proxies))):
+            try:
+                photo = grab()
+                if photo:
+                    logger.info("Instagram: фото добыто %s", attempt)
+                    return photo
+            except Exception:
+                logger.info("Instagram: добыть фото %s не вышло", attempt, exc_info=True)
         raise PostUnavailable(f"Instagram не отдал пост {shortcode}"
                               + (f": {last_err}" if last_err else ""))
 

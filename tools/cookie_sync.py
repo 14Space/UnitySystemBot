@@ -7,9 +7,23 @@ Google ротирует токены, и выгруженный файл со в
 именно тогда, когда что-то уже сломалось.
 
 КАК ЭТО РАБОТАЕТ. Скрипт держит СВОЙ профиль браузера (обычная папка на диске, как у
-Chrome). В него один раз попадают куки уже вошедшего аккаунта — дальше профиль живёт
-сам: скрипт по расписанию открывает в нём Instagram и YouTube, площадки видят живую
-сессию и обновляют куки, а он забирает их и кладёт на сервер.
+Chrome). В него один раз попадают куки уже вошедшего аккаунта (--import), а дальше
+скрипт по расписанию забирает их оттуда и кладёт на сервер — ПРОВЕРИВ, что сессия
+действительно жива.
+
+ПОЧЕМУ НЕ «ЗАХОДИТЬ НА САЙТ, ЧТОБЫ ОБНОВИТЬ КУКИ». Так было в первой версии, и это
+оказалось ровно тем, от чего мы спасались. 20.09.2026: вечером все три площадки
+зелёные, в 22:00 отработало расписание, в 00:01 отчёт красный — Instagram и Google
+разлогинились. В профиле после этого не осталось ни sessionid, ни SID: заход из
+автоматизированного окна площадка считает угоном сессии и закрывает её.
+
+Проверка накануне, показавшая обратное, была неполной: там был ОДИН заход сразу после
+переноса свежих кук. Ломается не первый заход, а привычка ходить — и подтвердилось это
+только на живом расписании.
+
+Вывод: сессию нельзя «освежить» снаружи. Её обновляет тот браузер, в котором человек
+реально сидит. Наше дело — не мешать ей жить (запросы бота идут через домашний канал,
+см. документацию) и вовремя заметить, когда она всё-таки кончится.
 
 Куки в профиль проще всего ПЕРЕНЕСТИ из файлов, выгруженных расширением в обычном
 браузере (--import). Входить прямо в этом браузере (--login) тоже можно, но Instagram
@@ -52,11 +66,16 @@ import subprocess
 import sys
 import time
 
+import requests
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("cookie_sync")
 
+# Чем представляемся при проверке живости: обычный браузер, как у человека.
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 # Где живёт профиль браузера. Это настоящий профиль со своими куками — не системный
 # Edge, а отдельный, в который входишь один раз.
 PROFILE_DIR = os.getenv("COOKIE_PROFILE_DIR",
@@ -72,8 +91,9 @@ SSH_KEY = os.getenv("COOKIE_SSH_KEY", os.path.expanduser("~/.ssh/contabo_key"))
 
 # Площадки: какой адрес открыть, какие куки забрать, как назвать файл и по какой куке
 # понять, что вход действительно есть.
-# «visit» — заходить ли на площадку, чтобы она обновила куки. Для Google это ВРЕДНО,
-# см. комментарий у YouTube.
+# «probe» — куда стучаться, чтобы проверить, что сессия ЖИВА, и как понять ответ.
+# Это лёгкий HTTP-запрос с куками, без браузера: площадка видит обычное обращение, а
+# не автоматизированный браузер, и сессию за такое не закрывает.
 SITES = [
     {
         "name": "Instagram",
@@ -81,7 +101,8 @@ SITES = [
         "domains": (".instagram.com", "instagram.com", "www.instagram.com"),
         "file": "instagram_cookies.txt",
         "key": "sessionid",
-        "visit": True,
+        "probe": "https://www.instagram.com/accounts/edit/",
+        "alive": lambda r: r.status_code == 200,
     },
     {
         "name": "YouTube",
@@ -92,14 +113,11 @@ SITES = [
                     ".google.com", "google.com", "accounts.google.com"),
         "file": "youtube_cookies.txt",
         "key": "SID",
-        # Заходить МОЖНО — но только со свежими куками. Проверено дважды:
-        #   • на уже протухшем наборе заход выглядел разрушительным (SID, HSID и
-        #     APISID пропадали) — на самом деле Google просто не признавал мёртвую
-        #     сессию и вычищал её остатки;
-        #   • на свежем наборе не пропало НИ ОДНОЙ куки, добавились новые, и
-        #     возрастной ролик после захода по-прежнему открывается.
-        # Вывод: заход не ломает сессию — он ломается сам, когда сессии уже нет.
-        "visit": True,
+        # Живость проверяем страницей аккаунта НА YOUTUBE. Заманчивый myaccount.google.com
+        # не годится: он отвечает 302 на /intro даже вошедшему, и проверка объявляла
+        # живую сессию мёртвой.
+        "probe": "https://www.youtube.com/account",
+        "alive": lambda r: r.status_code == 200,
     },
     {
         "name": "X (Twitter)",
@@ -107,7 +125,11 @@ SITES = [
         "domains": (".x.com", "x.com", ".twitter.com", "twitter.com"),
         "file": "x.com_cookies.txt",
         "key": "auth_token",
-        "visit": True,
+        # Обычная страница, а не api.x.com: у того свой токен веб-клиента, который
+        # живёт отдельной жизнью и отвечал «Invalid or expired token» при совершенно
+        # живой сессии. Гостя x.com/home уводит на страницу входа.
+        "probe": "https://x.com/home",
+        "alive": lambda r: r.status_code == 200,
     },
 ]
 
@@ -353,8 +375,47 @@ def login() -> int:
     return 0
 
 
+def _session_is_alive(site: dict, path: str) -> bool:
+    """Жива ли сессия на самом деле.
+
+    Наличия куки мало: `sessionid` остаётся в файле и после того, как Instagram закрыл
+    сессию. Именно так на сервер уезжали мёртвые куки — формально «ключ входа есть».
+    Поэтому спрашиваем саму площадку обычным HTTP-запросом (не браузером: браузер она
+    считает угоном, см. шапку файла).
+
+    Не смогли проверить (нет сети, площадка легла) — считаем живой: лучше залить
+    рабочие куки, чем не залить из-за собственного сбоя связи.
+    """
+    probe = site.get("probe")
+    if not probe:
+        return True
+    jar = http.cookiejar.MozillaCookieJar(path)
+    try:
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return False
+
+    headers = {"User-Agent": _UA}
+    try:
+        r = requests.get(probe, cookies=jar, headers=headers, timeout=25,
+                         allow_redirects=False)
+    except Exception as e:
+        logger.info("%s: проверить живость не вышло (%s) — считаю, что жива",
+                    site["name"], type(e).__name__)
+        return True
+    ok = site["alive"](r)
+    if not ok:
+        logger.info("%s: площадка ответила %s — сессия закрыта", site["name"], r.status_code)
+    return ok
+
+
 def refresh() -> list[str]:
-    """Открывает площадки в своём профиле и выгружает куки. Возвращает пути к файлам."""
+    """Забирает куки из профиля и проверяет, что сессии живы. Возвращает пути к файлам.
+
+    По сайтам НЕ ходим (см. шапку файла): заход из автоматизированного окна закрывает
+    сессию, а не обновляет её. Задача этого прогона другая — вовремя доставить на сервер
+    то, что есть, и не дать уехать туда мёртвым кукам.
+    """
     sync_playwright = _playwright()
     _require_free_profile()
 
@@ -368,34 +429,28 @@ def refresh() -> list[str]:
 
     with sync_playwright() as pw:
         browser = _open_browser(pw, headless=True)
-        page = browser.pages[0] if browser.pages else browser.new_page()
-        for site in SITES:
-            if site.get("visit", True):
-                try:
-                    # Заход на страницу — это и есть «обновление» сессии: площадка
-                    # видит живого пользователя и присылает свежие куки.
-                    page.goto(site["url"], wait_until="domcontentloaded", timeout=45000)
-                    page.wait_for_timeout(3000)
-                except Exception as e:
-                    logger.warning("%s: страница не открылась (%s) — беру что есть",
-                                   site["name"], type(e).__name__)
-            else:
-                logger.info("%s: беру куки как есть, без захода", site["name"])
-
-            cookies = [c for c in browser.cookies()
-                       if any(c.get("domain", "").endswith(d.lstrip(".")) for d in site["domains"])]
-            path = os.path.join(OUT_DIR, site["file"])
-            with open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(_netscape(cookies))
-
-            if _looks_valid(path, site["key"]):
-                logger.info("%s: %d кук, вход на месте", site["name"], len(cookies))
-                ready.append(path)
-            else:
-                logger.error("%s: в профиле нет ключа входа (%s) — файл НЕ поеду заливать. "
-                             "Перенеси свежую выгрузку: --import <файл cookies.txt>",
-                             site["name"], site["key"])
+        all_cookies = browser.cookies()
         browser.close()
+
+    for site in SITES:
+        cookies = [c for c in all_cookies
+                   if any(c.get("domain", "").endswith(d.lstrip(".")) for d in site["domains"])]
+        path = os.path.join(OUT_DIR, site["file"])
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(_netscape(cookies))
+
+        if not _looks_valid(path, site["key"]):
+            logger.error("%s: в профиле нет ключа входа (%s). Перенеси свежую выгрузку: "
+                         "--import <файл cookies.txt>", site["name"], site["key"])
+            continue
+        if not _session_is_alive(site, path):
+            logger.error("%s: ключ входа есть, но площадка его больше не признаёт. "
+                         "Выгрузи куки заново и перенеси: --import <файл cookies.txt>",
+                         site["name"])
+            continue
+        logger.info("%s: %d кук, сессия жива", site["name"], len(cookies))
+        ready.append(path)
+
     return ready
 
 
