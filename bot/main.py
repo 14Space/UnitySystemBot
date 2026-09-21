@@ -304,6 +304,25 @@ async def _flush_traffic():
                 logger.exception("Не удалось сохранить статистику трафика")
 
 
+async def _warm_hdrezka():
+    """Держит пропуск HDRezka свежим, чтобы за него не платил тот, кто пришёл первым.
+
+    Анти-бот-головоломку решает браузер на общем потоке Playwright, где стоят ещё
+    карточки X и фото Instagram. Сама она занимает пару секунд, но в час общей
+    проверки очередь на этом потоке растягивает её до десятков секунд: 21.09.2026
+    «HDRezka сериал» занял 42.6с вместо обычных 1.6с — не потому, что сайт лёг, а
+    потому что ждал очереди. Обновляем заранее и в тишине.
+    """
+    from bot.features.download.downloaders import hdrezka_gate
+
+    # Первый прогон — не в момент старта: на старте и так поднимается всё сразу, а
+    # проверка функционала всё равно сходит на сайт сама.
+    await asyncio.sleep(90)
+    while True:
+        await asyncio.to_thread(hdrezka_gate.warm)
+        await asyncio.sleep(hdrezka_gate.warm_interval())
+
+
 async def _ensure_single_instance(bot: Bot):
     """Не даёт поднять ВТОРОГО бота на том же токене.
 
@@ -398,6 +417,7 @@ async def main():
     asyncio.create_task(_daily_tasks(bot))
     asyncio.create_task(_periodic_healthcheck(bot))
     asyncio.create_task(_flush_traffic())
+    asyncio.create_task(_warm_hdrezka())
     if WHISPER_PREWARM:
         from bot.features.transcribe.transcriber import warmup
         asyncio.create_task(asyncio.to_thread(warmup))
