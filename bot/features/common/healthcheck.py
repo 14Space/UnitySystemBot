@@ -256,8 +256,10 @@ async def _check_yt_cookies():
         import yt_dlp
 
         def op(proxy_opts: dict):
+            # Куки отдаём с учётом маршрута: на прямой попытке их не прикладывают
+            # вовсе, чтобы сессия не уезжала в дата-центр (см. _cookie_opts).
             opts = {**BASE_OPTS, "skip_download": True, "noplaylist": True,
-                    **_cookie_opts(U_YT_AGE), **proxy_opts}
+                    **_cookie_opts(U_YT_AGE, proxy_opts), **proxy_opts}
             return yt_dlp.YoutubeDL(opts).extract_info(U_YT_AGE, download=False)
 
         try:

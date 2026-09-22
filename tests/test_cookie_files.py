@@ -111,7 +111,24 @@ def test_work_copy_lives_next_to_the_original(tmp_path):
     old = y.YOUTUBE_COOKIES
     y.YOUTUBE_COOKIES = str(src)
     try:
-        opts = y._cookie_opts("https://www.youtube.com/watch?v=x")
+        # Через дом — куки прикладываем (маршрут задаётся так же, как в бою).
+        opts = y._cookie_opts("https://www.youtube.com/watch?v=x",
+                              {"proxy": "socks5://10.8.0.2:1080"})
     finally:
         y.YOUTUBE_COOKIES = old
     assert os.path.dirname(opts["cookiefile"]) == str(tmp_path)
+
+
+def test_no_cookies_on_a_direct_attempt(tmp_path, monkeypatch):
+    """Прямая попытка идёт БЕЗ кук: возрастной ролик тогда не скачается, но сессия
+    не уедет в дата-центр. Раньше это держалось только на настройке PROXY_FIRST."""
+    from bot.features.download.downloaders import ytdlp_wrapper as y
+
+    src = tmp_path / "youtube_cookies.txt"
+    src.write_text(_netscape(("SID", "ключ")), encoding="utf-8")
+    monkeypatch.setattr(y, "YOUTUBE_COOKIES", str(src))
+    monkeypatch.setattr(y, "_PROXY", "socks5://10.8.0.2:1080")
+
+    assert y._cookie_opts("https://www.youtube.com/watch?v=x", {}) == {}
+    assert y._cookie_opts("https://www.youtube.com/watch?v=x",
+                          {"proxy": y._PROXY}).get("cookiefile")

@@ -95,11 +95,22 @@ def _pw_cookies() -> list[dict]:
 
 def _embed_image_src(browser, shortcode: str) -> str | None:
     """Рендерит страницу-эмбед поста общим браузером и возвращает ссылку на картинку из
-    DOM (или None). Выполняется строго на выделенном Playwright-потоке (см. pw_thread)."""
-    ctx = browser.new_context(user_agent=_UA)
+    DOM (или None). Выполняется строго на выделенном Playwright-потоке (см. pw_thread).
+
+    Куки уходят ТОЛЬКО через дом. Правило то же, что и для обычных запросов: свою
+    сессию, увиденную из дата-центра, Instagram считает угоном и закрывает вход. Здесь
+    оно было нарушено — браузер получал куки, а ходил напрямую с адреса сервера, и
+    23.09.2026 сессия умерла в очередной раз. Туннеля нет — идём ГОСТЕМ: пусть кадр
+    не достанется, это дешевле потерянного входа.
+    """
+    cookies = _pw_cookies()
+    with_session = bool(cookies and INSTAGRAM_PROXY)
+    options = {"user_agent": _UA}
+    if with_session:
+        options["proxy"] = {"server": INSTAGRAM_PROXY}
+    ctx = browser.new_context(**options)
     try:
-        cookies = _pw_cookies()
-        if cookies:
+        if with_session:
             ctx.add_cookies(cookies)
         page = ctx.new_page()
         page.goto(f"https://www.instagram.com/p/{shortcode}/embed/captioned/",

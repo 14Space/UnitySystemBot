@@ -171,7 +171,7 @@ def youtube_search_query(url: str) -> str:
     return " ".join(x for x in (author, title) if x)
 
 
-def _cookie_opts(url: str) -> dict:
+def _cookie_opts(url: str, proxy_opts: dict | None = None) -> dict:
     """Куки YouTube — только для самого YouTube и поиска по нему.
 
     Нужны ради роликов с возрастным ограничением: без входа yt-dlp отвечает «Sign in to
@@ -193,12 +193,20 @@ def _cookie_opts(url: str) -> dict:
 
     Другим площадкам куки YouTube не отдаём: это чужая учётная запись, ей незачем
     уезжать на PornHub или SoundCloud вместе с запросом.
+
+    И главное: куки уходят ТОЛЬКО через дом. Если попытка идёт напрямую с адреса
+    сервера, файл кук не прикладываем вовсе — возрастной ролик тогда не скачается, но
+    вход останется целым. Раньше это держалось только на настройке PROXY_FIRST: с ней
+    прямых попыток по YouTube не бывает, а без неё первая попытка шла напрямую и несла
+    сессию в дата-центр. Ровно так мы уже потеряли сессии Instagram и Google.
     """
     u = url or ""
     if not YOUTUBE_COOKIES:
         return {}
     if not (u.startswith("ytsearch") or "youtube.com" in u or "youtu.be" in u):
         return {}
+    if _PROXY and not (proxy_opts or {}).get("proxy"):
+        return {}                    # прямая попытка — идём БЕЗ кук
     copy = cookie_files.working(YOUTUBE_COOKIES,
                                 os.path.dirname(YOUTUBE_COOKIES) or ".")
     return {"cookiefile": copy} if copy else {}
@@ -231,7 +239,7 @@ def download_probe(url: str, audio_only: bool = False) -> str:
             "noplaylist": True,
             **proxy_opts,
             **_impersonate_opts(url),
-            **_cookie_opts(url),
+            **_cookie_opts(url, proxy_opts),
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
@@ -251,7 +259,7 @@ def get_video_info(url: str, allow_drm: bool = False) -> dict:
             opts["ignore_no_formats_error"] = True
         opts.update(proxy_opts)  # для YT Music: пусто напрямую, затем прокси при неудаче
         opts.update(_impersonate_opts(url))  # маскировка под Chrome только для PornHub
-        opts.update(_cookie_opts(url))       # куки YouTube — ради возрастных роликов
+        opts.update(_cookie_opts(url, proxy_opts))   # куки YouTube — ради возрастных роликов
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
@@ -369,7 +377,7 @@ def download_video(
             "postprocessor_args": {"merger": ["-movflags", "+faststart"]},
             **proxy_opts,  # для YouTube/PornHub: пусто напрямую, затем прокси при неудаче
             **_impersonate_opts(url),
-            **_cookie_opts(url),       # куки YouTube — ради возрастных роликов
+            **_cookie_opts(url, proxy_opts),   # куки YouTube — ради возрастных роликов
         }
 
         try:
@@ -764,7 +772,7 @@ def download_shorts(url: str, max_height: int | None = None) -> str:
                 **impatient,
                 **proxy_opts,  # для YouTube/PornHub: пусто напрямую, затем прокси при неудаче
                 **_impersonate_opts(url),
-            **_cookie_opts(url),       # куки YouTube — ради возрастных роликов
+            **_cookie_opts(url, proxy_opts),   # куки YouTube — ради возрастных роликов
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
