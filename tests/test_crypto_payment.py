@@ -18,17 +18,26 @@ def test_disabled_without_token(monkeypatch):
     assert cryptopay.available() is False
 
 
-def test_buy_button_hides_crypto_when_not_configured(monkeypatch):
+def test_keyboard_hides_crypto_when_not_configured(monkeypatch):
     from bot.features.common import payment
 
     monkeypatch.setattr(payment.cryptopay, "available", lambda: False)
-    only_stars = payment.buy_button("ru")
+    only_stars = payment.pay_keyboard("ru")
     monkeypatch.setattr(payment.cryptopay, "available", lambda: True)
-    with_crypto = payment.buy_button("ru")
+    with_crypto = payment.pay_keyboard("ru")
 
     assert len(only_stars.inline_keyboard) == 1
     assert len(with_crypto.inline_keyboard) == 2
     assert with_crypto.inline_keyboard[1][0].callback_data == "buy_crypto"
+
+
+def test_first_button_pays_with_stars():
+    """Правило Telegram: первая кнопка под счётом обязана быть кнопкой оплаты."""
+    from bot.features.common import payment
+
+    first = payment.pay_keyboard("ru").inline_keyboard[0][0]
+    assert first.pay is True
+    assert first.callback_data is None
 
 
 def test_invoice_is_priced_in_dollars(monkeypatch):

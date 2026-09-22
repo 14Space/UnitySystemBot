@@ -609,53 +609,50 @@ TEXTS = {
     # Старое «не удалось ничего распознать» врало — выглядело как претензия к записи,
     # хотя запись мы даже не услышали, и человек зря переписывал голосовое.
     "transcribe_nothing": {
-        "ru": "Расшифровка сейчас не работает — это сбой на моей стороне, не в твоей записи. Пришли голосовое ещё раз через несколько минут.",
-        "uk": "Розшифровка зараз не працює — це збій на моєму боці, не у твоєму записі. Надішли голосове ще раз за кілька хвилин.",
-        "en": "Transcription is down right now — that's a failure on my side, not your recording. Send the voice message again in a few minutes.",
+        "ru": "Расшифровка сейчас не работает – это сбой на моей стороне, не в твоей записи. Пришли голосовое ещё раз через несколько минут.",
+        "uk": "Розшифровка зараз не працює – це збій на моєму боці, не у твоєму записі. Надішли голосове ще раз за кілька хвилин.",
+        "en": "Transcription is down right now – that's a failure on my side, not your recording. Send the voice message again in a few minutes.",
     },
 
     # --- Premium / оплата ---
+    # Описание уходит в счёт Telegram и в счёт Crypto Pay — оба принимают ТОЛЬКО
+    # простой текст, поэтому разметки здесь нет и быть не может.
     "premium_desc": {
-        "ru": "С Premium ⭐ видео можно скачивать в самом высоком разрешении, а музыку – целыми альбомами.",
-        "uk": "З Premium ⭐ відео можна завантажувати в найвищій якості, а музику – цілими альбомами.",
-        "en": "With Premium ⭐ you can download videos in the highest resolution and music as full albums.",
+        "ru": "С Premium ⭐ навсегда можно видео скачивать в самом высоком разрешении, а музыку – целыми альбомами.",
+        "uk": "З Premium ⭐ назавжди можна відео завантажувати в найвищій якості, а музику – цілими альбомами.",
+        "en": "With Premium ⭐ you can always download videos in the highest resolution and music as full albums.",
     },
-    "premium_text": {
-        "ru": "✨ <b>UnitySystem Premium</b>\n\n{desc}\n\nРазовая покупка, навсегда. Цена: <b>{price} ⭐</b>",
-        "uk": "✨ <b>UnitySystem Premium</b>\n\n{desc}\n\nРазова покупка, назавжди. Ціна: <b>{price} ⭐</b>",
-        "en": "✨ <b>UnitySystem Premium</b>\n\n{desc}\n\nOne-time purchase, forever. Price: <b>{price} ⭐</b>",
-    },
-    "btn_buy": {
-        "ru": "Купить за {price} ⭐", "uk": "Купити за {price} ⭐", "en": "Buy for {price} ⭐",
+    "btn_pay_stars": {
+        "ru": "Заплатить ⭐ {price}", "uk": "Сплатити ⭐ {price}", "en": "Pay ⭐ {price}",
     },
     "btn_buy_crypto": {
-        "ru": "Оплатить криптой (${price})",
-        "uk": "Сплатити криптою (${price})",
-        "en": "Pay with crypto (${price})",
+        "ru": "Оплатить через @CryptoBot",
+        "uk": "Сплатити через @CryptoBot",
+        "en": "Pay via @CryptoBot",
     },
     "btn_pay_crypto": {
         "ru": "Перейти к оплате", "uk": "Перейти до оплати", "en": "Go to payment",
     },
     "crypto_invoice": {
-        "ru": "Счёт на <b>${price}</b> готов. Платить можно USDT или TON — сеть выбирать "
+        "ru": "Счёт на <b>${price}</b> готов. Платить можно USDT или TON – сеть выбирать "
               "не надо, перевод идёт внутри @CryptoBot.\n\nПремиум включится сам через "
               "несколько секунд после оплаты.",
-        "uk": "Рахунок на <b>${price}</b> готовий. Платити можна USDT або TON — мережу "
+        "uk": "Рахунок на <b>${price}</b> готовий. Платити можна USDT або TON – мережу "
               "обирати не треба, переказ іде всередині @CryptoBot.\n\nПреміум увімкнеться "
               "сам за кілька секунд після оплати.",
-        "en": "Your <b>${price}</b> invoice is ready. Pay with USDT or TON — no network to "
+        "en": "Your <b>${price}</b> invoice is ready. Pay with USDT or TON – no network to "
               "choose, the transfer happens inside @CryptoBot.\n\nPremium switches on by "
               "itself a few seconds after payment.",
     },
     "crypto_paid_hint": {
-        "ru": "Оплата получена. Возвращайся в бота — Premium уже включён.",
-        "uk": "Оплату отримано. Повертайся в бота — Premium уже увімкнено.",
-        "en": "Payment received. Head back to the bot — Premium is already on.",
+        "ru": "Оплата получена. Возвращайся в бота – Premium уже включён.",
+        "uk": "Оплату отримано. Повертайся в бота – Premium уже увімкнено.",
+        "en": "Payment received. Head back to the bot – Premium is already on.",
     },
     "crypto_unavailable": {
-        "ru": "Оплата криптой сейчас недоступна — попробуй позже или купи за звёзды.",
-        "uk": "Оплата криптою зараз недоступна — спробуй пізніше або купи за зірки.",
-        "en": "Crypto payment is unavailable right now — try later or buy with Stars.",
+        "ru": "Оплата криптой сейчас недоступна – попробуй позже или купи за звёзды.",
+        "uk": "Оплата криптою зараз недоступна – спробуй пізніше або купи за зірки.",
+        "en": "Crypto payment is unavailable right now – try later or buy with Stars.",
     },
     "already_premium": {
         "ru": "✨ У тебя уже есть Premium – все функции открыты!",

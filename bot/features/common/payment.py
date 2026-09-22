@@ -31,19 +31,31 @@ PAYLOAD = "premium"
 CRYPTO_CHARGE = "cryptopay:{id}"
 
 
-def buy_button(lang: str) -> InlineKeyboardMarkup:
-    """Кнопки покупки. Крипта появляется только если она настроена: без токена
-    показывать способ оплаты, который не работает, — худшее, что можно сделать."""
+def pay_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Кнопки под счётом: оплата звёздами и, если настроена, крипта.
+
+    Первая кнопка ОБЯЗАНА быть кнопкой оплаты (pay=True) — таково правило Telegram
+    для счетов. Раньше своей клавиатуры не было вовсе, и Telegram рисовал её сам;
+    теперь рисуем мы, чтобы рядом со звёздами стояла крипта.
+
+    Крипта появляется только когда она настроена: показывать способ оплаты, который
+    не работает, — худшее, что можно сделать.
+    """
     rows = [[InlineKeyboardButton(
-        text=t("btn_buy", lang, price=PREMIUM_PRICE_STARS), callback_data="buy_premium")]]
+        text=t("btn_pay_stars", lang, price=PREMIUM_PRICE_STARS), pay=True)]]
     if cryptopay.available():
         rows.append([InlineKeyboardButton(
-            text=t("btn_buy_crypto", lang, price=f"{PREMIUM_PRICE_USD:.2f}"),
-            callback_data="buy_crypto")])
+            text=t("btn_buy_crypto", lang), callback_data="buy_crypto")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _send_invoice(bot: Bot, chat_id: int, lang: str):
+    """Счёт на звёзды. Он же — единственный экран покупки: раньше перед ним висело
+    отдельное сообщение с кнопкой «Купить», и человек делал лишнее нажатие ни за чем.
+
+    Описание уходит в Telegram простым текстом: разметку в счетах он не принимает,
+    поэтому выделить в нём слово нельзя — жирным будет только заголовок.
+    """
     await bot.send_invoice(
         chat_id,
         title="UnitySystem Premium",
@@ -51,18 +63,18 @@ async def _send_invoice(bot: Bot, chat_id: int, lang: str):
         payload=PAYLOAD,
         currency="XTR",  # Telegram Stars
         prices=[LabeledPrice(label="Premium", amount=PREMIUM_PRICE_STARS)],
+        reply_markup=pay_keyboard(lang),
     )
 
 
 @router.message(Command("premium"))
-async def cmd_premium(message: Message):
+async def cmd_premium(message: Message, bot: Bot):
     lang = lang_of(message.from_user)
     async with SessionLocal() as session:
         if await is_premium(session, message.from_user.id):
             await message.answer(t("already_premium", lang))
             return
-    text = t("premium_text", lang, desc=t("premium_desc", lang), price=PREMIUM_PRICE_STARS)
-    await message.answer(text, parse_mode="HTML", reply_markup=buy_button(lang))
+    await _send_invoice(bot, message.chat.id, lang)
 
 
 @router.callback_query(F.data == "buy_premium")
@@ -103,6 +115,7 @@ async def cb_buy_crypto(callback: CallbackQuery):
     url = invoice.get("bot_invoice_url") or invoice.get("pay_url")
     await callback.message.answer(
         t("crypto_invoice", lang, price=f"{PREMIUM_PRICE_USD:.2f}"),
+        parse_mode="HTML",           # без этого теги <b> уезжали человеку как текст
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text=t("btn_pay_crypto", lang), url=url)]]))
     logger.info("Крипто-счёт выставлен: user=%s invoice=%s",
