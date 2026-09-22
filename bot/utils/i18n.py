@@ -634,15 +634,18 @@ TEXTS = {
         "ru": "Перейти к оплате", "uk": "Перейти до оплати", "en": "Go to payment",
     },
     "crypto_invoice": {
-        "ru": "Счёт на <b>${price}</b> готов. Платить можно USDT или TON – сеть выбирать "
-              "не надо, перевод идёт внутри @CryptoBot.\n\nПремиум включится сам через "
-              "несколько секунд после оплаты.",
-        "uk": "Рахунок на <b>${price}</b> готовий. Платити можна USDT або TON – мережу "
-              "обирати не треба, переказ іде всередині @CryptoBot.\n\nПреміум увімкнеться "
-              "сам за кілька секунд після оплати.",
-        "en": "Your <b>${price}</b> invoice is ready. Pay with USDT or TON – no network to "
-              "choose, the transfer happens inside @CryptoBot.\n\nPremium switches on by "
-              "itself a few seconds after payment.",
+        # GRAM/TON — это одна и та же монета: в API она зовётся TON (см. CRYPTOPAY_ASSETS),
+        # а на экране оплаты CryptoBot показывает её как GRAM. Пишем оба имени, иначе
+        # человек не найдёт на кнопке то, что мы ему пообещали.
+        "ru": "Счёт на <b>${price}</b> готов. Оплатить можно USDT или GRAM/TON, перевод "
+              "идёт внутри @CryptoBot.\n\nПремиум включится сам через несколько секунд "
+              "после оплаты.",
+        "uk": "Рахунок на <b>${price}</b> готовий. Сплатити можна USDT або GRAM/TON, "
+              "переказ іде всередині @CryptoBot.\n\nПреміум увімкнеться сам за кілька "
+              "секунд після оплати.",
+        "en": "Your <b>${price}</b> invoice is ready. Pay with USDT or GRAM/TON, the "
+              "transfer happens inside @CryptoBot.\n\nPremium switches on by itself a few "
+              "seconds after payment.",
     },
     "crypto_paid_hint": {
         "ru": "Оплата получена. Возвращайся в бота – Premium уже включён.",

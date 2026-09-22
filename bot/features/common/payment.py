@@ -58,7 +58,9 @@ async def _send_invoice(bot: Bot, chat_id: int, lang: str):
     """
     await bot.send_invoice(
         chat_id,
-        title="UnitySystem Premium",
+        # Заголовок Telegram рисует жирным сам, а вот значок надо ставить руками:
+        # разметки в счетах нет, и это единственный способ его оживить.
+        title="✨ UnitySystem Premium",
         description=t("premium_desc", lang),
         payload=PAYLOAD,
         currency="XTR",  # Telegram Stars
