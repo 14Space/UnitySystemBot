@@ -1,8 +1,12 @@
 import asyncio
+import logging
 import os
 import shutil
+import time
 
 from bot.utils.i18n import t
+
+logger = logging.getLogger(__name__)
 
 # --- «Умные» лимиты одновременных задач ------------------------------------
 #
@@ -24,6 +28,14 @@ LIGHT_BASE = 4         # лёгких, когда идёт тяжёлое вид
 LIGHT_BOOST = 6        # лёгких, когда тяжёлых нет (берут их слоты)
 TRANSCRIBE_BASE = 2    # расшифровок одновременно — всегда до 2 (видеопамяти хватает,
 TRANSCRIBE_BOOST = 2   # модель общая, не дублируется; второму ГС не ждать очереди)
+
+# Сколько задача может держать слот, прежде чем счесть её потерянной. Самое долгое,
+# что бывает, – фильм на HDRezka: гигабайты через домашний канал, полчаса с запасом.
+# Смысл предела в том, что 23.09.2026 бот замолчал на ссылки НАСОВСЕМ: слот заняли и
+# не отпустили (сообщение о прогрессе не отправилось, а освобождение стояло в finally
+# ниже по коду), и все лёгкие загрузки встали в очередь за мёртвым держателем. Ждали
+# они молча – со стороны бот выглядел живым и просто не отвечал.
+MAX_HOLD_SECONDS = int(os.getenv("MAX_HOLD_SECONDS", str(40 * 60)))
 
 # Предел размера файла (лимит локального Telegram Bot API — 2 ГБ, берём с запасом).
 MAX_FILE_BYTES = 1_950_000_000
@@ -74,6 +86,29 @@ class _SmartLimiter:
     def __init__(self):
         self._cond = asyncio.Condition()
         self._active = {HEAVY: 0, LIGHT: 0, TRANSCRIBE: 0}
+        # Когда начался каждый из занятых слотов. Нужно, чтобы отличить работающую
+        # задачу от потерянной: счётчик сам по себе этого не знает (см. _forget_lost).
+        self._started: dict[str, list[float]] = {HEAVY: [], LIGHT: [], TRANSCRIBE: []}
+
+    def _forget_lost(self, category: str) -> int:
+        """Отпускает слоты, занятые дольше MAX_HOLD_SECONDS. Возвращает их число.
+
+        Это страховка, а не рабочий механизм: если она срабатывает, значит где-то
+        потерялось освобождение, и об этом надо узнать из лога, а не по молчанию бота.
+        """
+        # Сравнение НЕ строгое: «держит ровно столько же» — тоже потерян. У монотонных
+        # часов на Windows шаг около 15 мс, и два слота, занятых в один тик, при строгом
+        # сравнении не ловились вовсе.
+        edge = time.monotonic() - MAX_HOLD_SECONDS
+        lost = [s for s in self._started[category] if s <= edge]
+        if not lost:
+            return 0
+        self._started[category] = [s for s in self._started[category] if s > edge]
+        self._active[category] = max(0, self._active[category] - len(lost))
+        logger.warning("Лимит «%s»: отпустил %d зависших слотов (держали дольше %d мин) "
+                       "— значит где-то потерялось освобождение",
+                       category, len(lost), MAX_HOLD_SECONDS // 60)
+        return len(lost)
 
     def _cap(self, category: str) -> int:
         heavy_idle = self._active[HEAVY] == 0
@@ -85,21 +120,44 @@ class _SmartLimiter:
             return TRANSCRIBE_BOOST if heavy_idle else TRANSCRIBE_BASE
         return 0
 
+    def _free(self, category: str) -> bool:
+        """Есть ли место. Заодно вычищает зависшие слоты — иначе ждущие висели бы
+        вечно, а проверка условия как раз то место, где это заметно."""
+        if self._active[category] >= self._cap(category):
+            self._forget_lost(category)
+        return self._active[category] < self._cap(category)
+
     async def acquire(self, category: str):
         async with self._cond:
             # Ждём, пока в нашей группе освободится место (потолок может меняться,
-            # когда тяжёлые видео начинаются/заканчиваются).
-            await self._cond.wait_for(lambda: self._active[category] < self._cap(category))
+            # когда тяжёлые видео начинаются/заканчиваются). Условие проверяется и по
+            # будильнику, чтобы зависшие слоты отпускались даже когда никто не
+            # освобождается и будить нас некому.
+            while not self._free(category):
+                try:
+                    await asyncio.wait_for(self._cond.wait(), timeout=60)
+                except asyncio.TimeoutError:
+                    continue
             self._active[category] += 1
+            self._started[category].append(time.monotonic())
 
     async def release(self, category: str):
         async with self._cond:
             self._active[category] = max(0, self._active[category] - 1)
+            if self._started[category]:
+                self._started[category].pop(0)      # ушла самая старая из занятых
             # Будим всех: освобождение тяжёлого видео поднимает потолки остальным.
             self._cond.notify_all()
 
     def is_full(self, category: str) -> bool:
         return self._active[category] >= self._cap(category)
+
+    def state(self) -> dict:
+        """Кто сколько слотов занимает и как долго — для /test и разбора залипаний."""
+        now = time.monotonic()
+        return {c: {"active": self._active[c], "cap": self._cap(c),
+                    "oldest_sec": int(now - min(self._started[c])) if self._started[c] else 0}
+                for c in (HEAVY, LIGHT, TRANSCRIBE)}
 
 
 _limiter = _SmartLimiter()
@@ -107,6 +165,32 @@ _limiter = _SmartLimiter()
 
 async def acquire(category: str):
     await _limiter.acquire(category)
+
+
+async def acquire_or_tell(category: str, message, lang: str = "ru") -> None:
+    """Занимает слот, а если ждать приходится долго — говорит об этом человеку.
+
+    Раньше ожидание было молчаливым, и «бот не отвечает» выглядело одинаково и когда
+    он занят, и когда сломан. Теперь человек видит, что его услышали.
+    """
+    if not queue_is_full(category):
+        await acquire(category)
+        return
+    notice = None
+    try:
+        notice = await message.reply(t("in_queue", lang))
+    except Exception:
+        pass                       # не вышло предупредить — ждём всё равно
+    await acquire(category)
+    if notice is not None:
+        try:
+            await notice.delete()
+        except Exception:
+            pass
+
+
+def state() -> dict:
+    return _limiter.state()
 
 
 async def release(category: str):

@@ -657,22 +657,28 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
     await callback.message.delete()
     ACTIVE_DOWNLOADS.add(user_id)
     await limits.acquire(limits.HEAVY)
-    chat_id = entry["chat_id"]
-    status = await bot.send_message(chat_id, make_progress_bar(0), reply_to_message_id=entry["user_msg_id"])
-
-    loop = asyncio.get_running_loop()
-    # Полоску обновляем не чаще раза в пару секунд: правка на каждый процент — это до
-    # сотни правок за загрузку, и Telegram на такую частоту отвечает «подожди».
-    throttle = ProgressThrottle()
-
-    def on_progress(percent: int):
-        if throttle.should_send(percent):
-            asyncio.run_coroutine_threadsafe(
-                _safe_edit(status, make_progress_bar(percent)), loop
-            )
-
+    # Всё, что после занятия слота, — строго внутри try: 23.09.2026 бот замолчал на
+    # ссылки насовсем именно здесь. Отправка полоски прогресса стояла ВНЕ защищённого
+    # блока, она не прошла (исходное сообщение к тому времени удалили), слот остался
+    # занятым навсегда, и следующие загрузки встали в очередь за мёртвым держателем.
+    status = None
     file_path = None
     try:
+        chat_id = entry["chat_id"]
+        status = await bot.send_message(chat_id, make_progress_bar(0),
+                                        reply_to_message_id=entry["user_msg_id"])
+
+        loop = asyncio.get_running_loop()
+        # Полоску обновляем не чаще раза в пару секунд: правка на каждый процент — это
+        # до сотни правок за загрузку, и Telegram на такую частоту отвечает «подожди».
+        throttle = ProgressThrottle()
+
+        def on_progress(percent: int):
+            if throttle.should_send(percent):
+                asyncio.run_coroutine_threadsafe(
+                    _safe_edit(status, make_progress_bar(percent)), loop
+                )
+
         limits.check_disk_space(DOWNLOADS_DIR)      # фильм весит гигабайты (см. выше)
         file_path = await asyncio.to_thread(
             hdrezka.download_stream, stream, quality,
@@ -696,7 +702,8 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
                 await save_cached_file_id(session, cache_url, sent.video.file_id, quality)
     except Exception as e:
         logger.exception("HDRezka download failed")
-        await _safe_edit(status, limits.friendly_error(e, lang))
+        if status is not None:
+            await _safe_edit(status, limits.friendly_error(e, lang))
     finally:
         # Фильм весит гигабайты: оставить его на диске из-за сбоя отправки — самый
         # дорогой из возможных мусоров.
@@ -720,7 +727,7 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
     async def produce():
         # Лёгкие задачи не ограничиваем «одна за раз» — можно кидать подряд, общий
         # лимит (limits.LIGHT) сам поставит лишние в очередь.
-        await limits.acquire(limits.LIGHT)
+        await limits.acquire_or_tell(limits.LIGHT, message, lang)
         file_path = None
         try:
             file_path = await asyncio.to_thread(download_fn, url)
@@ -757,7 +764,7 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
             await message.reply_video(cached[2:], supports_streaming=True)
 
     async def produce():
-        await limits.acquire(limits.LIGHT)
+        await limits.acquire_or_tell(limits.LIGHT, message, lang)
         file_path = mp4 = None
         try:
             file_path = await asyncio.to_thread(download_media, url)
@@ -822,7 +829,7 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
         await _send_cached_post(message, cached)
 
     async def produce():
-        await limits.acquire(limits.LIGHT)
+        await limits.acquire_or_tell(limits.LIGHT, message, lang)
         files = None
         try:
             files = await asyncio.to_thread(download_fn, url)
@@ -989,7 +996,7 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         await _send_cached_post(message, cached)
 
     async def produce():
-        await limits.acquire(limits.LIGHT)
+        await limits.acquire_or_tell(limits.LIGHT, message, lang)
         files = None
         try:
             files = await asyncio.to_thread(tiktok.download_from, info, mode, compress)
@@ -1114,7 +1121,7 @@ async def _handle_twitter(message: Message, url: str, lang: str):
         await message.reply(limits.friendly_error(e, lang))
         return
 
-    await limits.acquire(limits.LIGHT)
+    await limits.acquire_or_tell(limits.LIGHT, message, lang)
     paths: list[str] = []
     try:
         items, caption, parse_mode = await _build_twitter_plan(tweet)
@@ -1617,33 +1624,38 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     ACTIVE_DOWNLOADS.add(user_id)
     await limits.acquire(limits.HEAVY)
 
-    progress_msg = await bot.send_message(
-        chat_id,
-        make_progress_bar(0),
-        reply_to_message_id=user_msg_id
-    )
+    # Всё, что после занятия слота, — строго внутри try. Отправка полоски прогресса
+    # стояла ВНЕ него, и если она не проходила (сообщение человека удалили, у бота
+    # забрали право писать), слот оставался занятым навсегда, а следующие загрузки
+    # молча вставали за мёртвым держателем — см. 23.09.2026.
+    progress_msg = None
+    file_path = None
+    try:
+        progress_msg = await bot.send_message(
+            chat_id,
+            make_progress_bar(0),
+            reply_to_message_id=user_msg_id
+        )
 
-    loop = asyncio.get_running_loop()
-    throttle = ProgressThrottle()          # не чаще раза в пару секунд (см. выше)
+        loop = asyncio.get_running_loop()
+        throttle = ProgressThrottle()      # не чаще раза в пару секунд (см. выше)
 
-    def on_progress(percent: int):
-        if throttle.should_send(percent):
+        def on_progress(percent: int):
+            if throttle.should_send(percent):
+                asyncio.run_coroutine_threadsafe(
+                    _safe_edit(progress_msg, make_progress_bar(percent)),
+                    loop
+                )
+
+        def on_postprocess():
+            # ffmpeg начал склейку — показываем отдельный статус
             asyncio.run_coroutine_threadsafe(
-                _safe_edit(progress_msg, make_progress_bar(percent)),
+                _safe_edit(progress_msg, t("processing", lang)),
                 loop
             )
 
-    def on_postprocess():
-        # ffmpeg начал склейку — показываем отдельный статус
-        asyncio.run_coroutine_threadsafe(
-            _safe_edit(progress_msg, t("processing", lang)),
-            loop
-        )
+        duration = int(info.get("duration", 0) or 0) if info else 0
 
-    duration = int(info.get("duration", 0) or 0) if info else 0
-
-    file_path = None
-    try:
         # Место на диске проверяем ДО загрузки: на забитом диске yt-dlp и ffmpeg падают
         # с невнятным «errno 28», а человек видит бессмысленное «не удалось скачать».
         limits.check_disk_space(DOWNLOADS_DIR)
@@ -1672,7 +1684,12 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
         try:
             await progress_msg.edit_text(text)
         except Exception:
-            await bot.send_message(chat_id, text)
+            # Полоски может не быть вовсе (упало на её отправке) — тогда отдельным
+            # сообщением; не вышло и это — пусть падает в лог, слот уже освободится.
+            try:
+                await bot.send_message(chat_id, text)
+            except Exception:
+                logger.warning("Не смог сообщить о сбое загрузки в чат %s", chat_id)
     finally:
         _cleanup_all(file_path)
         await limits.release(limits.HEAVY)
@@ -1846,10 +1863,15 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
     total = len(tracks)
 
     ACTIVE_DOWNLOADS.add(user_id)
-    status = await bot.send_message(
-        chat_id, t("downloading_all", lang, i=0, total=total), reply_to_message_id=reply_to
-    )
+    # Отправка первого сообщения — внутри try: если она не пройдёт, отметка «этот
+    # человек уже качает» останется навсегда, и он до перезапуска будет получать
+    # «дождись текущей загрузки». Тот же класс ошибки, что и с залипшим слотом.
+    status = None
     try:
+        status = await bot.send_message(
+            chat_id, t("downloading_all", lang, i=0, total=total),
+            reply_to_message_id=reply_to
+        )
         for i, track in enumerate(tracks, 1):
             await _safe_edit(status, f"{t('downloading_all', lang, i=i, total=total)}\n{track['title']}")
             alerts.current_request.set(f"трек из коллекции [все]: {track['cache_url']}")
