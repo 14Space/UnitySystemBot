@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import (
     User, CachedFile, DownloadStat, MonthlyTraffic, ChatSettings, CheckTiming, Payment,
-    StashedLink, AiThread, AiUsage,
+    StashedLink, AiThread, AiUsage, CryptoInvoice,
 )
 from bot.utils.platform_detector import normalize_cache_url
 
@@ -76,7 +76,7 @@ async def set_premium(session: AsyncSession, user_id: int, value: bool = True) -
 
 
 async def add_payment(session: AsyncSession, user_id: int, charge_id: str,
-                      stars: int) -> None:
+                      stars: int, method: str = "stars", usd: float | None = None) -> None:
     """Записывает покупку. charge_id — номер платежа у Telegram: без него возврат
     звёзд сделать нельзя, Telegram требует именно его.
 
@@ -84,7 +84,8 @@ async def add_payment(session: AsyncSession, user_id: int, charge_id: str,
     одно и то же сообщение об оплате дважды (если наш ответ не дошёл), и от этого
     в истории не должно появляться двух покупок.
     """
-    session.add(Payment(user_id=user_id, charge_id=charge_id, stars=stars))
+    session.add(Payment(user_id=user_id, charge_id=charge_id, stars=stars,
+                        method=method, usd=usd))
     try:
         await session.commit()
     except IntegrityError:
@@ -104,13 +105,56 @@ async def refund_payment(session: AsyncSession, charge_id: str) -> int | None:
 
 
 async def get_payment_summary(session: AsyncSession) -> dict:
-    """Сводка по покупкам: сколько оплачено, сколько возвращено, сколько звёзд."""
+    """Сводка по покупкам: сколько оплачено, сколько возвращено, звёзды и доллары."""
     paid = (await session.execute(
-        select(func.count(Payment.id), func.coalesce(func.sum(Payment.stars), 0))
+        select(func.count(Payment.id),
+               func.coalesce(func.sum(Payment.stars), 0),
+               func.coalesce(func.sum(Payment.usd), 0.0))
         .where(Payment.refunded.is_(False)))).one()
     refunded = (await session.execute(
         select(func.count(Payment.id)).where(Payment.refunded.is_(True)))).scalar() or 0
-    return {"count": paid[0] or 0, "stars": paid[1] or 0, "refunded": refunded}
+    return {"count": paid[0] or 0, "stars": paid[1] or 0,
+            "usd": float(paid[2] or 0), "refunded": refunded}
+
+
+async def user_language(session: AsyncSession, user_id: int) -> str:
+    """Язык человека из базы. Нужен там, где сообщения шлёт ФОНОВАЯ задача: объекта
+    пользователя у неё нет, а писать «поздравляем с покупкой» не на его языке — плохо."""
+    lang = (await session.execute(
+        select(User.language).where(User.user_id == user_id))).scalar_one_or_none()
+    return lang or "ru"
+
+
+async def add_crypto_invoice(session: AsyncSession, invoice_id: int, user_id: int) -> None:
+    """Запоминает выставленный счёт, чтобы потом спросить про его оплату."""
+    session.add(CryptoInvoice(invoice_id=invoice_id, user_id=user_id))
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+
+
+async def open_crypto_invoices(session: AsyncSession, limit: int = 100) -> list[tuple[int, int]]:
+    """Наши счета, которые ещё ждут оплаты: [(номер счёта, покупатель)].
+
+    Предел нужен, потому что спрашиваем про них одним запросом: Crypto Pay берёт до
+    1000 счетов за раз, а нам хватает и сотни самых свежих.
+    """
+    rows = (await session.execute(
+        select(CryptoInvoice.invoice_id, CryptoInvoice.user_id)
+        .where(CryptoInvoice.status == "active")
+        .order_by(CryptoInvoice.invoice_id.desc()).limit(limit))).all()
+    return [(r[0], r[1]) for r in rows]
+
+
+async def close_crypto_invoice(session: AsyncSession, invoice_id: int, status: str) -> None:
+    """Счёт больше не ждём: оплачен или протух."""
+    row = (await session.execute(
+        select(CryptoInvoice).where(CryptoInvoice.invoice_id == invoice_id))).scalar_one_or_none()
+    if row is None:
+        return
+    row.status = status
+    await session.commit()
 
 
 async def increment_download(session: AsyncSession, platform: str) -> None:

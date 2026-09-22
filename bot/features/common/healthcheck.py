@@ -24,7 +24,7 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from bot.config import ADMIN_LANG, STT_ORDER
+from bot.config import ADMIN_LANG, STT_ORDER, CRYPTOPAY_TOKEN
 from bot.utils.i18n import t, t_check
 
 logger = logging.getLogger(__name__)
@@ -947,6 +947,23 @@ async def _check_twitter(url, expect_text=False, expect_kind=None):
     return await asyncio.to_thread(work)
 
 
+async def _check_crypto_pay():
+    """Жив ли токен приложения Crypto Pay.
+
+    Проверка дешёвая (getMe) и по делу: токен можно отозвать или удалить приложение,
+    и тогда кнопка «Оплатить криптой» ведёт в никуда — человек жмёт, а счёт не
+    выставляется. Без токена пункт вообще не показывается: способа оплаты нет.
+    """
+    from bot.features.common import cryptopay
+
+    try:
+        me = await asyncio.to_thread(cryptopay.get_me)
+    except Exception:
+        return False, t("hc_crypto_dead", _admin_lang())
+    return True, t("hc_crypto_ok", _admin_lang(),
+                   app=me.get("name") or me.get("app_id") or "—")
+
+
 async def _check_hdrezka(url, expect_series=False):
     """HDRezka: открываем страницу и убеждаемся, что с неё СЧИТАЛОСЬ то, без чего
     скачивание невозможно.
@@ -1045,6 +1062,9 @@ _CHECKS = [
     ("Куки Instagram",          None,         _check_ig_cookies,                            "x"),
     ("Куки YouTube",            None,         _check_yt_cookies,                            "x"),
     ("Куки Twitter",            None,         _check_x_cookies,                             "x"),
+    # Только если крипто-оплата настроена: без токена этой кнопки у людей нет.
+    ("Крипто-оплата",           None,         _check_crypto_pay,
+     "x" if CRYPTOPAY_TOKEN else _OFF),
 ]
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from aiogram import Router, F, Bot
@@ -7,9 +8,13 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 
-from bot.config import PREMIUM_PRICE_STARS
+from bot.config import PREMIUM_PRICE_STARS, PREMIUM_PRICE_USD
 from bot.database import SessionLocal
-from bot.database.repository import is_premium, set_premium, add_payment, refund_payment
+from bot.database.repository import (
+    is_premium, set_premium, add_payment, refund_payment, add_crypto_invoice,
+    user_language,
+)
+from bot.features.common import cryptopay
 from bot.utils.i18n import t, lang_of
 
 logger = logging.getLogger(__name__)
@@ -21,12 +26,21 @@ router = Router()
 PAYLOAD = "premium"
 
 
+# Как помечаем крипто-покупку в таблице платежей. Номер счёта уникален у Crypto Pay,
+# но не у Telegram — приставка разводит их между собой и заодно видно происхождение.
+CRYPTO_CHARGE = "cryptopay:{id}"
+
+
 def buy_button(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text=t("btn_buy", lang, price=PREMIUM_PRICE_STARS), callback_data="buy_premium"
-        )
-    ]])
+    """Кнопки покупки. Крипта появляется только если она настроена: без токена
+    показывать способ оплаты, который не работает, — худшее, что можно сделать."""
+    rows = [[InlineKeyboardButton(
+        text=t("btn_buy", lang, price=PREMIUM_PRICE_STARS), callback_data="buy_premium")]]
+    if cryptopay.available():
+        rows.append([InlineKeyboardButton(
+            text=t("btn_buy_crypto", lang, price=f"{PREMIUM_PRICE_USD:.2f}"),
+            callback_data="buy_crypto")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _send_invoice(bot: Bot, chat_id: int, lang: str):
@@ -60,6 +74,60 @@ async def cb_buy_premium(callback: CallbackQuery, bot: Bot):
             await callback.message.answer(t("already_premium_short", lang))
             return
     await _send_invoice(bot, callback.message.chat.id, lang)
+
+
+@router.callback_query(F.data == "buy_crypto")
+async def cb_buy_crypto(callback: CallbackQuery):
+    """Выставляет счёт в Crypto Pay и даёт ссылку на оплату.
+
+    Премиум здесь НЕ выдаём: оплату увидит фоновая задача (см. _watch_crypto_invoices
+    в main.py). Так человек получит своё, даже если закроет бота сразу после оплаты
+    или мы в этот момент перезапускались.
+    """
+    lang = lang_of(callback.from_user)
+    await callback.answer()
+    async with SessionLocal() as session:
+        if await is_premium(session, callback.from_user.id):
+            await callback.message.answer(t("already_premium_short", lang))
+            return
+    try:
+        invoice = await asyncio.to_thread(
+            cryptopay.create_invoice, callback.from_user.id,
+            t("premium_desc", lang), t("crypto_paid_hint", lang))
+    except Exception:
+        logger.exception("Не вышло выставить крипто-счёт")
+        await callback.message.answer(t("crypto_unavailable", lang))
+        return
+    async with SessionLocal() as session:
+        await add_crypto_invoice(session, invoice["invoice_id"], callback.from_user.id)
+    url = invoice.get("bot_invoice_url") or invoice.get("pay_url")
+    await callback.message.answer(
+        t("crypto_invoice", lang, price=f"{PREMIUM_PRICE_USD:.2f}"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=t("btn_pay_crypto", lang), url=url)]]))
+    logger.info("Крипто-счёт выставлен: user=%s invoice=%s",
+                callback.from_user.id, invoice["invoice_id"])
+
+
+async def grant_crypto(bot: Bot, user_id: int, invoice_id: int, usd: float) -> None:
+    """Счёт оплачен: включаем премиум и говорим об этом человеку.
+
+    Запись платежа идёт по уникальному номеру счёта, а повторную запись репозиторий
+    молча пропускает — так что второй заход опроса (или перезапуск в неудачный
+    момент) не выдаст премиум дважды и не задвоит покупку в отчёте.
+    """
+    async with SessionLocal() as session:
+        await set_premium(session, user_id, True)
+        await add_payment(session, user_id, CRYPTO_CHARGE.format(id=invoice_id),
+                          stars=0, method="crypto", usd=usd)
+        lang = await user_language(session, user_id)
+    logger.info("Оплата премиума криптой: user=%s invoice=%s usd=%s",
+                user_id, invoice_id, usd)
+    try:
+        await bot.send_message(user_id, t("payment_success", lang))
+    except Exception:
+        # Человек мог закрыть чат с ботом. Премиум уже выдан — это важнее письма.
+        logger.warning("Не смог сообщить об оплате user=%s", user_id)
 
 
 @router.pre_checkout_query()

@@ -136,6 +136,7 @@ _CHECK_NAMES = {
     "Превью видео":             {"ru": "Превью видео", "uk": "Прев'ю відео", "en": "Video thumbnail"},
     "Куки Instagram":           {"ru": "Куки Instagram", "uk": "Куки Instagram", "en": "Instagram cookies"},
     "Куки Twitter":             {"ru": "Куки Twitter", "uk": "Куки Twitter", "en": "Twitter cookies"},
+    "Крипто-оплата":            {"ru": "Крипто-оплата", "uk": "Крипто-оплата", "en": "Crypto payment"},
     "Куки YouTube":             {"ru": "Куки YouTube", "uk": "Куки YouTube", "en": "YouTube cookies"},
 }
 
@@ -156,6 +157,12 @@ TEXTS = {
     "rep_premium":    {"ru": "⭐️ Премиум пользователей", "uk": "⭐️ Преміум користувачів", "en": "⭐️ Premium users"},
     "rep_payments":   {"ru": "💰 Покупок", "uk": "💰 Покупок", "en": "💰 Purchases"},
     "rep_stars":      {"ru": "звёзд", "uk": "зірок", "en": "stars"},
+    "hc_crypto_ok":   {"ru": "приложение «{app}» на связи",
+                       "uk": "застосунок «{app}» на зв'язку",
+                       "en": "app «{app}» is reachable"},
+    "hc_crypto_dead": {"ru": "Crypto Pay не принимает наш токен — оплата криптой мертва",
+                       "uk": "Crypto Pay не приймає наш токен — оплата криптою мертва",
+                       "en": "Crypto Pay rejects our token — crypto payment is dead"},
     "rep_refunded":   {"ru": "возвратов", "uk": "повернень", "en": "refunded"},
     "rep_requests":   {"ru": "⬇️ Всего запросов", "uk": "⬇️ Усього запитів", "en": "⬇️ Total requests"},
     "rep_platforms":  {"ru": "По платформам:", "uk": "За платформами:", "en": "By platform:"},
@@ -620,6 +627,35 @@ TEXTS = {
     },
     "btn_buy": {
         "ru": "Купить за {price} ⭐", "uk": "Купити за {price} ⭐", "en": "Buy for {price} ⭐",
+    },
+    "btn_buy_crypto": {
+        "ru": "Оплатить криптой (${price})",
+        "uk": "Сплатити криптою (${price})",
+        "en": "Pay with crypto (${price})",
+    },
+    "btn_pay_crypto": {
+        "ru": "Перейти к оплате", "uk": "Перейти до оплати", "en": "Go to payment",
+    },
+    "crypto_invoice": {
+        "ru": "Счёт на <b>${price}</b> готов. Платить можно USDT или TON — сеть выбирать "
+              "не надо, перевод идёт внутри @CryptoBot.\n\nПремиум включится сам через "
+              "несколько секунд после оплаты.",
+        "uk": "Рахунок на <b>${price}</b> готовий. Платити можна USDT або TON — мережу "
+              "обирати не треба, переказ іде всередині @CryptoBot.\n\nПреміум увімкнеться "
+              "сам за кілька секунд після оплати.",
+        "en": "Your <b>${price}</b> invoice is ready. Pay with USDT or TON — no network to "
+              "choose, the transfer happens inside @CryptoBot.\n\nPremium switches on by "
+              "itself a few seconds after payment.",
+    },
+    "crypto_paid_hint": {
+        "ru": "Оплата получена. Возвращайся в бота — Premium уже включён.",
+        "uk": "Оплату отримано. Повертайся в бота — Premium уже увімкнено.",
+        "en": "Payment received. Head back to the bot — Premium is already on.",
+    },
+    "crypto_unavailable": {
+        "ru": "Оплата криптой сейчас недоступна — попробуй позже или купи за звёзды.",
+        "uk": "Оплата криптою зараз недоступна — спробуй пізніше або купи за зірки.",
+        "en": "Crypto payment is unavailable right now — try later or buy with Stars.",
     },
     "already_premium": {
         "ru": "✨ У тебя уже есть Premium – все функции открыты!",

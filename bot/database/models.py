@@ -104,9 +104,34 @@ class Payment(Base):
     user_id = Column(Integer, nullable=False, index=True)
     charge_id = Column(String, unique=True, nullable=False)  # номер платежа у Telegram
     stars = Column(Integer, default=0)
+    # Чем платили: "stars" или "crypto". Раньше способ был один, и поля не было.
+    method = Column(String, default="stars")
+    # Сумма в долларах — только для крипты: звёзды в доллары мы не переводим, курс
+    # у них свой и задним числом он всё равно был бы выдумкой.
+    usd = Column(Float, nullable=True)
     at = Column(DateTime, server_default=func.now())
     # Возврат: премиум снимается, а запись остаётся — чтобы история покупок не врала.
     refunded = Column(Boolean, default=False)
+
+
+class CryptoInvoice(Base):
+    """Счёт, выставленный через Crypto Pay (@CryptoBot).
+
+    Зачем хранить у себя. Об оплате мы узнаём опросом, и спрашивать надо ПРО СВОИ
+    неоплаченные счета — иначе пришлось бы перебирать всю историю приложения и
+    гадать, какие из них мы уже провели. Плюс запись переживает перезапуск: человек
+    заплатил в момент деплоя — премиум всё равно включится.
+
+    Номер счёта выдаёт Crypto Pay, он же первичный ключ: повторно тот же счёт в
+    таблицу не попадёт.
+    """
+    __tablename__ = "crypto_invoices"
+
+    invoice_id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    # active — ждём оплаты, paid — оплачен и премиум выдан, expired — протух.
+    status = Column(String, default="active", index=True)
+    at = Column(DateTime, server_default=func.now())
 
 
 class StashedLink(Base):

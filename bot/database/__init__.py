@@ -81,6 +81,16 @@ async def init_db():
             await conn.exec_driver_sql(
                 "ALTER TABLE stashed_links ADD COLUMN payload VARCHAR")
 
+        # Покупка теперь бывает не только за звёзды: добавился способ оплаты и
+        # сумма в долларах для крипты. У старых записей способ — звёзды.
+        res = await conn.exec_driver_sql("PRAGMA table_info(payments)")
+        pay_cols = [r[1] for r in res.fetchall()]
+        if pay_cols and "method" not in pay_cols:
+            await conn.exec_driver_sql(
+                "ALTER TABLE payments ADD COLUMN method VARCHAR DEFAULT 'stars'")
+        if pay_cols and "usd" not in pay_cols:
+            await conn.exec_driver_sql("ALTER TABLE payments ADD COLUMN usd FLOAT")
+
         # Кэш file_id теперь по каждому боту (id привязан к отправившему боту).
         res = await conn.exec_driver_sql("PRAGMA table_info(cached_files)")
         cf_cols = [r[1] for r in res.fetchall()]

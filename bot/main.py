@@ -14,7 +14,7 @@ from aiogram.types import (
 )
 from bot.config import (
     BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ,
-    REPORT_HOUR, HEALTHCHECK_EVERY_HOURS, ADMIN_LANG,
+    REPORT_HOUR, HEALTHCHECK_EVERY_HOURS, ADMIN_LANG, CRYPTOPAY_POLL_SECONDS,
 )
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
@@ -304,6 +304,52 @@ async def _flush_traffic():
                 logger.exception("Не удалось сохранить статистику трафика")
 
 
+async def _watch_crypto_invoices(bot: Bot):
+    """Следит за оплатой крипто-счетов и включает премиум.
+
+    Опросом, а не вебхуком: вебхук требует публичного HTTPS-адреса с сертификатом,
+    а бот живёт на опросе Telegram, домена у него нет. Спрашиваем только про СВОИ
+    неоплаченные счета, так что запрос лёгкий даже раз в 15 секунд.
+
+    Почему выдача премиума живёт здесь, а не в обработчике кнопки: человек может
+    закрыть бота сразу после оплаты, а мы — перезапуститься в этот самый момент.
+    Счёт лежит в базе, и его всё равно доведут до конца.
+    """
+    from bot.database.repository import open_crypto_invoices, close_crypto_invoice
+    from bot.features.common import cryptopay
+    from bot.features.common.payment import grant_crypto
+
+    if not cryptopay.available():
+        return                       # токена нет — способ оплаты выключен целиком
+    while True:
+        await asyncio.sleep(CRYPTOPAY_POLL_SECONDS)
+        try:
+            async with SessionLocal() as session:
+                pending = await open_crypto_invoices(session)
+            if not pending:
+                continue
+            owners = dict(pending)
+            invoices = await asyncio.to_thread(cryptopay.get_invoices, list(owners))
+            for inv in invoices:
+                status = inv.get("status")
+                if status not in ("paid", "expired"):
+                    continue
+                invoice_id = inv["invoice_id"]
+                # Кому включать премиум, берём из payload самого счёта: он пришёл от
+                # сервиса вместе с оплатой и не зависит от нашей записи. Своя запись —
+                # запасной путь на случай, если payload когда-нибудь потеряется.
+                user_id = int(inv.get("payload") or owners.get(invoice_id) or 0)
+                if status == "paid" and user_id:
+                    # Счёт выставлен в долларах, поэтому amount — это и есть доллары,
+                    # чем бы человек ни заплатил.
+                    await grant_crypto(bot, user_id, invoice_id,
+                                       float(inv.get("amount") or 0))
+                async with SessionLocal() as session:
+                    await close_crypto_invoice(session, invoice_id, status)
+        except Exception:
+            logger.exception("Опрос крипто-счетов сорвался")
+
+
 async def _warm_hdrezka():
     """Держит пропуск HDRezka свежим, чтобы за него не платил тот, кто пришёл первым.
 
@@ -418,6 +464,7 @@ async def main():
     asyncio.create_task(_periodic_healthcheck(bot))
     asyncio.create_task(_flush_traffic())
     asyncio.create_task(_warm_hdrezka())
+    asyncio.create_task(_watch_crypto_invoices(bot))
     if WHISPER_PREWARM:
         from bot.features.transcribe.transcriber import warmup
         asyncio.create_task(asyncio.to_thread(warmup))

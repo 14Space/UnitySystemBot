@@ -72,6 +72,8 @@ def format_stats(stats: dict, lang: str = "ru") -> str:
     if pay.get("count") or pay.get("refunded"):
         row = (f"\n{t('rep_payments', lang)}: <b>{pay['count']}</b>"
                f" ({pay['stars']} {t('rep_stars', lang)})")
+        if pay.get("usd"):
+            row += f", ${pay['usd']:.2f}"      # крипта — суммой в долларах
         if pay.get("refunded"):
             row += f", {pay['refunded']} {t('rep_refunded', lang)}"
         lines.append(row)

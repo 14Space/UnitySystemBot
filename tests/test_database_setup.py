@@ -53,7 +53,7 @@ def test_payments_table_is_created(tmp_path, monkeypatch):
         return first, owner, after, missing
 
     first, owner, after, missing = asyncio.run(scenario())
-    assert first == {"count": 2, "stars": 500, "refunded": 0}
+    assert first == {"count": 2, "stars": 500, "usd": 0.0, "refunded": 0}
     assert owner == 2
-    assert after == {"count": 1, "stars": 250, "refunded": 1}
+    assert after == {"count": 1, "stars": 250, "usd": 0.0, "refunded": 1}
     assert missing is None
