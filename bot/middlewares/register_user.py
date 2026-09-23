@@ -16,7 +16,7 @@ class RegisterUserMiddleware(BaseMiddleware):
     """
 
     async def __call__(self, handler: Callable, event: Message, data: dict) -> Any:
-        if isinstance(event, Message) and event.from_user and is_request(event):
+        if isinstance(event, Message) and event.from_user and is_request(event, data):
             async with SessionLocal() as session:
                 user = await get_or_create_user(
                     session,

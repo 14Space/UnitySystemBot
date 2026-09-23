@@ -16,6 +16,7 @@
 скачивание. Ни одна проверка не должна ронять отчёт — любое исключение перехватывается.
 """
 import asyncio
+import html
 import logging
 import os
 import re
@@ -1286,7 +1287,12 @@ def format_health(results: list[dict], platform_order: list[str] | None = None,
             else:
                 line = f"✅ {t_check(r['name'], lang)}"
         else:
-            line = f"{icons[r['state']]} {t_check(r['name'], lang)} – {r['detail']}"
+            # detail — это текст ошибки или название со стороннего сайта, и в нём
+            # запросто попадается «<...>» (например «<Response [403]>»). Отчёт уходит
+            # разметкой HTML, поэтому такой символ ломает РАЗБОР ВСЕГО сообщения, и
+            # человек не получает отчёт вовсе — вместо одной красной строки.
+            line = (f"{icons[r['state']]} {t_check(r['name'], lang)} – "
+                    f"{html.escape(str(r['detail']))}")
             # Пропущенные (⚪) в проблемы не берём: это не поломка, а сознательно
             # выключенный настройкой пункт.
             if r["state"] != "skip":

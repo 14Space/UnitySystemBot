@@ -40,7 +40,23 @@ def _msg_feature(m: Message) -> str | None:
     return None
 
 
-def is_request(m: Message) -> bool:
+# Ключ, под которым ответ «к какой функции относится сообщение» лежит в общих данных
+# апдейта. Считать его несколько раз нельзя: разбор валюты — самая дорогая часть, а
+# зовут её три посредника подряд (очередь, учёт пользователя, маршрутизация). Общий
+# словарь data живёт ровно один апдейт, поэтому лучшего места для ответа нет.
+_FEATURE_KEY = "_msg_feature"
+
+
+def feature_of(m: Message, data: dict | None = None) -> str | None:
+    """К какой функции относится сообщение. Считается ОДИН раз на апдейт."""
+    if data is None:
+        return _msg_feature(m)
+    if _FEATURE_KEY not in data:
+        data[_FEATURE_KEY] = _msg_feature(m)
+    return data[_FEATURE_KEY]
+
+
+def is_request(m: Message, data: dict | None = None) -> bool:
     """Это обращение К БОТУ, а не обычная переписка в чате?
 
     Считаем обращением команду, ссылку, голосовое/кружок и валютный запрос. Всё
@@ -48,7 +64,7 @@ def is_request(m: Message) -> bool:
     """
     if (m.text or "").startswith("/"):
         return True
-    return _msg_feature(m) is not None
+    return feature_of(m, data) is not None
 
 
 class RoutingMiddleware(BaseMiddleware):
@@ -57,7 +73,7 @@ class RoutingMiddleware(BaseMiddleware):
         current_bot_id.set(bot.id if bot else None)
 
         if isinstance(event, Message):
-            feature = _msg_feature(event)
+            feature = feature_of(event, data)
             if feature:
                 async with SessionLocal() as session:
                     disabled = await get_disabled_features(session, event.chat.id)

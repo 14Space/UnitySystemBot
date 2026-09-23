@@ -80,11 +80,14 @@ async def transcribe_audio(file_path: str) -> str:
     Пустой ответ («речи нет») причиной для перехода не считается: это законный
     результат, и остальные способы честно вернут ту же пустоту.
     """
-    prepared, ours = audio_prep.prepare(file_path)
+    # Подготовка — это запуск ffmpeg, до минуты работы. В цикле событий ей делать
+    # нечего: пока она считала, бот не отвечал НИКОМУ — ни на ссылки, ни на кнопки,
+    # и так на каждое голосовое. Уносим в поток, как и сами способы распознавания.
+    prepared, ours = await asyncio.to_thread(audio_prep.prepare, file_path)
     try:
         return await _cascade(prepared)
     finally:
-        audio_prep.cleanup(prepared, ours)
+        await asyncio.to_thread(audio_prep.cleanup, prepared, ours)
 
 
 async def _cascade(file_path: str) -> str:

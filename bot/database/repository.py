@@ -67,10 +67,28 @@ async def is_premium(session: AsyncSession, user_id: int) -> bool:
 
 
 async def set_premium(session: AsyncSession, user_id: int, value: bool = True) -> None:
-    """Включает/выключает Premium у пользователя"""
+    """Включает/выключает Premium у пользователя.
+
+    Если записи о человеке ещё нет — СОЗДАЁМ её. Раньше функция в этом случае молча
+    ничего не делала, и это стоило бы денег: в базу попадают только те, кто присылал
+    боту запрос (см. RegisterUserMiddleware), а нажатие 🔒 — это callback, запросом он
+    не считается. То есть участник группы мог нажать замок, оплатить счёт и не получить
+    ничего, причём тихо: ни ошибки, ни следа в логах.
+    """
     result = await session.execute(select(User).where(User.user_id == user_id))
     user = result.scalar_one_or_none()
-    if user:
+    if user is None:
+        logger.warning("Premium для %s: записи о человеке не было, создаю", user_id)
+        user = User(user_id=user_id, username="", language="ru")
+        session.add(user)
+    user.is_premium = value
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Гонка: запись создал параллельный запрос — берём её и дожимаем премиум.
+        await session.rollback()
+        user = (await session.execute(
+            select(User).where(User.user_id == user_id))).scalar_one()
         user.is_premium = value
         await session.commit()
 

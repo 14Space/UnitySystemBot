@@ -44,7 +44,7 @@ class ThrottleMiddleware(BaseMiddleware):
 
     async def __call__(self, handler: Callable, event: Message, data: dict) -> Any:
         if THROTTLE_LIMIT <= 0 or not isinstance(event, Message) \
-                or not event.from_user or not _is_request(event):
+                or not event.from_user or not _is_request(event, data):
             return await handler(event, data)
 
         uid = event.from_user.id

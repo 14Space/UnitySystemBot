@@ -278,7 +278,7 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
         except Exception:
             pass  # не смогли определить номер — откатываемся на ссылку
 
-    await limits.acquire(limits.LIGHT)
+    slot = await limits.acquire(limits.LIGHT)
     path = None
     try:
         result = await asyncio.to_thread(extract_audio_track, url, platform)
@@ -296,7 +296,7 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
         # Уборка именно здесь: файл скачан ещё до отправки, и если отправка упала,
         # он оставался на диске до перезапуска бота.
         _cleanup_all(path)
-        await limits.release(limits.LIGHT)
+        await limits.release(limits.LIGHT, slot)
 
 
 async def _handle_quality_video(message: Message, url: str, lang: str):
@@ -656,7 +656,7 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
     await callback.answer()
     await callback.message.delete()
     ACTIVE_DOWNLOADS.add(user_id)
-    await limits.acquire(limits.HEAVY)
+    slot = await limits.acquire(limits.HEAVY)
     # Всё, что после занятия слота, — строго внутри try: 23.09.2026 бот замолчал на
     # ссылки насовсем именно здесь. Отправка полоски прогресса стояла ВНЕ защищённого
     # блока, она не прошла (исходное сообщение к тому времени удалили), слот остался
@@ -708,7 +708,7 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         # Фильм весит гигабайты: оставить его на диске из-за сбоя отправки — самый
         # дорогой из возможных мусоров.
         _cleanup_all(file_path)
-        await limits.release(limits.HEAVY)
+        await limits.release(limits.HEAVY, slot)
         ACTIVE_DOWNLOADS.discard(user_id)
 
 
@@ -727,7 +727,7 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
     async def produce():
         # Лёгкие задачи не ограничиваем «одна за раз» — можно кидать подряд, общий
         # лимит (limits.LIGHT) сам поставит лишние в очередь.
-        await limits.acquire_or_tell(limits.LIGHT, message, lang)
+        slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
         file_path = None
         try:
             file_path = await asyncio.to_thread(download_fn, url)
@@ -742,7 +742,7 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
             await message.reply(limits.friendly_error(e, lang))
         finally:
             _cleanup_all(file_path)
-            await limits.release(limits.LIGHT)
+            await limits.release(limits.LIGHT, slot)
 
     await inflight.deduped(url, cache_key, get_cached, send_cached, produce)
 
@@ -764,7 +764,7 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
             await message.reply_video(cached[2:], supports_streaming=True)
 
     async def produce():
-        await limits.acquire_or_tell(limits.LIGHT, message, lang)
+        slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
         file_path = mp4 = None
         try:
             file_path = await asyncio.to_thread(download_media, url)
@@ -791,7 +791,7 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
             # mp4 — результат конвертации гифки; если он совпал с исходником, повторная
             # уборка того же пути безвредна (файла уже нет).
             _cleanup_all(file_path, mp4 if mp4 != file_path else None)
-            await limits.release(limits.LIGHT)
+            await limits.release(limits.LIGHT, slot)
 
     await inflight.deduped(url, cache_key, get_cached, send_cached, produce)
 
@@ -829,7 +829,7 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
         await _send_cached_post(message, cached)
 
     async def produce():
-        await limits.acquire_or_tell(limits.LIGHT, message, lang)
+        slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
         files = None
         try:
             files = await asyncio.to_thread(download_fn, url)
@@ -857,7 +857,7 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
             await message.reply(msg)
         finally:
             _cleanup_all(files)
-            await limits.release(limits.LIGHT)
+            await limits.release(limits.LIGHT, slot)
 
     await inflight.deduped(url, "post", get_cached, send_cached, produce)
 
@@ -996,7 +996,7 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         await _send_cached_post(message, cached)
 
     async def produce():
-        await limits.acquire_or_tell(limits.LIGHT, message, lang)
+        slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
         files = None
         try:
             files = await asyncio.to_thread(tiktok.download_from, info, mode, compress)
@@ -1011,7 +1011,7 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
             await message.reply(limits.friendly_error(e, lang))
         finally:
             _cleanup_all(files)
-            await limits.release(limits.LIGHT)
+            await limits.release(limits.LIGHT, slot)
 
     await inflight.deduped(cache_url, cache_key, get_cached, send_cached, produce)
 
@@ -1079,7 +1079,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
 
     await callback.answer()
 
-    await limits.acquire(limits.LIGHT)
+    slot = await limits.acquire(limits.LIGHT)
     files = None
     try:
         files = await asyncio.to_thread(tiktok.download_from, info, mode)
@@ -1095,7 +1095,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         await _safe_edit(callback.message, limits.friendly_error(e, lang))
     finally:
         _cleanup_all(files)
-        await limits.release(limits.LIGHT)
+        await limits.release(limits.LIGHT, slot)
 
 
 # Telegram: подпись к медиа — максимум 1024 символа (у обычного текста 4096).
@@ -1121,7 +1121,7 @@ async def _handle_twitter(message: Message, url: str, lang: str):
         await message.reply(limits.friendly_error(e, lang))
         return
 
-    await limits.acquire_or_tell(limits.LIGHT, message, lang)
+    slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
     paths: list[str] = []
     try:
         items, caption, parse_mode = await _build_twitter_plan(tweet)
@@ -1139,7 +1139,7 @@ async def _handle_twitter(message: Message, url: str, lang: str):
         logger.exception("Twitter handling failed")
         await message.reply(limits.friendly_error(e, lang))
     finally:
-        await limits.release(limits.LIGHT)
+        await limits.release(limits.LIGHT, slot)
         for p in paths:
             _cleanup(p)
 
@@ -1437,7 +1437,7 @@ async def _do_download_audio(
 
     # Одиночный трек качается МОЛЧА (без прогресс-бара). Общий прогресс показывает
     # только «Скачать всё» (там статус «N / total»).
-    await limits.acquire(limits.LIGHT)
+    slot = await limits.acquire(limits.LIGHT)
 
     file_path = None
     try:
@@ -1552,7 +1552,7 @@ async def _do_download_audio(
         await bot.send_message(chat_id, limits.friendly_error(e, lang), reply_to_message_id=reply_to)
     finally:
         _cleanup_all(file_path)
-        await limits.release(limits.LIGHT)
+        await limits.release(limits.LIGHT, slot)
 
 
 @router.callback_query(F.data.startswith("quality:"))
@@ -1622,7 +1622,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     await callback.answer()
     await callback.message.delete()
     ACTIVE_DOWNLOADS.add(user_id)
-    await limits.acquire(limits.HEAVY)
+    slot = await limits.acquire(limits.HEAVY)
 
     # Всё, что после занятия слота, — строго внутри try. Отправка полоски прогресса
     # стояла ВНЕ него, и если она не проходила (сообщение человека удалили, у бота
@@ -1692,7 +1692,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
                 logger.warning("Не смог сообщить о сбое загрузки в чат %s", chat_id)
     finally:
         _cleanup_all(file_path)
-        await limits.release(limits.HEAVY)
+        await limits.release(limits.HEAVY, slot)
         ACTIVE_DOWNLOADS.discard(user_id)
 
 

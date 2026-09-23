@@ -87,7 +87,7 @@ async def _handle(message: Message, file_id: str, suffix: str):
     file_path = os.path.join(DOWNLOADS_DIR, f"{uuid.uuid4().hex}{suffix}")
 
     alerts.current_request.set("расшифровка (голосовое/кружок)")  # контекст для тревог
-    await limits.acquire(limits.TRANSCRIBE)
+    slot = await limits.acquire(limits.TRANSCRIBE)
     try:
         await _fetch_file(message, file_id, file_path)
         text = await transcribe_audio(file_path)
@@ -119,7 +119,7 @@ async def _handle(message: Message, file_id: str, suffix: str):
         alerts.note_failure(e)            # раньше сбои расшифровки молчали в алертах
         await _safe_edit(status, t("transcribe_nothing", lang))
     finally:
-        await limits.release(limits.TRANSCRIBE)
+        await limits.release(limits.TRANSCRIBE, slot)
         _cleanup(file_path)
 
 

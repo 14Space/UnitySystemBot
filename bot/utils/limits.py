@@ -85,10 +85,12 @@ class _SmartLimiter:
 
     def __init__(self):
         self._cond = asyncio.Condition()
-        self._active = {HEAVY: 0, LIGHT: 0, TRANSCRIBE: 0}
-        # Когда начался каждый из занятых слотов. Нужно, чтобы отличить работающую
-        # задачу от потерянной: счётчик сам по себе этого не знает (см. _forget_lost).
-        self._started: dict[str, list[float]] = {HEAVY: [], LIGHT: [], TRANSCRIBE: []}
+        # Каждый занятый слот — своя запись «номер: когда занят». Номер нужен, чтобы
+        # освобождение попадало ИМЕННО в свой слот. Со счётчиком выходило хуже: сторож
+        # отпускал зависший слот, а потом настоящий владелец отпускал его ещё раз, и
+        # счётчик уходил ниже правды — потолки после этого не держали вовсе.
+        self._held: dict[str, dict[int, float]] = {HEAVY: {}, LIGHT: {}, TRANSCRIBE: {}}
+        self._next_token = 0
 
     def _forget_lost(self, category: str) -> int:
         """Отпускает слоты, занятые дольше MAX_HOLD_SECONDS. Возвращает их число.
@@ -100,18 +102,18 @@ class _SmartLimiter:
         # часов на Windows шаг около 15 мс, и два слота, занятых в один тик, при строгом
         # сравнении не ловились вовсе.
         edge = time.monotonic() - MAX_HOLD_SECONDS
-        lost = [s for s in self._started[category] if s <= edge]
+        lost = [tok for tok, started in self._held[category].items() if started <= edge]
         if not lost:
             return 0
-        self._started[category] = [s for s in self._started[category] if s > edge]
-        self._active[category] = max(0, self._active[category] - len(lost))
+        for tok in lost:
+            self._held[category].pop(tok, None)
         logger.warning("Лимит «%s»: отпустил %d зависших слотов (держали дольше %d мин) "
                        "— значит где-то потерялось освобождение",
                        category, len(lost), MAX_HOLD_SECONDS // 60)
         return len(lost)
 
     def _cap(self, category: str) -> int:
-        heavy_idle = self._active[HEAVY] == 0
+        heavy_idle = not self._held[HEAVY]
         if category == HEAVY:
             return HEAVY_MAX
         if category == LIGHT:
@@ -123,11 +125,12 @@ class _SmartLimiter:
     def _free(self, category: str) -> bool:
         """Есть ли место. Заодно вычищает зависшие слоты — иначе ждущие висели бы
         вечно, а проверка условия как раз то место, где это заметно."""
-        if self._active[category] >= self._cap(category):
+        if len(self._held[category]) >= self._cap(category):
             self._forget_lost(category)
-        return self._active[category] < self._cap(category)
+        return len(self._held[category]) < self._cap(category)
 
-    async def acquire(self, category: str):
+    async def acquire(self, category: str) -> int:
+        """Занимает слот и возвращает его номер — с ним потом освобождать."""
         async with self._cond:
             # Ждём, пока в нашей группе освободится место (потолок может меняться,
             # когда тяжёлые видео начинаются/заканчиваются). Условие проверяется и по
@@ -138,63 +141,75 @@ class _SmartLimiter:
                     await asyncio.wait_for(self._cond.wait(), timeout=60)
                 except asyncio.TimeoutError:
                     continue
-            self._active[category] += 1
-            self._started[category].append(time.monotonic())
+            self._next_token += 1
+            token = self._next_token
+            self._held[category][token] = time.monotonic()
+            return token
 
-    async def release(self, category: str):
+    async def release(self, category: str, token: int | None = None) -> None:
+        """Освобождает СВОЙ слот. Чужой и уже отпущенный не трогает.
+
+        Номер может не найтись — значит слот успел отобрать сторож зависаний. Это не
+        ошибка вызывающего, и вычитать за это лишнее нельзя.
+        """
         async with self._cond:
-            self._active[category] = max(0, self._active[category] - 1)
-            if self._started[category]:
-                self._started[category].pop(0)      # ушла самая старая из занятых
+            if token is None:                  # старый вызов без номера — берём любой
+                if self._held[category]:
+                    self._held[category].pop(next(iter(self._held[category])))
+            elif self._held[category].pop(token, None) is None:
+                logger.info("Лимит «%s»: слот %s уже был отпущен сторожем",
+                            category, token)
             # Будим всех: освобождение тяжёлого видео поднимает потолки остальным.
             self._cond.notify_all()
 
     def is_full(self, category: str) -> bool:
-        return self._active[category] >= self._cap(category)
+        return len(self._held[category]) >= self._cap(category)
 
     def state(self) -> dict:
         """Кто сколько слотов занимает и как долго — для /test и разбора залипаний."""
         now = time.monotonic()
-        return {c: {"active": self._active[c], "cap": self._cap(c),
-                    "oldest_sec": int(now - min(self._started[c])) if self._started[c] else 0}
+        return {c: {"active": len(self._held[c]), "cap": self._cap(c),
+                    "oldest_sec": int(now - min(self._held[c].values())) if self._held[c] else 0}
                 for c in (HEAVY, LIGHT, TRANSCRIBE)}
 
 
 _limiter = _SmartLimiter()
 
 
-async def acquire(category: str):
-    await _limiter.acquire(category)
+async def acquire(category: str) -> int:
+    """Занимает слот и возвращает его номер. Освобождать ЭТИМ ЖЕ номером: иначе
+    освобождение попадёт в чужой слот (см. _SmartLimiter.release)."""
+    return await _limiter.acquire(category)
 
 
-async def acquire_or_tell(category: str, message, lang: str = "ru") -> None:
+async def acquire_or_tell(category: str, message, lang: str = "ru") -> int:
     """Занимает слот, а если ждать приходится долго — говорит об этом человеку.
 
     Раньше ожидание было молчаливым, и «бот не отвечает» выглядело одинаково и когда
     он занят, и когда сломан. Теперь человек видит, что его услышали.
     """
     if not queue_is_full(category):
-        await acquire(category)
-        return
+        return await acquire(category)
     notice = None
     try:
         notice = await message.reply(t("in_queue", lang))
     except Exception:
         pass                       # не вышло предупредить — ждём всё равно
-    await acquire(category)
+    token = await acquire(category)
     if notice is not None:
         try:
             await notice.delete()
         except Exception:
             pass
+    return token
 
 
 def state() -> dict:
     return _limiter.state()
 
 
-async def release(category: str):
-    await _limiter.release(category)
+async def release(category: str, token: int | None = None) -> None:
+    await _limiter.release(category, token)
 
 
 def queue_is_full(category: str = LIGHT) -> bool:

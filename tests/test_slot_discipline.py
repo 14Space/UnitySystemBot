@@ -26,8 +26,17 @@ _TAKE = {"acquire": ("release",), "acquire_or_tell": ("release",),
 
 
 def _taken(node) -> tuple[str, tuple[str, ...]] | None:
-    """Если оператор занимает ресурс — чем его положено отпускать."""
-    inner = node.value if isinstance(node, ast.Expr) else None
+    """Если оператор занимает ресурс — чем его положено отпускать.
+
+    Форм две: голое `await limits.acquire(...)` и `slot = await limits.acquire(...)`
+    (слот освобождается по номеру, см. limits). Вторую тоже обязаны видеть: иначе
+    правило тихо перестанет что-либо проверять после безобидной правки.
+    """
+    inner = None
+    if isinstance(node, ast.Expr):
+        inner = node.value
+    elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+        inner = node.value
     if isinstance(inner, ast.Await):
         inner = inner.value
     if not (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)):
@@ -74,7 +83,9 @@ def _violations_in(source: str, name: str) -> list[str]:
             attr, frees = taken
             where = f"{name}:{node.lineno}"
             # Занятие может стоять и ПЕРВЫМ в защищённом блоке — это тоже правильно.
-            if isinstance(parent, ast.Try) and body is parent.body and                     _mentions(ast.Module(body=parent.finalbody, type_ignores=[]), frees):
+            in_try = isinstance(parent, ast.Try) and body is parent.body
+            if in_try and _mentions(
+                    ast.Module(body=parent.finalbody, type_ignores=[]), frees):
                 continue
             rest = [n for n in body[i + 1:] if not _is_plain_declaration(n)]
             # Между занятием слота и try допускаем занятие второго ресурса: оба
@@ -116,7 +127,7 @@ def test_every_slot_is_released_in_finally(path):
 
 _BAD = """
 async def download(message):
-    await limits.acquire(limits.HEAVY)
+    slot = await limits.acquire(limits.HEAVY)
     status = await message.reply("качаю")   # упадёт — слот останется занятым
     try:
         await work()
@@ -190,3 +201,19 @@ def test_rule_catches_a_stuck_busy_marker():
 
 def test_rule_accepts_two_resources_in_one_finally():
     assert _violations_in(_GOOD_PAIR, "образец") == []
+
+
+_BAD_TOKEN_FORM = """
+async def download(message):
+    slot = await limits.acquire(limits.LIGHT)
+    status = await message.reply("качаю")   # упадёт — слот останется занятым
+    try:
+        await work()
+    finally:
+        await limits.release(limits.LIGHT, slot)
+"""
+
+
+def test_rule_sees_the_token_form():
+    """Слот, занятый «с номером», проверяется так же строго."""
+    assert _violations_in(_BAD_TOKEN_FORM, "образец")
