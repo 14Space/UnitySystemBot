@@ -19,7 +19,7 @@ from bot.utils.i18n import t, lang_of
 
 router = Router()
 
-GROUP_TYPES = ("group", "supergroup")
+
 
 # Функции-переключатели отдельной строкой: (внутреннее имя, ключ подписи).
 # Конвертер сюда НЕ входит — им управляет заголовок блока валют (см. _keyboard).

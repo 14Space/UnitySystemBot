@@ -4,7 +4,7 @@ import logging
 import statistics
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.models import (
@@ -189,15 +189,27 @@ async def close_crypto_invoice(session: AsyncSession, invoice_id: int, status: s
 
 
 async def increment_download(session: AsyncSession, platform: str) -> None:
-    """Увеличивает счётчик запросов для платформы"""
-    row = await session.execute(
-        select(DownloadStat).where(DownloadStat.platform == platform)
-    )
-    stat = row.scalar_one_or_none()
-    if stat:
-        stat.count += 1
-    else:
+    """Увеличивает счётчик запросов для платформы.
+
+    Прибавляем ОДНИМ запросом к базе (UPDATE … count + 1), а не «прочитал, сложил,
+    записал»: два запроса одной площадки в одну секунду читали одно и то же значение
+    и записывали одно и то же — один запрос просто терялся. А когда счётчика ещё нет,
+    вставка от двух сразу падала с IntegrityError.
+    """
+    updated = (await session.execute(
+        update(DownloadStat).where(DownloadStat.platform == platform)
+        .values(count=DownloadStat.count + 1))).rowcount
+    if not updated:
         session.add(DownloadStat(platform=platform, count=1))
+        try:
+            await session.commit()
+        except IntegrityError:      # успел параллельный запрос — просто прибавим
+            await session.rollback()
+            await session.execute(
+                update(DownloadStat).where(DownloadStat.platform == platform)
+                .values(count=DownloadStat.count + 1))
+            await session.commit()
+        return
     await session.commit()
 
 

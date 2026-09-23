@@ -10,7 +10,7 @@ import subprocess
 import requests
 import yt_dlp
 
-from bot.utils import media_names
+from bot.utils import media_names, net
 from bot.utils import cookie_files
 from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
 
@@ -679,9 +679,7 @@ def download_media(url: str) -> str:
             if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
                 ext = ".jpg"
             path = os.path.join(DOWNLOADS_DIR, f"{info.get('id', 'media')}_dl{ext}")
-            content = requests.get(image_url, timeout=60).content
-            with open(path, "wb") as f:
-                f.write(content)
+            net.fetch_to_file(image_url, path, timeout=60)
             return path
 
         raise ValueError("В этом пине нет медиа")

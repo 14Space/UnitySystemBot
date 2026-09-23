@@ -4,7 +4,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from bot.utils.i18n import t
 
 PAGE_SIZE = 8
-FREE_LIMIT = 720  # выше — премиум-заглушка
+from bot.config import FREE_QUALITY_LIMIT as FREE_LIMIT  # выше — премиум-заглушка
 
 
 def build_season_keyboard(sid: str, seasons: list, lang: str = "ru") -> InlineKeyboardMarkup:
@@ -52,21 +52,6 @@ def build_translator_keyboard(sid: str, translators: list, page: int, lang: str 
         rows.append(nav)
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def build_subtitle_keyboard(sid: str, tid: int, subtitles: list, lang: str = "ru") -> InlineKeyboardMarkup:
-    """Выбор языка субтитров (+ вариант без них)."""
-    rows = [
-        [InlineKeyboardButton(text=f"💬 {title}", callback_data=f"hrs:{sid}:{tid}:{code}")]
-        for code, title in subtitles
-    ]
-    rows.append([InlineKeyboardButton(text=t("btn_no_subtitles", lang), callback_data=f"hrs:{sid}:{tid}:none")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-# Качества, которые требуют ПОДПИСКИ САМОЙ HDRezka — бот их скачать не может,
-# поэтому вообще не показываем (как и премиум-озвучки HDRezka).
-_HDREZKA_PREMIUM_Q = ("ultra", "2k", "4k")
 
 
 def build_hdrezka_quality_keyboard(sid: str, tid: int, qualities: list, is_premium: bool = False) -> InlineKeyboardMarkup:

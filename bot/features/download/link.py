@@ -15,7 +15,7 @@ from bot.utils.platform_detector import detect_platform, Platform, extract_url
 from bot.features.download.keyboards.quality import build_quality_keyboard, FREE_LIMIT
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar, ProgressThrottle
-from bot.config import SHORTS_CAP_HEIGHT, DOWNLOADS_DIR
+from bot.config import GROUP_TYPES, SHORTS_CAP_HEIGHT, DOWNLOADS_DIR
 from bot.utils import limits, traffic, tg_files
 from bot.utils import inflight
 from bot.utils.cache_guard import send_cached_or_drop
@@ -91,16 +91,26 @@ def stash_inline_link(url: str) -> str:
     return sid
 
 
-@router.message(F.text)
+@router.message(F.text | F.caption)
 async def handle_link(message: Message):
     # Берём из сообщения именно ССЫЛКУ, а не весь текст: рядом с ней почти всегда
     # идёт подпись, и раньше она уезжала на площадку как часть адреса.
-    await process_link(message, extract_url(message.text))
+    #
+    # Смотрим и ПОДПИСЬ к медиа: ссылку часто присылают подписью к пересланному
+    # посту. Раньше обработчик стоял только на F.text, и такие сообщения бот не
+    # видел вовсе — выглядело как «на эту ссылку не реагирует».
+    await process_link(message, extract_url(message.text or message.caption or ""))
 
 
 async def process_link(message: Message, url: str):
     """Обработка одной ссылки. Вызывается из текстовых сообщений и из inline-перехода."""
     if not url.startswith("http"):
+        return
+    # Автора может не быть вовсе: анонимный админ группы, пост от имени канала. Без
+    # него не узнать ни язык, ни премиум, а обращение к from_user.id роняло обработчик
+    # уже ПОСЛЕ показа «Скачиваю…» — человек видел зависшее сообщение.
+    if getattr(message, "from_user", None) is None:
+        logger.info("Ссылка без автора (анонимный админ или канал) — пропускаю")
         return
 
     lang = lang_of(message.from_user)
@@ -122,7 +132,7 @@ async def process_link(message: Message, url: str):
     await _dispatch_platform(message, url, platform, lang)
 
 
-GROUP_TYPES = ("group", "supergroup")
+
 
 
 async def _shorts_cap(chat) -> int | None:
@@ -668,7 +678,7 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
     file_path = None
     try:
         chat_id = entry["chat_id"]
-        status = await bot.send_message(chat_id, make_progress_bar(0),
+        status = await bot.send_message(chat_id, make_progress_bar(0, lang),
                                         reply_to_message_id=entry["user_msg_id"])
 
         loop = asyncio.get_running_loop()
@@ -679,7 +689,7 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         def on_progress(percent: int):
             if throttle.should_send(percent):
                 asyncio.run_coroutine_threadsafe(
-                    _safe_edit(status, make_progress_bar(percent)), loop
+                    _safe_edit(status, make_progress_bar(percent, lang)), loop
                 )
 
         limits.check_disk_space(DOWNLOADS_DIR)      # фильм весит гигабайты (см. выше)
@@ -1170,7 +1180,14 @@ async def _build_twitter_plan(tweet: dict) -> tuple[list[dict], str | None, str 
     card = await asyncio.to_thread(render_tweet_card, tweet)
     items = [{"kind": "photo", "path": card}]
     if quote["media"]:
-        qfiles = await asyncio.to_thread(twitter.download_media, quote["media"], tweet["id"] + "_q")
+        try:
+            qfiles = await asyncio.to_thread(
+                twitter.download_media, quote["media"], tweet["id"] + "_q")
+        except Exception:
+            # Медиа цитаты не скачалось — карточка уже нарисована и лежит на диске.
+            # Раньше исключение уходило выше, и файл оставался до перезапуска бота.
+            logger.exception("Медиа цитаты не скачалось — отдаю только карточку")
+            qfiles = []
         items += qfiles
     caption, parse_mode = None, None
     if quote["text"]:
@@ -1408,19 +1425,10 @@ async def _handle_audio(
     """Тонкая обёртка: качает аудио в ответ на сообщение пользователя."""
     if source is None:
         source = cache_url
-    await _download_and_send_audio(
-        message.bot, message.chat.id, message.from_user.id, message.message_id,
+    await _do_download_audio(
+        message.bot, message.chat.id, message.message_id,
         cache_url, source, lang_of(message.from_user), meta=meta, fallback_query=fallback_query,
     )
-
-
-async def _download_and_send_audio(
-    bot: Bot, chat_id: int, user_id: int, reply_to: int,
-    cache_url: str, source: str, lang: str, meta: dict = None, fallback_query: str = None,
-):
-    """Скачивание одного трека. Ограничение «одна за раз» снято — музыка лёгкая,
-    общий лимит (limits.LIGHT внутри) сам ставит лишние треки в очередь."""
-    await _do_download_audio(bot, chat_id, reply_to, cache_url, source, lang, meta, fallback_query)
 
 
 async def _do_download_audio(
@@ -1641,7 +1649,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     try:
         progress_msg = await bot.send_message(
             chat_id,
-            make_progress_bar(0),
+            make_progress_bar(0, lang),
             reply_to_message_id=user_msg_id
         )
 
@@ -1651,7 +1659,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
         def on_progress(percent: int):
             if throttle.should_send(percent):
                 asyncio.run_coroutine_threadsafe(
-                    _safe_edit(progress_msg, make_progress_bar(percent)),
+                    _safe_edit(progress_msg, make_progress_bar(percent, lang)),
                     loop
                 )
 
@@ -1837,8 +1845,8 @@ async def handle_collection_track(callback: CallbackQuery, bot: Bot):
     alerts.current_request.set(f"трек из коллекции: {track['cache_url']}")  # контекст для тревог
     await callback.answer()
 
-    await _download_and_send_audio(
-        bot, callback.message.chat.id, callback.from_user.id, callback.message.message_id,
+    await _do_download_audio(
+        bot, callback.message.chat.id, callback.message.message_id,
         track["cache_url"], track["source"], lang,
         meta=track["meta"], fallback_query=track["fallback_query"],
     )

@@ -27,7 +27,7 @@ from bot.utils.i18n import t, lang_of, lang_of_text
 router = Router()
 logger = logging.getLogger(__name__)
 
-GROUP_TYPES = ("group", "supergroup")
+
 MAX_LEN = 4000            # запас под лимит Telegram 4096
 _MAX_TURNS = 12           # сколько последних реплик держим в контексте
 

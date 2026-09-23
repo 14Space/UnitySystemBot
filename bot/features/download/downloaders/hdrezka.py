@@ -209,7 +209,9 @@ def _mux_subtitles(video: str, subs: list, out_path: str) -> bool:
     return res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
 
 
-MAX_FILE_BYTES = 1_950_000_000  # лимит локального Telegram Bot API (~2 ГБ)
+# Предел размера — из одного места на весь проект (bot/utils/limits.py): здесь была
+# вторая копия того же числа, и правка одной из них молча расходилась с другой.
+from bot.utils.limits import MAX_FILE_BYTES
 
 
 def download_stream(stream, quality: str, name="video", season=None, episode=None,

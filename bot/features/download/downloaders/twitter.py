@@ -99,8 +99,8 @@ def download_media(items: list[dict], tweet_id: str) -> list[dict]:
         # Уникальный суффикс на каждый файл: два запроса одного твита-альбома иначе пишут
         # одни и те же имена, и очистка одного удаляет файлы другого при отправке альбома.
         path = os.path.join(DOWNLOADS_DIR, f"x_{tweet_id}_{i}_{uuid.uuid4().hex[:8]}_dl{ext}")
-        content = requests.get(it["url"], headers=HEADERS, timeout=180).content
-        with open(path, "wb") as f:
-            f.write(content)
+        # Потоком на диск: видео из твита бывает на сотни мегабайт, и держать его
+        # в памяти целиком незачем (см. bot/utils/net.py).
+        net.fetch_to_file(it["url"], path, headers=HEADERS, timeout=180)
         files.append({"kind": kind, "path": path})
     return files

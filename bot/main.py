@@ -42,6 +42,19 @@ logging.basicConfig(level=logging.INFO)
 # любой упавший запрос печатал бы их целиком (см. bot/utils/secrets_filter.py).
 secrets_filter.install()
 logger = logging.getLogger(__name__)
+
+# Живые фоновые задачи. asyncio держит на задачу только СЛАБУЮ ссылку: если сильной
+# нигде нет, сборщик мусора вправе выбросить задачу прямо посреди ожидания — пульс,
+# суточный отчёт или опрос платежей просто перестанут существовать, молча.
+_BACKGROUND: set = set()
+
+
+def _background(coro):
+    """Запускает фоновую задачу и ДЕРЖИТ на неё ссылку до самого конца."""
+    task = asyncio.ensure_future(coro)
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+    return task
 # Приглушаем «болтовню»: aiogram пишет строку на КАЖДОЕ сообщение пользователя
 # («Update … is handled»), а httpx — на каждый HTTP-запрос. В логе от этого тонут
 # реальные ошибки, а файл растёт гигабайтами. Оставляем от них только предупреждения.
@@ -478,17 +491,21 @@ async def main():
 
     # Пульс: задача отмечает, что основной цикл жив, а сторож в отдельном потоке
     # перезапускает процесс, если отметки перестали появляться (см. heartbeat.py).
-    asyncio.create_task(heartbeat.beat())
+    # Ссылки на задачи ДЕРЖИМ. asyncio хранит только слабую ссылку на задачу: пока
+    # она чего-то ждёт, её вправе собрать сборщик мусора — и фоновая работа тихо
+    # исчезнет, без ошибки и без следа. Набор живёт до конца процесса, а задача
+    # убирает себя из него сама, когда закончится.
+    _background(heartbeat.beat())
     heartbeat.start_watchdog()
 
-    asyncio.create_task(_daily_tasks(bot))
-    asyncio.create_task(_periodic_healthcheck(bot))
-    asyncio.create_task(_flush_traffic())
-    asyncio.create_task(_warm_hdrezka())
-    asyncio.create_task(_watch_crypto_invoices(bot))
+    _background(_daily_tasks(bot))
+    _background(_periodic_healthcheck(bot))
+    _background(_flush_traffic())
+    _background(_warm_hdrezka())
+    _background(_watch_crypto_invoices(bot))
     if WHISPER_PREWARM:
         from bot.features.transcribe.transcriber import warmup
-        asyncio.create_task(asyncio.to_thread(warmup))
+        _background(asyncio.to_thread(warmup))
 
     print("Бот запущен")
     await dp.start_polling(bot)

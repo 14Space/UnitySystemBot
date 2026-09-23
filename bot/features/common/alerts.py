@@ -9,6 +9,8 @@ import asyncio
 import contextvars
 import logging
 
+from bot.utils.secrets_filter import mask
+
 logger = logging.getLogger(__name__)
 
 # Что бот обрабатывает прямо сейчас (например, "tiktok: https://…") — для контекста
@@ -18,6 +20,9 @@ current_request: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 _bot = None
 _admin_id = 0
+# Тревоги, которые отправляются прямо сейчас. Набор нужен только ради сильной ссылки
+# на задачу — см. note_failure.
+_PENDING: set = set()
 
 
 def configure(bot, admin_id: int) -> None:
@@ -33,12 +38,17 @@ def note_failure(exc: Exception) -> None:
     if not _bot or not _admin_id:
         return
     ctx = current_request.get() or "—"
-    text = f"⚠️ Сбой у пользователя\n{ctx}\n{type(exc).__name__}: {exc}"[:600]
+    # Маскируем: в тексте исключения попадается адрес запроса с токеном или ключом.
+    text = mask(f"⚠️ Сбой у пользователя\n{ctx}\n{type(exc).__name__}: {exc}")[:600]
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(_send(text))
+    # Ссылку на задачу ДЕРЖИМ: asyncio хранит только слабую, и тревога могла быть
+    # выброшена сборщиком мусора, так и не уйдя админу.
+    task = loop.create_task(_send(text))
+    _PENDING.add(task)
+    task.add_done_callback(_PENDING.discard)
 
 
 async def _send(text: str) -> None:

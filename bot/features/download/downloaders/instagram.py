@@ -10,41 +10,24 @@ from bot.features.download.downloaders.ytdlp_wrapper import (
     BASE_OPTS, DOWNLOADS_DIR, _quality_opts, _unique_outtmpl,
 )
 from bot.utils import pw_thread
-from bot.utils import media_names
-from bot.utils import cookie_files
+from bot.utils import media_names, net
+from bot.utils import cookie_files, net
 
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
 try:
-    from bot.config import INSTAGRAM_COOKIES, INSTAGRAM_PROXY
+    from bot.config import INSTAGRAM_COOKIES, INSTAGRAM_PROXY, COOKIE_COPIES_DIR
 except Exception:  # worker может запускаться отдельно от бота
     INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "data/instagram_cookies.txt")
+    COOKIE_COPIES_DIR = os.getenv("COOKIE_COPIES_DIR", "data/cookie-copies")
     INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
 
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 VIDEO_EXTS = (".mp4", ".mov", ".webm")
-
-# Признаки, что Instagram отказал по анти-боту (а не «пост удалён»): при них есть смысл
-# повторить запрос через прокси с другого IP.
-# Признаки, по которым считаем, что Instagram нас отшил и стоит повторить через прокси.
-# «failed to parse json» и «expecting value» — это ПУСТОЙ ответ: Instagram отдаёт тело
-# нулевой длины, а падает уже разбор JSON внутри yt-dlp. Ровно тот же почерк, что у
-# tikwm на TikTok: формально запрос успешен, отказа не видно. Без этих двух строк
-# запасной путь через прокси не включался вовсе — ошибка не опознавалась как блокировка,
-# и проверка Instagram краснела, хотя через домашний адрес всё скачивалось.
-_BLOCK_MARKERS = ("403", "429", "400", "rate limit", "checkpoint",
-                  "login required", "empty media response", "temporarily",
-                  "failed to parse json", "expecting value")
-
-
-def _looks_blocked(err: Exception) -> bool:
-    s = str(err).lower()
-    return any(m in s for m in _BLOCK_MARKERS)
-
 
 def _attempts(cookies: str | None) -> list[tuple[str, str | None]]:
     """Пары (прокси, куки) по порядку попыток.
@@ -172,12 +155,14 @@ def _photo_via_page(shortcode: str, cookies: str | None, proxies=None) -> list[s
         if not src:
             continue
         path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{uuid.uuid4().hex[:8]}_dl.jpg")
-        data = requests.get(src, timeout=60, proxies=proxies,
-                            headers={"User-Agent": _UA}).content
-        if not data:
+        # Потоком на диск: раньше картинка (а в карусели — видео) сначала целиком
+        # оказывалась в памяти, см. bot/utils/net.py.
+        try:
+            net.fetch_to_file(src, path, proxies=proxies,
+                              headers={"User-Agent": _UA}, timeout=60)
+        except Exception:
+            logger.info("Instagram: картинка не скачалась", exc_info=True)
             continue
-        with open(path, "wb") as f:
-            f.write(data)
         return [path]
     return []
 
@@ -190,9 +175,8 @@ def _photo_via_browser(shortcode: str, proxies=None) -> list[str]:
     if not src:
         return []
     path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{uuid.uuid4().hex[:8]}_dl.jpg")
-    data = requests.get(src, timeout=60, proxies=proxies, headers={"User-Agent": _UA}).content
-    with open(path, "wb") as f:
-        f.write(data)
+    net.fetch_to_file(src, path, proxies=proxies,
+                      headers={"User-Agent": _UA}, timeout=60)
     return [path]
 
 
@@ -202,7 +186,9 @@ def _cookies_path() -> str | None:
     Копия, а не оригинал: yt-dlp пишет файл кук обратно и затирает ключ входа тем, что
     прислал Instagram. Подробности — в bot/utils/cookie_files.py.
     """
-    return cookie_files.disposable(INSTAGRAM_COOKIES, DOWNLOADS_DIR)
+    # Копии кладём в СВОЮ папку, не в downloads: тот том виден контейнеру Bot API,
+    # и держать там копии живой сессии незачем (а уборка хвостов их ещё и сносила).
+    return cookie_files.disposable(INSTAGRAM_COOKIES, COOKIE_COPIES_DIR)
 
 
 def _shortcode(url: str) -> str | None:
@@ -365,9 +351,9 @@ def download_post(url: str) -> list[str]:
         # Уникальный суффикс на каждый файл: два запроса одной карусели иначе пишут одни
         # и те же имена, и очистка одного удаляет файлы другого во время отправки альбома.
         path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{i}_{uuid.uuid4().hex[:8]}_dl{ext}")
-        data = requests.get(media_url, timeout=60, proxies=proxies).content
-        with open(path, "wb") as f:
-            f.write(data)
+        # Потоком на диск, с пределом размера: карусель бывает из видео, и держать
+        # их в памяти целиком незачем (см. bot/utils/net.py).
+        net.fetch_to_file(media_url, path, proxies=proxies, timeout=60)
         files.append(path)
 
     return files

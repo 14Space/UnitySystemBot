@@ -111,7 +111,10 @@ def _human_size(nbytes: int, lang: str = "ru") -> str:
 
 
 def _is_admin(message: Message) -> bool:
-    return bool(ADMIN_ID) and message.from_user.id == ADMIN_ID
+    """Это админ бота? Автора может не быть ВОВСЕ: анонимный админ группы и посты
+    от имени канала приходят без from_user, и обращение к .id роняло обработчик."""
+    author = getattr(message, "from_user", None)
+    return bool(ADMIN_ID) and author is not None and author.id == ADMIN_ID
 
 
 @router.message(Command("statistics", "stats"))

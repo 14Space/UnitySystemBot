@@ -50,6 +50,19 @@ TELEGRAM_BOT_API_ROOT = os.getenv("TELEGRAM_BOT_API_ROOT", "/var/lib/telegram-bo
 TELEGRAM_LOCAL_FILES_DIR = os.getenv("TELEGRAM_LOCAL_FILES_DIR", "data/telegram-api")
 # Имя контейнера локального Bot API (для `docker cp`, когда бот запущен на хосте).
 TELEGRAM_API_CONTAINER = os.getenv("TELEGRAM_API_CONTAINER", "unitysystem-telegram-bot-api-1")
+# Куда кладём ОДНОРАЗОВЫЕ копии файлов кук (см. bot/utils/cookie_files.py). Своя
+# папка, а не data/downloads: тот том примонтирован в контейнер локального Bot API,
+# то есть копии живой сессии лежали там, где им делать нечего. Плюс уборка хвостов
+# при старте эти копии сносила, что тоже путало.
+# Типы чатов, которые считаем группой. Список был написан трижды (ИИ, /setconfig,
+# скачивание) — при добавлении нового типа чата такое расходится молча.
+GROUP_TYPES = ("group", "supergroup")
+# Выше этого качества — только Premium. Тоже было в двух клавиатурах по отдельности,
+# то есть цена свободы зависела от того, какое меню человеку показали.
+FREE_QUALITY_LIMIT = 720
+
+COOKIE_COPIES_DIR = os.getenv("COOKIE_COPIES_DIR", "data/cookie-copies")
+
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///data/unitysystem.db")
 
 # Spotify API — только для чтения метаданных трека (название, исполнитель)

@@ -2,12 +2,18 @@ import os
 import time
 
 
-def make_progress_bar(percent: float) -> str:
-    """Рисует прогресс-бар: ██████░░░░ 60%"""
+def make_progress_bar(percent: float, lang: str = "ru") -> str:
+    """Рисует полоску загрузки: ██████░░░░ 60%.
+
+    Подпись — через словарь надписей: слово «Загрузка…» было зашито по-русски, и
+    англоязычный человек получал единственную русскую строку во всём общении с ботом.
+    """
+    from bot.utils.i18n import t
+
     filled = int(percent / 10)
     empty = 10 - filled
     bar = "█" * filled + "░" * empty
-    return f"Загрузка... {bar} {int(percent)}%"
+    return f"{t('progress', lang)} {bar} {int(percent)}%"
 
 
 # Как часто разрешаем ПРАВИТЬ сообщение с полоской, секунд.

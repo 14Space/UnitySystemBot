@@ -1,11 +1,12 @@
 import os
 import re
 import subprocess
+import threading
 import time
 import uuid
 import requests
 from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
-from bot.utils import media_names
+from bot.utils import media_names, net
 from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
 
 try:
@@ -46,6 +47,15 @@ def _via(fn, *args, **kwargs):
         return fn(*args, proxies=_PROXIES, **kwargs)
 
 
+def _fetch_file(url: str, path: str, timeout: int = 120) -> str:
+    """Качает файл НА ДИСК (потоком) с тем же откатом на прокси, что и остальные
+    запросы модуля. Раньше каждый файл сначала целиком оказывался в памяти
+    (`requests.get(...).content`), а на видео это уже десятки мегабайт на каждую из
+    шести одновременных загрузок — см. bot/utils/net.py.
+    """
+    return _via(net.fetch_to_file, _abs(url), path, headers=HEADERS, timeout=timeout)
+
+
 def _via_json(fn, *args, **kwargs):
     """То же, но для ответов JSON — и разбор тоже внутри попытки.
 
@@ -69,6 +79,8 @@ def _via_json(fn, *args, **kwargs):
 # пост в рамках одного запроса (контент + аудиодорожка) не запрашивался дважды.
 # TTL маленький — CDN-ссылки внутри живут недолго, а нам они нужны сразу.
 _FETCH_CACHE: dict[str, tuple[float, dict]] = {}
+# Замок к кэшу: за ним ходят разные потоки (скачивания идут через asyncio.to_thread).
+_CACHE_LOCK = threading.Lock()
 _FETCH_TTL = 120  # секунд
 
 
@@ -103,9 +115,7 @@ def download_music(url: str) -> tuple[str, str] | None:
     # и с общим именем один переписывал бы исходник, пока другой его перекодирует.
     tag = uuid.uuid4().hex[:8]
     raw = os.path.join(DOWNLOADS_DIR, f"{info['id']}_{tag}_track_src")
-    content = _via(requests.get, _abs(music_url), headers=HEADERS, timeout=60).content
-    with open(raw, "wb") as f:
-        f.write(content)
+    _fetch_file(music_url, raw, timeout=60)
     # Приводим к чистому mp3 (звук из tikwm бывает в контейнере m4a/без тегов).
     out = os.path.join(DOWNLOADS_DIR, f"{info['id']}_{tag}_track.mp3")
     subprocess.run(
@@ -387,14 +397,20 @@ def fetch_tiktok(url: str, hd: bool = True) -> dict:
     """
     now = time.time()
     key = url if hd else f"{url}#sd"    # SD и HD-ответы различаются, не смешиваем
-    hit = _FETCH_CACHE.get(key)
+    # Кэш читают и пишут РАЗНЫЕ потоки (скачивания идут через asyncio.to_thread), а
+    # уборка перебирает словарь целиком — без замка это «dictionary changed size
+    # during iteration» раз в сто запросов, то есть случайный необъяснимый сбой.
+    with _CACHE_LOCK:
+        hit = _FETCH_CACHE.get(key)
     if hit and now - hit[0] < _FETCH_TTL:
         return hit[1]
     result = _fetch_tiktok_api(url, hd)  # успех или исключение (ошибки не кэшируем)
-    _FETCH_CACHE[key] = (now, result)
-    if len(_FETCH_CACHE) > 64:          # лёгкая уборка протухших записей
-        for k in [k for k, (ts, _) in _FETCH_CACHE.items() if now - ts >= _FETCH_TTL]:
-            _FETCH_CACHE.pop(k, None)
+    with _CACHE_LOCK:
+        _FETCH_CACHE[key] = (now, result)
+        if len(_FETCH_CACHE) > 64:      # лёгкая уборка протухших записей
+            for k in [k for k, (ts, _) in list(_FETCH_CACHE.items())
+                      if now - ts >= _FETCH_TTL]:
+                _FETCH_CACHE.pop(k, None)
     return result
 
 
@@ -435,10 +451,8 @@ def _fetch_tiktok_api(url: str, hd: bool = True) -> dict:
 def _download_images(images: list[str], item_id: str) -> list[str]:
     files = []
     for i, img_url in enumerate(images, 1):
-        content = _via(requests.get, _abs(img_url), headers=HEADERS, timeout=60).content
-        path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.jpg")
-        with open(path, "wb") as f:
-            f.write(content)
+        path = _fetch_file(img_url, os.path.join(
+            DOWNLOADS_DIR, f"{item_id}_{i}_dl.jpg"), timeout=60)
         files.append(path)
     return files
 
@@ -453,15 +467,13 @@ def _download_slideshow_items(data: dict, item_id: str) -> list[tuple[str, bool]
     for i, img_url in enumerate(images, 1):
         live = lives[i - 1] if i - 1 < len(lives) else None
         if live:
-            content = _via(requests.get, _abs(live), headers=HEADERS, timeout=120).content
-            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.mp4")
+            path = _fetch_file(live, os.path.join(
+                DOWNLOADS_DIR, f"{item_id}_{i}_dl.mp4"))
             is_video = True
         else:
-            content = _via(requests.get, _abs(img_url), headers=HEADERS, timeout=60).content
-            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.jpg")
+            path = _fetch_file(img_url, os.path.join(
+                DOWNLOADS_DIR, f"{item_id}_{i}_dl.jpg"), timeout=60)
             is_video = False
-        with open(path, "wb") as f:
-            f.write(content)
         out.append((path, is_video))
     return out
 
@@ -500,10 +512,8 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
         for i, vid_url in enumerate(data["live_images"], 1):
             if not vid_url:
                 continue
-            content = _via(requests.get, _abs(vid_url), headers=HEADERS, timeout=120).content
-            path = os.path.join(DOWNLOADS_DIR, f"{item_id}_{i}_dl.mp4")
-            with open(path, "wb") as f:
-                f.write(content)
+            path = _fetch_file(vid_url, os.path.join(
+                DOWNLOADS_DIR, f"{item_id}_{i}_dl.mp4"))
             files.append(path)
         return _remember(files)
 
@@ -524,9 +534,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
             if music_url:
                 try:
                     audio_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_audio.mp3")
-                    content = _via(requests.get, _abs(music_url), headers=HEADERS, timeout=60).content
-                    with open(audio_path, "wb") as f:
-                        f.write(content)
+                    _fetch_file(music_url, audio_path, timeout=60)
                     video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
                     _build_slideshow_mixed(items, audio_path, video_path)
                     if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
@@ -543,9 +551,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
         if music_url:
             try:
                 audio_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_audio.mp3")
-                content = _via(requests.get, _abs(music_url), headers=HEADERS, timeout=60).content
-                with open(audio_path, "wb") as f:
-                    f.write(content)
+                _fetch_file(music_url, audio_path, timeout=60)
                 video_path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
                 _build_slideshow(files, audio_path, video_path)
                 if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
@@ -563,13 +569,5 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
     # Оба варианта лежат на CDN самого TikTok, водяного знака нет ни там, ни там.
     play = (data.get("play") or data.get("hdplay")) if compress else \
            (data.get("hdplay") or data.get("play"))
-    content = _via(requests.get, _abs(play), headers=HEADERS, timeout=120).content
-    path = os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4")
-    with open(path, "wb") as f:
-        f.write(content)
+    path = _fetch_file(play, os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4"))
     return _remember([path])
-
-
-def download_tiktok(url: str, mode: str = "auto") -> list[str]:
-    """Скачивает TikTok одним вызовом (данные + файлы). Обёртка над fetch_tiktok+download_from."""
-    return download_from(fetch_tiktok(url), mode)

@@ -17,7 +17,7 @@ QUALITY_LABELS = {
 ALL_QUALITIES = [144, 240, 360, 480, 720, 1080, 1440, 2160]
 
 # Граница бесплатного качества — 720p. Всё выше = премиум (заглушка).
-FREE_LIMIT = 720
+from bot.config import FREE_QUALITY_LIMIT as FREE_LIMIT
 
 
 def build_quality_keyboard(url_id: str, available: list[int], is_premium: bool = False) -> InlineKeyboardMarkup:
