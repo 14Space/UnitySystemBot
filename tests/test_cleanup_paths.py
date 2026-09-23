@@ -4,28 +4,47 @@
 оборвалась связь, у бота нет прав в чате) — и скачанное оставалось на диске до
 перезапуска бота. На фильмах это гигабайты за раз.
 """
+import ast
 import inspect
-import re
+import pathlib
 
 from bot.features.download import link
 
-
-def _functions_that_download():
-    """Куски кода, где что-то скачивается: они обязаны прибирать за собой в finally."""
-    source = inspect.getsource(link)
-    blocks = re.findall(
-        r"\n(\s+)try:\n(.*?)\n\1except[^\n]*\n(.*?)(?=\n\s+finally:|\n\s*async def|\n\s*def )",
-        source, re.S)
-    return [(body, handler) for _indent, body, handler in blocks
-            if "asyncio.to_thread" in body and "_cleanup" in body + handler]
+SOURCE = pathlib.Path(link.__file__).read_text(encoding="utf-8")
 
 
-def test_no_cleanup_only_on_success():
-    """Ни в одном блоке уборка не должна жить только в успешной ветке."""
-    leaking = [body.strip().splitlines()[0]
-               for body, handler in _functions_that_download()
-               if "_cleanup" in body and "_cleanup" not in handler]
-    assert not leaking, f"уборка только при успехе: {leaking}"
+def _download_blocks():
+    """Блоки try, внутри которых что-то скачивается и упоминается уборка.
+
+    Разбором кода, а не поиском по тексту: прежняя версия искала регулярным
+    выражением «try … except … finally» и спотыкалась о любой соседний try без
+    except — правило она при этом проверяла случайно, а не по существу.
+    """
+    tree = ast.parse(SOURCE)
+    blocks = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        joiner = chr(10)
+        body = joiner.join(ast.unparse(n) for n in node.body)
+        finallybody = joiner.join(ast.unparse(n) for n in node.finalbody)
+        handlers = joiner.join(ast.unparse(n) for n in node.handlers)
+        if "to_thread" in body and "_cleanup" in body + finallybody + handlers:
+            blocks.append((node.lineno, body, handlers, finallybody))
+    return blocks
+
+
+def test_there_are_blocks_to_check():
+    """Страховка от «зелено, потому что ничего не нашли»."""
+    assert len(_download_blocks()) >= 4
+
+
+def test_cleanup_always_lives_in_finally():
+    """Уборка обязана быть в finally: на успешном пути её недостаточно — упала
+    отправка, и скачанное осталось на диске до перезапуска бота."""
+    leaking = [f"строка {line}" for line, body, handlers, final in _download_blocks()
+               if "_cleanup" not in final]
+    assert not leaking, f"уборка не в finally: {leaking}"
 
 
 def test_cleanup_all_handles_everything(tmp_path):

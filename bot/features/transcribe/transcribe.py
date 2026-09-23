@@ -20,7 +20,7 @@ from bot.config import (
     DOWNLOADS_DIR, TELEGRAM_LOCAL_API_URL, TELEGRAM_LOCAL_FILES_DIR,
     TELEGRAM_BOT_API_ROOT, TELEGRAM_API_CONTAINER, MAX_VOICE_SECONDS,
 )
-from bot.utils import limits, traffic
+from bot.utils import limits, traffic, chat_action
 from bot.utils.i18n import t, lang_of
 from bot.features.common import alerts
 from bot.features.transcribe.transcriber import transcribe_audio
@@ -89,8 +89,11 @@ async def _handle(message: Message, file_id: str, suffix: str):
     alerts.current_request.set("расшифровка (голосовое/кружок)")  # контекст для тревог
     slot = await limits.acquire(limits.TRANSCRIBE)
     try:
-        await _fetch_file(message, file_id, file_path)
-        text = await transcribe_audio(file_path)
+        # «Печатает…» в шапке чата: расшифровка занимает секунды, и человеку видно,
+        # что бот занят его записью, а не задумался (см. bot/utils/chat_action.py).
+        async with chat_action.show(message.bot, message.chat.id, chat_action.TYPING):
+            await _fetch_file(message, file_id, file_path)
+            text = await transcribe_audio(file_path)
 
         # Пусто = тишина/музыка без слов (или остались одни титры-галлюцинации, которые
         # мы вырезали). В этом случае бот просто молчит — убираем «Расшифровываю…».

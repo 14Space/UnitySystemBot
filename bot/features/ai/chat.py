@@ -22,6 +22,7 @@ from bot.database import SessionLocal
 from bot.database.repository import (
     get_disabled_features, save_ai_thread, load_ai_thread, ai_usage_today, add_ai_usage)
 from bot.features.ai import client
+from bot.utils import chat_action
 from bot.utils.i18n import t, lang_of, lang_of_text
 
 router = Router()
@@ -150,7 +151,10 @@ async def _answer(message: Message, history: list[dict], lang: str):
     await _count(message.from_user.id)
 
     status = await message.reply(t("ai_thinking", lang))
-    text, st = await asyncio.to_thread(client.ask, history, _reply_lang(history, lang))
+    # «Печатает…»: ответ ИИ приходит за секунду-две, но провайдер бывает медленным,
+    # и тогда видно, что бот работает.
+    async with chat_action.show(message.bot, message.chat.id, chat_action.TYPING):
+        text, st = await asyncio.to_thread(client.ask, history, _reply_lang(history, lang))
 
     if st == "no_provider":
         await _safe_edit(status, t("ai_not_configured", lang))

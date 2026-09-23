@@ -16,7 +16,7 @@ from bot.features.download.keyboards.quality import build_quality_keyboard, FREE
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.utils.progress_bar import make_progress_bar, ProgressThrottle
 from bot.config import GROUP_TYPES, SHORTS_CAP_HEIGHT, DOWNLOADS_DIR
-from bot.utils import limits, traffic, tg_files
+from bot.utils import limits, traffic, tg_files, chat_action
 from bot.utils import inflight
 from bot.utils.cache_guard import send_cached_or_drop
 from bot.utils import media_names
@@ -79,6 +79,25 @@ def _remember(store: dict, key: str, value: dict):
 
 # Пользователи с активной (идущей прямо сейчас) загрузкой — у каждого не больше одной
 ACTIVE_DOWNLOADS: set[int] = set()
+
+# Нажатия, которые СОЗДАЮТ контент: слайдшоу TikTok, трек из коллекции. Одно нажатие —
+# один результат. Защиты тут не было вовсе: кнопки убираются только ПОСЛЕ отправки, а
+# за время скачивания успевают запуститься несколько обработчиков — человек нажал
+# «Фото» пять раз и получил пять одинаковых наборов. У тяжёлых загрузок своя защита
+# (ACTIVE_DOWNLOADS, «дождись текущей»), а у лёгких не было никакой.
+_IN_PROGRESS: set[tuple] = set()
+
+
+def _claim(*key) -> bool:
+    """Занимает нажатие. False — точно такое же уже выполняется прямо сейчас."""
+    if key in _IN_PROGRESS:
+        return False
+    _IN_PROGRESS.add(key)
+    return True
+
+
+def _unclaim(*key) -> None:
+    _IN_PROGRESS.discard(key)
 
 # Короткий id -> ссылка, для inline-перехода в личку (deep link короче 64 символов)
 INLINE_LINKS: dict[str, str] = {}
@@ -743,10 +762,14 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
         slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
         file_path = None
         try:
-            file_path = await asyncio.to_thread(download_fn, url)
-            sent = await message.reply_video(
-                tg_files.input_file(file_path, await _nice_name(file_path, use_title=use_title)),
-                **await _video_kwargs(file_path))
+            # «Отправляет видео…» в шапке чата, пока качаем и заливаем: иначе
+            # непонятно, живой бот или задумался (см. bot/utils/chat_action.py).
+            async with chat_action.show(message.bot, message.chat.id, chat_action.VIDEO):
+                file_path = await asyncio.to_thread(download_fn, url)
+                sent = await message.reply_video(
+                    tg_files.input_file(
+                        file_path, await _nice_name(file_path, use_title=use_title)),
+                    **await _video_kwargs(file_path))
             if sent.video:
                 async with SessionLocal() as session:
                     await save_cached_file_id(session, url, sent.video.file_id, cache_key)
@@ -845,7 +868,9 @@ async def _handle_files(message: Message, url: str, download_fn, error_key: str,
         slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
         files = None
         try:
-            files = await asyncio.to_thread(download_fn, url)
+            # «Отправляет фото…» в шапке чата, пока качаем и заливаем альбом.
+            async with chat_action.show(message.bot, message.chat.id, chat_action.PHOTO):
+                files = await asyncio.to_thread(download_fn, url)
             if not files:
                 # Пустой результат у поста/карусели = обычно деградация источника, а не
                 # реально пустой пост. Раньше молчали — теперь видно в логах и в алерте.
@@ -1070,6 +1095,11 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
         return
 
     url, info = entry["url"], entry["info"]
+    # Одно нажатие — один результат: пока это скачивание идёт, повторные нажатия той
+    # же кнопки только сообщают «уже качаю», а не запускают вторую отправку.
+    if not _claim(callback.message.chat.id, sid, mode):
+        await callback.answer(t("already_downloading", lang), show_alert=False)
+        return
     alerts.current_request.set(f"tiktok слайдшоу [{mode}]: {url}")  # контекст для тревог
     # Ключ по номеру видео (как в _handle_tiktok): устойчив к разным коротким ссылкам.
     cache_url = entry.get("cache_url") or f"tt:{info['id']}"
@@ -1086,8 +1116,11 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
                   or await get_cached_file_id(session, cache_url, cache_key))
     if cached:
         await callback.answer()
-        await _send_cached_post(target, cached)
-        await _safe_delete(callback.message)
+        try:
+            await _send_cached_post(target, cached)
+            await _safe_delete(callback.message)
+        finally:
+            _unclaim(callback.message.chat.id, sid, mode)
         return
 
     await callback.answer()
@@ -1109,6 +1142,7 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     finally:
         _cleanup_all(files)
         await limits.release(limits.LIGHT, slot)
+        _unclaim(callback.message.chat.id, sid, mode)
 
 
 # Telegram: подпись к медиа — максимум 1024 символа (у обычного текста 4096).
@@ -1452,6 +1486,9 @@ async def _do_download_audio(
 
     file_path = None
     try:
+        # «Отправляет файл…» в шапке чата на всё время работы: поиск трека, скачивание
+        # и заливка занимают секунды, а никакого статуса у одиночного трека нет вовсе.
+        await chat_action.once(bot, chat_id, chat_action.DOCUMENT)
         # cover_url — правильная обложка из оригинала (если есть), заменит обложку с YouTube
         cover_url = meta.get("cover") if meta else None
         target_duration = meta.get("duration") if meta else None
@@ -1677,17 +1714,23 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
         limits.check_disk_space(DOWNLOADS_DIR)
         # info уже получен, когда показывали кнопки качества — передаём его, чтобы
         # yt-dlp не ходил к площадке за теми же метаданными второй раз (экономит ~1.5с).
-        file_path = await asyncio.to_thread(
-            download_video, url, quality, on_progress, on_postprocess, info
-        )
-        # Не удаляем статус, а показываем «Отправляю» — заливка тоже занимает время
-        await _safe_edit(progress_msg, t("uploading", lang))
-        sent = await bot.send_video(
-            chat_id,
-            tg_files.input_file(file_path, await _nice_name(file_path, quality=f"{quality}p" if quality else None)),
-            reply_to_message_id=user_msg_id,
-            **await _video_kwargs(file_path, duration),
-        )
+        # «Отправляет видео…» в шапке: полоска показывает скачивание, а заливка идёт
+        # уже после неё, и без действия в чате выглядит как зависание.
+        async with chat_action.show(bot, chat_id, chat_action.VIDEO):
+            file_path = await asyncio.to_thread(
+                download_video, url, quality, on_progress, on_postprocess, info
+            )
+            # Не удаляем статус, а показываем «Отправляю» — заливка тоже занимает время
+            await _safe_edit(progress_msg, t("uploading", lang))
+            sent = await bot.send_video(
+                chat_id,
+                tg_files.input_file(
+                    file_path,
+                    await _nice_name(file_path,
+                                     quality=f"{quality}p" if quality else None)),
+                reply_to_message_id=user_msg_id,
+                **await _video_kwargs(file_path, duration),
+            )
         await progress_msg.delete()
         # Сохраняем file_id в кэш (сам файл убирается в finally — в том числе когда
         # отправка упала на полпути: раньше он оставался на диске до перезапуска).
@@ -1842,14 +1885,21 @@ async def handle_collection_track(callback: CallbackQuery, bot: Bot):
         return
 
     track = coll["tracks"][int(idx_str)]
+    # Одно нажатие — один трек: раньше пять нажатий давали пять одинаковых файлов.
+    if not _claim(callback.message.chat.id, coll_id, idx_str):
+        await callback.answer(t("already_downloading", lang), show_alert=False)
+        return
     alerts.current_request.set(f"трек из коллекции: {track['cache_url']}")  # контекст для тревог
     await callback.answer()
 
-    await _do_download_audio(
-        bot, callback.message.chat.id, callback.message.message_id,
-        track["cache_url"], track["source"], lang,
-        meta=track["meta"], fallback_query=track["fallback_query"],
-    )
+    try:
+        await _do_download_audio(
+            bot, callback.message.chat.id, callback.message.message_id,
+            track["cache_url"], track["source"], lang,
+            meta=track["meta"], fallback_query=track["fallback_query"],
+        )
+    finally:
+        _unclaim(callback.message.chat.id, coll_id, idx_str)
 
 
 @router.callback_query(F.data.startswith("dlall:"))
