@@ -18,7 +18,7 @@ from aiogram.types import Message
 
 from bot.config import (
     DOWNLOADS_DIR, TELEGRAM_LOCAL_API_URL, TELEGRAM_LOCAL_FILES_DIR,
-    TELEGRAM_BOT_API_ROOT, TELEGRAM_API_CONTAINER,
+    TELEGRAM_BOT_API_ROOT, TELEGRAM_API_CONTAINER, MAX_VOICE_SECONDS,
 )
 from bot.utils import limits, traffic
 from bot.utils.i18n import t, lang_of
@@ -225,13 +225,31 @@ def _map_local_path(server_path: str) -> str | None:
     return matches[0] if matches else None
 
 
+def _too_long(media) -> bool:
+    """Запись длиннее предела не берём.
+
+    Причина не в размере файла, а в очереди: слотов расшифровки два на весь бот, и
+    одно часовое голосовое занимает их у всех остальных надолго. Прислать такое может
+    кто угодно, в том числе пересылкой, поэтому предел нужен, а не «договорённость».
+    """
+    return bool(MAX_VOICE_SECONDS and (getattr(media, "duration", 0) or 0) > MAX_VOICE_SECONDS)
+
+
 @router.message(F.voice)
 async def handle_voice(message: Message):
+    if _too_long(message.voice):
+        await message.reply(t("voice_too_long", lang_of(message.from_user),
+                              minutes=MAX_VOICE_SECONDS // 60))
+        return
     await _handle(message, message.voice.file_id, ".ogg")
 
 
 @router.message(F.video_note)
 async def handle_video_note(message: Message):
+    if _too_long(message.video_note):
+        await message.reply(t("voice_too_long", lang_of(message.from_user),
+                              minutes=MAX_VOICE_SECONDS // 60))
+        return
     await _handle(message, message.video_note.file_id, ".mp4")
 
 

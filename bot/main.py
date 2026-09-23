@@ -18,11 +18,11 @@ from bot.config import (
 )
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
-from bot.utils import traffic, limits, heartbeat
+from bot.utils import traffic, limits, heartbeat, secrets_filter
 from bot.features.common import alerts
 from bot.utils.i18n import t
 from bot.middlewares.register_user import RegisterUserMiddleware
-from bot.middlewares.throttle import ThrottleMiddleware
+from bot.middlewares.throttle import ThrottleMiddleware, CallbackThrottleMiddleware
 from bot.middlewares.routing import RoutingMiddleware
 from bot.middlewares.retry import RetryAfterMiddleware
 from bot.features.common import start, admin, payment, inline
@@ -37,6 +37,10 @@ from bot.features.common.backup import dump_database
 from bot.features.download.maintenance import clean_downloads, update_ytdlp
 
 logging.basicConfig(level=logging.INFO)
+# Маскировка секретов в логах. Ставим СРАЗУ после настройки логирования, до первых
+# сообщений: токен бота стоит в адресах Bot API, ключ Gemini — в строке запроса, и
+# любой упавший запрос печатал бы их целиком (см. bot/utils/secrets_filter.py).
+secrets_filter.install()
 logger = logging.getLogger(__name__)
 # Приглушаем «болтовню»: aiogram пишет строку на КАЖДОЕ сообщение пользователя
 # («Update … is handled»), а httpx — на каждый HTTP-запрос. В логе от этого тонут
@@ -331,21 +335,33 @@ async def _watch_crypto_invoices(bot: Bot):
             owners = dict(pending)
             invoices = await asyncio.to_thread(cryptopay.get_invoices, list(owners))
             for inv in invoices:
-                status = inv.get("status")
-                if status not in ("paid", "expired"):
-                    continue
-                invoice_id = inv["invoice_id"]
-                # Кому включать премиум, берём из payload самого счёта: он пришёл от
-                # сервиса вместе с оплатой и не зависит от нашей записи. Своя запись —
-                # запасной путь на случай, если payload когда-нибудь потеряется.
-                user_id = int(inv.get("payload") or owners.get(invoice_id) or 0)
-                if status == "paid" and user_id:
-                    # Счёт выставлен в долларах, поэтому amount — это и есть доллары,
-                    # чем бы человек ни заплатил.
-                    await grant_crypto(bot, user_id, invoice_id,
-                                       float(inv.get("amount") or 0))
-                async with SessionLocal() as session:
-                    await close_crypto_invoice(session, invoice_id, status)
+                # Каждый счёт — в своей попытке. Иначе один странный счёт (скажем, с
+                # нечисловым payload) роняет весь проход, повторяется каждые 15 секунд,
+                # и до остальных счетов очередь не доходит НИКОГДА: человек заплатил,
+                # а премиум не включается из-за чужого платежа.
+                try:
+                    status = inv.get("status")
+                    if status not in ("paid", "expired"):
+                        continue
+                    invoice_id = inv["invoice_id"]
+                    # Кому включать премиум, берём из payload самого счёта: он пришёл
+                    # от сервиса вместе с оплатой и не зависит от нашей записи. Своя
+                    # запись — запасной путь, если payload когда-нибудь потеряется.
+                    try:
+                        user_id = int(inv.get("payload") or 0)
+                    except (TypeError, ValueError):
+                        user_id = 0
+                    user_id = user_id or owners.get(invoice_id, 0)
+                    if status == "paid" and user_id:
+                        # Счёт выставлен в долларах, поэтому amount — это и есть
+                        # доллары, чем бы человек ни заплатил.
+                        await grant_crypto(bot, user_id, invoice_id,
+                                           float(inv.get("amount") or 0))
+                    async with SessionLocal() as session:
+                        await close_crypto_invoice(session, invoice_id, status)
+                except Exception:
+                    logger.exception("Крипто-счёт %s обработать не вышло",
+                                     inv.get("invoice_id"))
         except Exception:
             logger.exception("Опрос крипто-счетов сорвался")
 
@@ -414,6 +430,7 @@ async def main():
     dp.message.middleware(RegisterUserMiddleware())
     routing = RoutingMiddleware()
     dp.message.middleware(routing)
+    dp.callback_query.middleware(CallbackThrottleMiddleware())
     dp.callback_query.middleware(routing)
     dp.inline_query.middleware(routing)
 
@@ -444,7 +461,11 @@ async def main():
         try:
             await bot.send_message(
                 ADMIN_ID,
-                f"⚠️ Ошибка в боте: {type(event.exception).__name__}: {event.exception}"[:400])
+                # Текст исключения может содержать адрес запроса с ключом —
+                # маскируем перед отправкой, лог уже прикрыт фильтром.
+                secrets_filter.mask(
+                    f"⚠️ Ошибка в боте: {type(event.exception).__name__}: "
+                    f"{event.exception}")[:400])
         except Exception:
             logger.exception("Не удалось отправить тревогу об ошибке")
 

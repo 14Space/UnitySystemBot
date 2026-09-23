@@ -1,3 +1,4 @@
+import os
 import re
 from enum import Enum
 from urllib.parse import urlparse, parse_qsl
@@ -52,48 +53,96 @@ def extract_url(text: str) -> str:
     return url
 
 
+
+# --- Хозяин ссылки ---------------------------------------------------------
+#
+# Смотрим на ХОЗЯИНА адреса (hostname), а не на netloc, и сверяем его целиком, а не
+# по подстроке. Разница не теоретическая: в netloc попадает и логин, поэтому ссылка
+# «https://rezka.ag@evil.com/» проходила проверку «rezka в домене», а открывался по
+# ней evil.com. Дальше такой адрес уходил в yt-dlp (он умеет качать с любого сайта),
+# в разворачиватель коротких ссылок и мог уехать через домашний туннель.
+#
+# Правило: хозяин совпадает с доменом целиком либо является его поддоменом. Ссылки с
+# логином/паролем и с нестандартным портом не берём вовсе — в живых ссылках площадок
+# такого не бывает, а у поддельных это главный приём.
+_STD_PORTS = (None, 80, 443)
+
+
+def _host(url_or_parsed) -> str:
+    parsed = (url_or_parsed if hasattr(url_or_parsed, "hostname")
+              else urlparse(url_or_parsed))
+    if parsed.username or parsed.password:
+        return ""
+    try:
+        if parsed.port not in _STD_PORTS:
+            return ""
+    except ValueError:              # порт не число — такую ссылку тоже не берём
+        return ""
+    return (parsed.hostname or "").lower().rstrip(".")
+
+
+def _is(host: str, *domains: str) -> bool:
+    """Хозяин — это один из домены целиком или его поддомен."""
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
+# Зеркала HDRezka: раньше ловились подстрокой «rezka», то есть подходил любой домен,
+# где эти буквы просто встречаются. Список можно дополнить через .env, не пересобирая
+# образ: площадка меняет зеркала чаще, чем мы выпускаем версии.
+_HDREZKA_DOMAINS = tuple(
+    d.strip().lower() for d in os.getenv(
+        "HDREZKA_DOMAINS",
+        "rezka.ag,hdrezka.me,hdrezka.ag,hdrezka.website,rezka.cc").split(",") if d.strip())
+# Pinterest живёт на десятке национальных доменов (.com/.ru/.ca/.co.uk…), поэтому здесь
+# проверяем форму хозяина, а не список: «pinterest.<что-то>» и короткий pin.it.
+_PINTEREST_RE = re.compile(r"^(?:.+\.)?pinterest\.[a-z][a-z.]{1,7}$")
+
+
 def detect_platform(url: str) -> Platform:
     """Определяет платформу по ссылке"""
     try:
         parsed = urlparse(url)
-        domain = parsed.netloc.lower().replace("www.", "")
+        host = _host(parsed)
+        if not host:
+            return Platform.UNKNOWN
+        domain = host[4:] if host.startswith("www.") else host
         path = parsed.path.lower()
 
         # YouTube Music — отдельный домен, но качаем как аудио
-        if domain == "music.youtube.com":
+        if _is(host, "music.youtube.com"):
             return Platform.YT_MUSIC
 
-        if domain in ("youtube.com", "youtu.be", "m.youtube.com"):
+        if _is(domain, "youtube.com", "youtu.be"):
             if "/shorts/" in path:
                 return Platform.YOUTUBE_SHORTS
             return Platform.YOUTUBE_VIDEO
 
         # SoundCloud: soundcloud.com и короткие ссылки on.soundcloud.com
-        if domain in ("soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"):
+        if _is(domain, "soundcloud.com"):
             if "/sets/" in path:
                 return Platform.SOUNDCLOUD_SET
             return Platform.SOUNDCLOUD
 
         # HDRezka (rezka.ag и зеркала: hdrezka.me и т.п.)
-        if "rezka" in domain:
+        if _is(host, *_HDREZKA_DOMAINS):
             return Platform.HDREZKA
 
         # PornHub
-        if "pornhub.com" in domain:
+        if _is(domain, "pornhub.com"):
             if "/shorties/" in path:
                 return Platform.PORNHUB_SHORT
             return Platform.PORNHUB
 
         # TikTok (включая короткие ссылки vm./vt.)
-        if "tiktok.com" in domain:
+        if _is(domain, "tiktok.com"):
             return Platform.TIKTOK
 
         # Pinterest (много доменов: .com/.ca/.co.uk + короткие pin.it)
-        if "pinterest" in domain or domain == "pin.it":
+        if _PINTEREST_RE.match(host) or _is(domain, "pin.it"):
             return Platform.PINTEREST
 
         # Instagram
-        if domain in ("instagram.com", "m.instagram.com", "ddinstagram.com"):
+        if _is(domain, "instagram.com", "ddinstagram.com"):
             if "/reel/" in path or "/reels/" in path:
                 return Platform.INSTAGRAM_REEL
             if "/p/" in path or "/tv/" in path:
@@ -101,13 +150,13 @@ def detect_platform(url: str) -> Platform:
 
         # X (Twitter): поддерживаем ссылку на конкретный пост (/status/<id>).
         # Профили и прочие страницы не качаем. Зеркала fx/vx тоже принимаем.
-        if domain in ("twitter.com", "x.com", "mobile.twitter.com", "m.twitter.com",
-                      "fxtwitter.com", "vxtwitter.com", "fixupx.com"):
+        if _is(domain, "twitter.com", "x.com",
+                  "fxtwitter.com", "vxtwitter.com", "fixupx.com"):
             if "/status/" in path:
                 return Platform.TWITTER
 
         # Spotify: качаем через поиск трека на YouTube (напрямую DRM не даёт)
-        if domain in ("open.spotify.com", "spotify.com"):
+        if _is(domain, "spotify.com"):
             if "/album/" in path or "/playlist/" in path:
                 return Platform.SPOTIFY_COLLECTION
             return Platform.SPOTIFY

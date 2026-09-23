@@ -71,15 +71,18 @@ def _solve(browser, url: str) -> dict:
         context.close()
 
 
-def warm(url: str = _WARM_URL) -> bool:
+def warm() -> bool:
     """Обновляет пропуск заранее. True — обновили, False — не вышло (не беда).
 
     Головоломку решаем БЕЗ общего замка: пока идёт решение, те, кто пришёл за куками,
     продолжают пользоваться прежними. Замок берём только на подмену — она мгновенная.
+
+    Адрес страницы — только наша константа, без аргументов: браузер идёт без песочницы
+    и от root, и открывать им присланную человеком ссылку нельзя (см. get_cookies).
     """
     global _cookies, _cookies_ts
     try:
-        cookies = pw_thread.run_with_browser(_solve, url)
+        cookies = pw_thread.run_with_browser(_solve, _WARM_URL)
     except Exception:
         logger.exception("HDRezka: фоновое обновление пропуска не удалось")
         return False
@@ -94,9 +97,18 @@ def warm_interval() -> int:
     return max(60, _TTL - _WARM_MARGIN)
 
 
-def get_cookies(url: str, force: bool = False) -> dict:
+def get_cookies(url: str | None = None, force: bool = False) -> dict:
     """Возвращает куки-пропуск для HDRezka. Проходит проверку не чаще раза в TTL.
-    force=True — пройти заново прямо сейчас (например, куки протухли)."""
+    force=True — пройти заново прямо сейчас (например, куки протухли).
+
+    Головоломку решаем на ФИКСИРОВАННОМ адресе сайта, а не на присланной ссылке.
+    Куки всё равно общие для домена, так что разницы для дела нет, а вот разница для
+    безопасности большая: иначе headless-браузер (у нас он идёт без песочницы, см.
+    pw_thread) открывал бы страницу по ссылке ОТ ПОЛЬЗОВАТЕЛЯ. В том же контейнере
+    лежат токен бота, куки площадок и сессия аккаунта-посредника.
+
+    Аргумент url оставлен, чтобы не менять вызовы, и намеренно не используется.
+    """
     global _cookies, _cookies_ts
     with _lock:
         fresh = _cookies is not None and (time.time() - _cookies_ts) < _TTL
@@ -105,7 +117,7 @@ def get_cookies(url: str, force: bool = False) -> dict:
                 # Playwright — строго на выделенном потоке с ОБЩИМ браузером (иначе
                 # greenlet-ошибка при обращении с другого потока, либо конфликт event loop
                 # при втором sync_playwright() на том же потоке).
-                _cookies = pw_thread.run_with_browser(_solve, url)
+                _cookies = pw_thread.run_with_browser(_solve, _WARM_URL)
                 _cookies_ts = time.time()
                 logger.info("HDRezka: проверка пройдена, куки обновлены (%d шт.)", len(_cookies))
             except Exception:

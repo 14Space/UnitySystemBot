@@ -8,18 +8,20 @@
 
 Теперь лишнее не теряется, а ЖДЁТ. Одновременно у одного человека обрабатывается
 THROTTLE_LIMIT запросов, остальные стоят в очереди и заходят по мере освобождения
-мест. По умолчанию очередь НЕ ограничена: сколько прислали, столько и обработаем, ничего
-не теряется. Ограничитель THROTTLE_QUEUE_MAX остался на случай, если однажды
-понадобится защита от совсем ненормального потока, но по умолчанию выключен (0).
+мест. Очередь ограничена THROTTLE_QUEUE_MAX (по умолчанию 20 на человека): живые люди
+столько подряд не присылают, а без предела один человек мог занять боту память
+потоком сообщений — на это указал внешний аудит.
 
 Очередь именно на ЧЕЛОВЕКА, а не на весь бот: иначе один пользователь с пачкой
 голосовых заставил бы ждать всех остальных.
 """
 import asyncio
+import os
+import time
 from typing import Callable, Any
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from bot.config import THROTTLE_LIMIT, THROTTLE_QUEUE_MAX
 from bot.middlewares.routing import is_request as _is_request
@@ -72,3 +74,43 @@ class ThrottleMiddleware(BaseMiddleware):
                 self._waiting.pop(uid, None)
                 self._gates.pop(uid, None)
                 self._warned.discard(uid)
+
+
+# --- Нажатия кнопок -------------------------------------------------------
+#
+# Очередь выше стоит только на СООБЩЕНИЯХ, а кнопки не ограничивались вовсе. Между
+# тем под кнопками у нас выбор качества (тяжёлая загрузка), треки коллекции и выставление
+# крипто-счёта: удерживая палец на кнопке, можно было наделать десятки запросов.
+# Здесь не очередь, а именно частота: нажатие — вещь мгновенная, и «подожди секунду»
+# тут честный ответ.
+_CLICK_WINDOW = float(os.getenv("CLICK_WINDOW_SECONDS", "5"))
+_CLICK_MAX = int(os.getenv("CLICK_MAX_PER_WINDOW", "10"))
+
+
+class CallbackThrottleMiddleware(BaseMiddleware):
+    """Не больше _CLICK_MAX нажатий от одного человека за _CLICK_WINDOW секунд."""
+
+    def __init__(self):
+        self._clicks: dict[int, list[float]] = {}
+
+    async def __call__(self, handler: Callable, event: Any, data: dict) -> Any:
+        if not isinstance(event, CallbackQuery) or not event.from_user or _CLICK_MAX <= 0:
+            return await handler(event, data)
+        now = time.monotonic()
+        uid = event.from_user.id
+        recent = [t0 for t0 in self._clicks.get(uid, []) if now - t0 < _CLICK_WINDOW]
+        if len(recent) >= _CLICK_MAX:
+            self._clicks[uid] = recent
+            # Отвечаем всплывашкой, а не молчанием: нажатие без ответа Telegram
+            # показывает как «часики», и человек жмёт ещё сильнее.
+            await event.answer(t("too_many_clicks", lang_of(event.from_user)),
+                               show_alert=False)
+            return
+        recent.append(now)
+        self._clicks[uid] = recent
+        # Чистим память: без этого словарь растёт по одному ключу на пользователя
+        # и живёт до перезапуска.
+        if len(self._clicks) > 1000:
+            self._clicks = {k: v for k, v in self._clicks.items()
+                            if v and now - v[-1] < _CLICK_WINDOW}
+        return await handler(event, data)

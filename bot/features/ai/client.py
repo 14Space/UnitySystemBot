@@ -77,9 +77,12 @@ def _gemini(history: list[dict], lang: str) -> tuple[str | None, str]:
         "contents": contents,
         "generationConfig": {"maxOutputTokens": 800, "temperature": 0.85},
     }
+    # Ключ — ЗАГОЛОВКОМ, а не в адресе. В адресе он попадал в текст любой сетевой
+    # ошибки, а её печатает logger.exception: ключ утекал через обычную диагностику.
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
-    r = requests.post(url, json=body, timeout=AI_TIMEOUT)
+           f"{GEMINI_MODEL}:generateContent")
+    r = requests.post(url, json=body, timeout=AI_TIMEOUT,
+                      headers={"x-goog-api-key": GEMINI_API_KEY})
     if r.status_code == 429:
         return None, "quota"
     if r.status_code != 200:

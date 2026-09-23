@@ -12,6 +12,7 @@ import os
 import subprocess
 
 from bot.features.download.downloaders.ytdlp_wrapper import FFMPEG_DIR
+from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ def probe_video(path: str) -> dict:
                 "-show_entries", "stream=width,height:format=duration",
                 "-of", "json", path,
             ],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=FFPROBE_TIMEOUT,
         )
         data = json.loads(proc.stdout or "{}")
         stream = (data.get("streams") or [{}])[0]
@@ -61,7 +62,7 @@ def make_video_thumbnail(path: str, max_size: int = 320) -> bytes | None:
                 "-frames:v", "1", "-vf", scale,
                 "-f", "image2", "-vcodec", "mjpeg", "-",
             ],
-            capture_output=True,
+            capture_output=True, timeout=FFMPEG_TIMEOUT,
         )
         data = proc.stdout
         return data if data else None

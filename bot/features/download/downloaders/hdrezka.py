@@ -10,6 +10,7 @@ import HdRezkaApi.api as _hdrezka_api
 from HdRezkaApi import HdRezkaApi
 from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
 from bot.features.download.downloaders import hdrezka_gate
+from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +204,8 @@ def _mux_subtitles(video: str, subs: list, out_path: str) -> bool:
         cmd += [f"-metadata:s:s:{idx}", f"language={_LANG.get(code, code)}"]
     # faststart — moov-атом в начало файла, иначе на iOS видео стримится чёрным экраном
     cmd += ["-movflags", "+faststart", out_path]
-    res = subprocess.run(cmd, capture_output=True)
+    res = subprocess.run(cmd, capture_output=True,
+                         timeout=FFMPEG_TIMEOUT)
     return res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
 
 
@@ -277,5 +279,6 @@ def _faststart(src: str, dst: str) -> bool:
     """Ремукс mp4 с moov-атомом в начале (-c copy, без перекодирования)."""
     ffmpeg = os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
     cmd = [ffmpeg, "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", dst]
-    res = subprocess.run(cmd, capture_output=True)
+    res = subprocess.run(cmd, capture_output=True,
+                         timeout=FFMPEG_TIMEOUT)
     return res.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0

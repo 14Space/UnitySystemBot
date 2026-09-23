@@ -6,6 +6,7 @@ import uuid
 import requests
 from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
 from bot.utils import media_names
+from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
 
 try:
     from bot.config import SLIDE_SEC, SLIDE_AUDIO_FADE_SEC
@@ -110,7 +111,7 @@ def download_music(url: str) -> tuple[str, str] | None:
     subprocess.run(
         [_ffbin("ffmpeg"), "-y", "-i", raw, "-vn", "-acodec", "libmp3lame",
          "-b:a", "192k", out],
-        capture_output=True,
+        capture_output=True, timeout=FFMPEG_TIMEOUT,
     )
     _safe_remove(raw)
     if not (os.path.exists(out) and os.path.getsize(out) > 0):
@@ -139,7 +140,7 @@ def _media_duration(path: str) -> float:
         out = subprocess.run(
             [_ffbin("ffprobe"), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=FFPROBE_TIMEOUT,
         )
         return float(out.stdout.strip())
     except Exception:
@@ -216,7 +217,8 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
         "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
         "-shortest", out_path,
     ]
-    subprocess.run(cmd, capture_output=True)
+    subprocess.run(cmd, capture_output=True,
+                         timeout=FFMPEG_TIMEOUT)
     return out_path
 
 
@@ -275,7 +277,8 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
         "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
         "-shortest", out_path,
     ]
-    subprocess.run(cmd, capture_output=True)
+    subprocess.run(cmd, capture_output=True,
+                         timeout=FFMPEG_TIMEOUT)
     return out_path
 
 
@@ -293,6 +296,10 @@ def _resolve_short(url: str) -> str:
     """
     if not _is_short(url):
         return url
+    # По переходам идём САМИ и на каждом шаге проверяем, что следующий адрес — всё
+    # ещё TikTok. Иначе короткая ссылка становится указателем куда угодно: раньше
+    # достаточно было, чтобы «tiktok.com» встретилось в строке (хоть в параметре
+    # запроса), и бот честно шёл по цепочке на любой чужой сайт.
     try:
         target = url
         for _ in range(5):                  # цепочка переходов бывает не одношаговой
@@ -300,15 +307,29 @@ def _resolve_short(url: str) -> str:
                                allow_redirects=False).headers.get("Location")
             if not nxt:
                 break
-            target = requests.compat.urljoin(target, nxt)
-        if target != url and "tiktok.com" in target:
+            nxt = requests.compat.urljoin(target, nxt)
+            if not _is_tiktok_url(nxt):
+                logger.warning("Короткая ссылка ведёт не на TikTok — не иду: %s",
+                               nxt[:80])
+                return url
+            target = nxt
+        if target != url and _is_tiktok_url(target):
             return target
     except Exception:
         pass
     try:
-        return requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True).url
+        # Запасной путь: здесь по переходам идёт requests, поэтому проверяем, КУДА
+        # в итоге пришли, и чужой адрес не возвращаем.
+        final = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True).url
+        return final if _is_tiktok_url(final) else url
     except Exception:
         return url
+
+
+def _is_tiktok_url(url: str) -> bool:
+    """Ссылка действительно ведёт на TikTok (хозяин адреса, а не «есть в строке»)."""
+    from bot.utils.platform_detector import Platform, detect_platform
+    return detect_platform(url) == Platform.TIKTOK
 
 
 def _api_call(url: str, hd: bool = True) -> dict:

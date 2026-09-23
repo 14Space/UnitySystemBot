@@ -143,6 +143,12 @@ async def _answer(message: Message, history: list[dict], lang: str):
         await message.reply(t("ai_limit", lang))
         return
 
+    # Засчитываем СРАЗУ, а не после ответа. Раньше между проверкой и учётом проходил
+    # весь запрос к провайдеру, и параллельными вопросами суточный лимит обходился
+    # как угодно. Цена решения: неудачный ответ тоже съедает попытку — это дешевле,
+    # чем дырка в лимите бесплатного тира.
+    await _count(message.from_user.id)
+
     status = await message.reply(t("ai_thinking", lang))
     text, st = await asyncio.to_thread(client.ask, history, _reply_lang(history, lang))
 
@@ -156,7 +162,6 @@ async def _answer(message: Message, history: list[dict], lang: str):
         await _safe_edit(status, t("ai_error", lang))
         return
 
-    await _count(message.from_user.id)
     if len(text) > MAX_LEN:
         text = text[:MAX_LEN] + "…"
     sent = await _safe_edit(status, text)

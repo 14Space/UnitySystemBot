@@ -12,7 +12,7 @@ from bot.config import PREMIUM_PRICE_STARS, PREMIUM_PRICE_USD
 from bot.database import SessionLocal
 from bot.database.repository import (
     is_premium, set_premium, add_payment, refund_payment, add_crypto_invoice,
-    user_language,
+    user_language, active_crypto_invoice,
 )
 from bot.features.common import cryptopay
 from bot.utils.i18n import t, lang_of
@@ -104,16 +104,27 @@ async def cb_buy_crypto(callback: CallbackQuery):
         if await is_premium(session, callback.from_user.id):
             await callback.message.answer(t("already_premium_short", lang))
             return
+    # Один незакрытый счёт на человека. Раньше каждое нажатие выставляло новый, а
+    # опрос смотрит только сотню последних: спамом кнопки можно было вытеснить из
+    # опроса ЧУЖОЙ настоящий счёт — тот человек заплатил бы и не получил премиум.
+    async with SessionLocal() as session:
+        existing = await active_crypto_invoice(session, callback.from_user.id)
     try:
-        invoice = await asyncio.to_thread(
-            cryptopay.create_invoice, callback.from_user.id,
-            t("premium_desc", lang), t("crypto_paid_hint", lang))
+        if existing:
+            invoice = (await asyncio.to_thread(cryptopay.get_invoices, [existing]) or [None])[0]
+        else:
+            invoice = None
+        if not invoice or invoice.get("status") != "active":
+            invoice = await asyncio.to_thread(
+                cryptopay.create_invoice, callback.from_user.id,
+                t("premium_desc", lang), t("crypto_paid_hint", lang))
+            async with SessionLocal() as session:
+                await add_crypto_invoice(session, invoice["invoice_id"],
+                                         callback.from_user.id)
     except Exception:
         logger.exception("Не вышло выставить крипто-счёт")
         await callback.message.answer(t("crypto_unavailable", lang))
         return
-    async with SessionLocal() as session:
-        await add_crypto_invoice(session, invoice["invoice_id"], callback.from_user.id)
     url = invoice.get("bot_invoice_url") or invoice.get("pay_url")
     await callback.message.answer(
         t("crypto_invoice", lang, price=f"{PREMIUM_PRICE_USD:.2f}"),

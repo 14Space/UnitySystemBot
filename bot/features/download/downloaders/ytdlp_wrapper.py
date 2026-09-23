@@ -12,6 +12,7 @@ import yt_dlp
 
 from bot.utils import media_names
 from bot.utils import cookie_files
+from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,10 @@ BASE_OPTS = {
     "extractor_args": {
         "youtubepot-bgutilhttp": {"base_url": [POT_PROVIDER_URL]},
     },
+    # Потолок размера. Смысл не в диске, а в бессмысленной работе: файл больше 2 ГБ
+    # Telegram всё равно не примет, а без этого предела бот честно качал его целиком
+    # (часами, через домашний канал) — и только потом отвечал «слишком большой».
+    "max_filesize": int(os.getenv("MAX_FILE_BYTES_YTDLP", str(1_950_000_000))),
 }
 if FFMPEG_DIR:
     BASE_OPTS["ffmpeg_location"] = FFMPEG_DIR
@@ -332,7 +337,10 @@ def download_video(
     postprocess_callback() — вызывается когда ffmpeg начинает склейку.
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(id)s_%(height)sp_dl.%(ext)s")
+    # Имя УНИКАЛЬНОЕ на каждое скачивание: два человека, качающие одно видео в одном
+    # качестве, писали в один файл — первый удалял его за собой, второй падал на
+    # склейке или отправлял пустоту (см. _unique_outtmpl).
+    output_path = _unique_outtmpl(f"{quality or 'best'}p")
 
     last_reported = [-1]
 
@@ -427,7 +435,7 @@ def _video_codec(path: str) -> str:
         out = subprocess.run(
             [ffprobe, "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", path],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=FFPROBE_TIMEOUT,
         )
         return (out.stdout or "").strip().lower()
     except Exception:
@@ -455,7 +463,8 @@ def _ensure_h264(path: str, postprocess_callback=None) -> str:
         "-movflags", "+faststart",
         out_path,
     ]
-    res = subprocess.run(cmd, capture_output=True)
+    res = subprocess.run(cmd, capture_output=True,
+                         timeout=FFMPEG_TIMEOUT)
     if res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
         try:
             os.remove(path)
@@ -566,7 +575,10 @@ def download_audio(
         Иначе в mp3 окажутся две обложки и Telegram покажет в кружке не ту.
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    output_path = os.path.join(DOWNLOADS_DIR, "%(title)s_dl.%(ext)s")
+    # По названию трека имя не строим: у двух запросов одного трека он совпадал, а
+    # длинные кириллические названия давали «File name too long». Настоящее имя для
+    # человека всё равно ставится при отправке (см. media_names).
+    output_path = _unique_outtmpl("audio")
 
     last_reported = [-1]
 
@@ -686,7 +698,8 @@ def convert_gif_to_mp4(gif_path: str) -> str:
         "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-crf", "18",
         mp4,
     ]
-    subprocess.run(cmd, capture_output=True)
+    subprocess.run(cmd, capture_output=True,
+                         timeout=FFMPEG_TIMEOUT)
     if os.path.exists(mp4) and os.path.getsize(mp4) > 0:
         return mp4
     return gif_path

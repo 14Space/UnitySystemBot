@@ -26,6 +26,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from bot.config import ADMIN_LANG, STT_ORDER, CRYPTOPAY_TOKEN
+from bot.utils.secrets_filter import mask
 from bot.utils.i18n import t, t_check
 
 logger = logging.getLogger(__name__)
@@ -163,14 +164,19 @@ async def _check_ytdlp():
 
 
 # Браузерный User-Agent: с «python-requests» площадки отвечают иначе и проверка соврёт.
-def _home_proxies() -> dict | None:
+def _home_proxies(platform_env: str = "") -> dict | None:
     """Через что ходить с КУКАМИ — домашний туннель, если он настроен.
 
     Проверка кук обязана идти тем же путём, что и боевой запрос. Иначе она сама себе
     вредит: площадка видит сессию из дата-центра и закрывает её — то есть проверка
     «жива ли сессия» эту сессию и убивает. Каждые два часа и сразу после деплоя.
+
+    platform_env — имя настройки прокси ИМЕННО этой площадки (у Instagram своя,
+    INSTAGRAM_PROXY). Раньше проверка всегда брала общий PROXY_URL: пока значения
+    совпадают, разницы нет, но стоит их развести — и проверка начнёт бить в площадку
+    прямо из дата-центра. Такую ошибку мы уже проходили, второй раз ждать не будем.
     """
-    proxy = os.getenv("PROXY_URL", "")
+    proxy = (os.getenv(platform_env, "") if platform_env else "") or os.getenv("PROXY_URL", "")
     return {"http": proxy, "https": proxy} if proxy else None
 
 
@@ -222,7 +228,8 @@ async def _check_ig_cookies():
     def work():
         r = requests.get("https://www.instagram.com/accounts/edit/", cookies=jar,
                          headers={"User-Agent": _COOKIE_UA}, timeout=25,
-                         proxies=_home_proxies(), allow_redirects=False)
+                         proxies=_home_proxies("INSTAGRAM_PROXY"),
+                         allow_redirects=False)
         if r.status_code == 200:
             return True, t("hc_ck_alive", _admin_lang())
         if r.status_code in (301, 302):
@@ -1291,8 +1298,11 @@ def format_health(results: list[dict], platform_order: list[str] | None = None,
             # запросто попадается «<...>» (например «<Response [403]>»). Отчёт уходит
             # разметкой HTML, поэтому такой символ ломает РАЗБОР ВСЕГО сообщения, и
             # человек не получает отчёт вовсе — вместо одной красной строки.
+            # Сначала маскируем секреты (в тексте ошибки бывает адрес Bot API с
+            # токеном), потом экранируем — порядок важен: экранированный токен
+            # маска бы уже не узнала.
             line = (f"{icons[r['state']]} {t_check(r['name'], lang)} – "
-                    f"{html.escape(str(r['detail']))}")
+                    f"{html.escape(mask(str(r['detail'])))}")
             # Пропущенные (⚪) в проблемы не берём: это не поломка, а сознательно
             # выключенный настройкой пункт.
             if r["state"] != "skip":

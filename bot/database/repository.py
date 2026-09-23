@@ -152,6 +152,19 @@ async def add_crypto_invoice(session: AsyncSession, invoice_id: int, user_id: in
         await session.rollback()
 
 
+async def active_crypto_invoice(session: AsyncSession, user_id: int) -> int | None:
+    """Номер незакрытого счёта этого человека, если он есть.
+
+    Нужен, чтобы не плодить счета: каждое нажатие «Оплатить криптой» выставляло новый,
+    а опрос смотрит только сотню последних — спамом кнопки можно было вытеснить из
+    опроса ЧУЖОЙ настоящий счёт, и человек остался бы без премиума после оплаты.
+    """
+    return (await session.execute(
+        select(CryptoInvoice.invoice_id)
+        .where(CryptoInvoice.user_id == user_id, CryptoInvoice.status == "active")
+        .order_by(CryptoInvoice.invoice_id.desc()).limit(1))).scalar_one_or_none()
+
+
 async def open_crypto_invoices(session: AsyncSession, limit: int = 100) -> list[tuple[int, int]]:
     """Наши счета, которые ещё ждут оплаты: [(номер счёта, покупатель)].
 

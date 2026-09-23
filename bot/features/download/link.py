@@ -628,11 +628,14 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
     quality = qualities[int(qidx)]
     user_id = callback.from_user.id
 
-    # Защита: качество выше 720p — только для Premium
+    # Защита: качество выше 720p — только для Premium (см. пояснение ниже по файлу:
+    # смотрим на нажавшего, а не на владельца меню).
     height = 9999 if "K" in quality.upper() else int("".join(filter(str.isdigit, quality)) or 0)
-    if height > FREE_LIMIT and not entry.get("premium"):
-        await callback.answer(t("premium_alert", lang), show_alert=True)
-        return
+    if height > FREE_LIMIT:
+        async with SessionLocal() as session:
+            if not await is_premium(session, user_id):
+                await callback.answer(t("premium_alert", lang), show_alert=True)
+                return
 
     # Кэш: этот фильм/серию в этой озвучке и качестве уже качали — отдаём мгновенно,
     # без повторного скачивания (ключ = ссылка + озвучка + сезон + серия, качество — отдельно).
@@ -1581,9 +1584,14 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     alerts.current_request.set(f"видео {quality}p: {url}")
 
     # Защита: качество выше 720p — только для Premium
-    if quality > FREE_LIMIT and not entry.get("premium"):
-        await callback.answer(t("premium_alert", lang), show_alert=True)
-        return
+    # Premium проверяем У ТОГО, КТО НАЖАЛ, а не у того, кто прислал ссылку. Раньше
+    # смотрели на отметку в самом меню (entry["premium"]) — то есть в группе любой мог
+    # открыть чужое меню Premium-пользователя и скачать 4K бесплатно.
+    if quality > FREE_LIMIT:
+        async with SessionLocal() as session:
+            if not await is_premium(session, user_id):
+                await callback.answer(t("premium_alert", lang), show_alert=True)
+                return
 
     # Кэш: если это качество уже качали — отдаём мгновенно (блокировку не применяем)
     async with SessionLocal() as session:
