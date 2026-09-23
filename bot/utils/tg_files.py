@@ -106,6 +106,10 @@ def _named_copy(path: str, name: str) -> str:
     Жёсткая ссылка не копирует байты, поэтому на фильме в гигабайт это мгновенно. Если
     файловая система ссылок не поддерживает (бывает на смонтированных томах), честно
     копируем — медленнее, но работает.
+
+    ВНИМАНИЕ: копирование блокирует поток на время записи гигабайтов. Из асинхронного
+    кода зови input_file_async — он уносит это в отдельный поток. Прямой вызов оставлен
+    для синхронных мест (например, проверки функционала, где всё и так в потоке).
     """
     _sweep()
     folder = os.path.join(NAMED_DIR, uuid.uuid4().hex[:8])
@@ -152,3 +156,15 @@ def input_file(path: str, name: str | None = None):
     if TELEGRAM_LOCAL and TELEGRAM_LOCAL_API_URL and _is_shared(path):
         return _file_url(path)
     return FSInputFile(path, filename=name) if name else FSInputFile(path)
+
+
+async def input_file_async(path: str, name: str | None = None):
+    """То же, что input_file, но безопасно для асинхронного кода.
+
+    Разница ровно в одном: если жёсткая ссылка не получилась и приходится копировать
+    файл, копирование уходит в отдельный поток. Иначе бот замирает для всех на время
+    записи — а речь про фильмы в гигабайт.
+    """
+    import asyncio
+
+    return await asyncio.to_thread(input_file, path, name)

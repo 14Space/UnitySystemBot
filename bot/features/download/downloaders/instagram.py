@@ -191,10 +191,22 @@ def _cookies_path() -> str | None:
     return cookie_files.disposable(INSTAGRAM_COOKIES, COOKIE_COPIES_DIR)
 
 
+# Настоящий код поста — это буквы, цифры, дефис и подчёркивание. Ничего другого в
+# нём не бывает, а вот попасть туда могло: код идёт прямо в ИМЯ ФАЙЛА, и косая черта
+# или «..» в нём означали бы запись не туда, куда мы думаем.
+_SHORTCODE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
 def _shortcode(url: str) -> str | None:
     """Достаёт код поста из ссылки: /p/CODE/, /reel/CODE/, /tv/CODE/"""
     m = re.search(r"/(?:p|reel|reels|tv)/([^/?#]+)", urlparse(url).path)
-    return m.group(1) if m else None
+    if not m:
+        return None
+    code = m.group(1)
+    if not _SHORTCODE_RE.match(code):
+        logger.info("Instagram: подозрительный код поста %r — не берусь", code[:40])
+        return None
+    return code
 
 
 def download_reel(url: str, max_height: int | None = None) -> str:

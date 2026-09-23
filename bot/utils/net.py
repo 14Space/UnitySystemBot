@@ -71,3 +71,22 @@ def _drop(path: str) -> None:
         os.remove(path)
     except OSError:
         pass
+
+
+# Общая сессия requests: держит TLS-соединения открытыми между запросами. Без неё
+# каждый вызов заново договаривается о шифровании — это отдельный круг до сервера и
+# обратно. Больнее всего там, где запросы частые: опрос платежей раз в 15 секунд и
+# обращения к API TikTok на каждую ссылку.
+_session: requests.Session | None = None
+
+
+def session() -> requests.Session:
+    """Общая сессия. Создаётся при первом обращении и живёт до конца процесса."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        # Пул под наши лимиты: одновременных загрузок до восьми, плюс запас.
+        adapter = requests.adapters.HTTPAdapter(pool_connections=16, pool_maxsize=16)
+        _session.mount("https://", adapter)
+        _session.mount("http://", adapter)
+    return _session

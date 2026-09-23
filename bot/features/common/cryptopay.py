@@ -22,6 +22,8 @@ import logging
 
 import requests
 
+from bot.utils import net
+
 from bot.config import (
     CRYPTOPAY_TOKEN, CRYPTOPAY_TESTNET, CRYPTOPAY_ASSETS,
     CRYPTOPAY_INVOICE_TTL, PREMIUM_PRICE_USD,
@@ -48,9 +50,11 @@ def _api(method: str, **params) -> dict | list:
     по себе ничего не значит — смотреть надо на поле ok.
     """
     base = _TESTNET if CRYPTOPAY_TESTNET else _MAINNET
-    r = requests.post(base + method, json=params,
-                      headers={"Crypto-Pay-API-Token": CRYPTOPAY_TOKEN},
-                      timeout=_TIMEOUT)
+    # Через общую сессию: опрос идёт каждые 15 секунд, и без неё каждый запрос заново
+    # договаривался бы о шифровании (лишний круг до сервера и обратно).
+    r = net.session().post(base + method, json=params,
+                           headers={"Crypto-Pay-API-Token": CRYPTOPAY_TOKEN},
+                           timeout=_TIMEOUT)
     try:
         data = r.json()
     except ValueError:

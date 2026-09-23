@@ -161,11 +161,17 @@ async def pre_checkout(query: PreCheckoutQuery, bot: Bot):
     """Последний шаг перед списанием звёзд: Telegram спрашивает, берём ли мы этот
     платёж. Отвечаем «да» только на свой счёт — чужой или устаревший отклоняем, иначе
     списание пройдёт, а товар выдавать не за что."""
-    if query.invoice_payload != PAYLOAD:
+    # Сверяем не только метку счёта, но и СУММУ с валютой. Счёт живёт в чате вечно:
+    # подняв вчерашнее сообщение, можно было оплатить премиум по старой цене, и бот
+    # честно бы его выдал. Сумма приходит в той же единице, в которой выставлена.
+    wrong_amount = (query.total_amount or 0) != PREMIUM_PRICE_STARS
+    wrong_currency = (query.currency or "") != "XTR"
+    if query.invoice_payload != PAYLOAD or wrong_amount or wrong_currency:
         await bot.answer_pre_checkout_query(
             query.id, ok=False,
             error_message=t("payment_stale", lang_of(query.from_user)))
-        logger.warning("Отклонён платёж с чужим счётом: %r", query.invoice_payload)
+        logger.warning("Отклонён платёж: метка=%r сумма=%r валюта=%r",
+                       query.invoice_payload, query.total_amount, query.currency)
         return
     await bot.answer_pre_checkout_query(query.id, ok=True)
 

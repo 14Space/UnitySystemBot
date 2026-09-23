@@ -190,6 +190,10 @@ def _safe_rm(path: str):
         pass
 
 
+# Код языка субтитров: буквы, цифры и дефис, не длиннее десяти знаков.
+_SUB_CODE_RE = re.compile(r"^[A-Za-z0-9-]{1,10}$")
+
+
 def _mux_subtitles(video: str, subs: list, out_path: str) -> bool:
     """Вшивает субтитры мягкой дорожкой (mov_text) — без перекодирования видео."""
     ffmpeg = os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
@@ -251,7 +255,10 @@ def download_stream(stream, quality: str, name="video", season=None, episode=Non
         sub_dict = {}
     for code, info in sub_dict.items():
         link = info.get("link")
-        if link:
+        # Код языка приходит со страницы сайта и идёт прямо в ИМЯ ФАЙЛА. У настоящего
+        # кода бывают только буквы и дефис («ru», «en», «pt-br»); что-то другое —
+        # либо смена вёрстки, либо попытка увести запись в чужую папку.
+        if link and _SUB_CODE_RE.match(str(code)):
             sub_path = base + f".{code}.vtt"
             try:
                 _download_file(link, sub_path)

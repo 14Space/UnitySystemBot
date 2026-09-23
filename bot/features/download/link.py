@@ -315,7 +315,7 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
             return  # нет звука или не удалось извлечь — молча пропускаем (это бонус)
         path, title = result
         sent = await message.reply_audio(
-            tg_files.input_file(path, await _nice_name(path, quality="")), title=title)
+            await tg_files.input_file_async(path, await _nice_name(path, quality="")), title=title)
         if sent.audio:
             async with SessionLocal() as session:
                 await _tt_cache_save(session, url, cache_url, sent.audio.file_id, "audiotrack")
@@ -405,7 +405,12 @@ async def _handle_hdrezka(message: Message, url: str, lang: str):
     status = await message.reply(t("searching_movie", lang))
     try:
         api = await asyncio.to_thread(hdrezka.open_media, url)
-        info = hdrezka.get_info(api, url)
+        # В потоке, как и открытие страницы: у сериала get_info делает ещё один
+        # запрос к сайту (список сезонов) и умеет ждать между повторами. В главном
+        # потоке это значило, что бот на пару секунд замирал для ВСЕХ, а не только
+        # для того, кто прислал ссылку. Рядом, в обработчике сезонов, это уже было
+        # сделано правильно — здесь просто забыли.
+        info = await asyncio.to_thread(hdrezka.get_info, api, url)
     except Exception as e:
         logger.exception("HDRezka info failed")
         alerts.note_failure(e)            # fetch-ошибки тоже должны доходить до админа
@@ -722,7 +727,7 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
             hr_title = f"{hr_title} S{entry['season']:02d}E{entry['episode']:02d}"
         sent = await bot.send_video(
             chat_id,
-            tg_files.input_file(file_path, tg_files.display_name(
+            await tg_files.input_file_async(file_path, tg_files.display_name(
                 hr_title, str(quality or ""), os.path.splitext(file_path)[1] or ".mp4")),
             reply_to_message_id=entry["user_msg_id"],
             **await _video_kwargs(file_path),
@@ -767,7 +772,7 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
             async with chat_action.show(message.bot, message.chat.id, chat_action.VIDEO):
                 file_path = await asyncio.to_thread(download_fn, url)
                 sent = await message.reply_video(
-                    tg_files.input_file(
+                    await tg_files.input_file_async(
                         file_path, await _nice_name(file_path, use_title=use_title)),
                     **await _video_kwargs(file_path))
             if sent.video:
@@ -807,14 +812,14 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
             if file_path.lower().endswith(".gif"):
                 # GIF → чистый mp4 (без грубой авто-конвертации Telegram), шлём анимацией
                 mp4 = await asyncio.to_thread(convert_gif_to_mp4, file_path)
-                sent = await message.reply_animation(tg_files.input_file(mp4, await _nice_name(mp4, quality="", use_title=False)))
+                sent = await message.reply_animation(await tg_files.input_file_async(mp4, await _nice_name(mp4, quality="", use_title=False)))
                 fid = "A:" + sent.animation.file_id if sent.animation else None
             elif is_image(file_path):
-                sent = await message.reply_photo(tg_files.input_file(file_path, await _nice_name(file_path, quality="", use_title=False)))
+                sent = await message.reply_photo(await tg_files.input_file_async(file_path, await _nice_name(file_path, quality="", use_title=False)))
                 fid = "P:" + sent.photo[-1].file_id if sent.photo else None
             else:
                 sent = await message.reply_video(
-                tg_files.input_file(file_path, await _nice_name(file_path, use_title=False)),
+                await tg_files.input_file_async(file_path, await _nice_name(file_path, use_title=False)),
                 **await _video_kwargs(file_path))
                 fid = "V:" + sent.video.file_id if sent.video else None
             if fid:
@@ -916,11 +921,11 @@ async def _send_media_files(message: Message, files: list[str], lang: str) -> li
     if len(files) == 1:
         f = files[0]
         if is_image(f):
-            sent = await message.reply_photo(tg_files.input_file(f, await _nm(f, 0)))
+            sent = await message.reply_photo(await tg_files.input_file_async(f, await _nm(f, 0)))
             if sent.photo:
                 tokens.append("P:" + sent.photo[-1].file_id)
         else:
-            sent = await message.reply_video(tg_files.input_file(f, await _nm(f, 0)),
+            sent = await message.reply_video(await tg_files.input_file_async(f, await _nm(f, 0)),
                                              **await _video_kwargs(f))
             if sent.video:
                 tokens.append("V:" + sent.video.file_id)
@@ -932,9 +937,9 @@ async def _send_media_files(message: Message, files: list[str], lang: str) -> li
                 name = await _nm(f, idx)
                 idx += 1
                 if is_image(f):
-                    media.append(InputMediaPhoto(media=tg_files.input_file(f, name)))
+                    media.append(InputMediaPhoto(media=await tg_files.input_file_async(f, name)))
                 else:
-                    media.append(InputMediaVideo(media=tg_files.input_file(f, name),
+                    media.append(InputMediaVideo(media=await tg_files.input_file_async(f, name),
                                                  **await _video_kwargs(f)))
             sent_msgs = await message.reply_media_group(media)
             for m in sent_msgs:
@@ -1243,7 +1248,7 @@ async def _send_twitter(message: Message, items: list[dict], caption: str | None
 
     if len(items) == 1:
         it = items[0]
-        f = tg_files.input_file(it["path"], await _nm(it["path"], it["kind"], 0))
+        f = await tg_files.input_file_async(it["path"], await _nm(it["path"], it["kind"], 0))
         if it["kind"] == "photo":
             sent = await message.reply_photo(f, caption=caption, parse_mode=parse_mode)
             if sent.photo:
@@ -1263,7 +1268,7 @@ async def _send_twitter(message: Message, items: list[dict], caption: str | None
     for i, it in enumerate(items):
         cap = caption if i == 0 else None
         pm = parse_mode if i == 0 else None
-        f = tg_files.input_file(it["path"], await _nm(it["path"], it["kind"], i))
+        f = await tg_files.input_file_async(it["path"], await _nm(it["path"], it["kind"], i))
         if it["kind"] == "photo":
             media.append(InputMediaPhoto(media=f, caption=cap, parse_mode=pm))
         else:
@@ -1585,7 +1590,7 @@ async def _do_download_audio(
                 thumbnail = BufferedInputFile(thumb_bytes, filename="cover.jpg")
         sent = await bot.send_audio(
             chat_id,
-            tg_files.input_file(file_path, await _nice_name(file_path, quality="")),
+            await tg_files.input_file_async(file_path, await _nice_name(file_path, quality="")),
             title=title,
             performer=performer,
             duration=duration,
@@ -1724,7 +1729,7 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
             await _safe_edit(progress_msg, t("uploading", lang))
             sent = await bot.send_video(
                 chat_id,
-                tg_files.input_file(
+                await tg_files.input_file_async(
                     file_path,
                     await _nice_name(file_path,
                                      quality=f"{quality}p" if quality else None)),
@@ -1884,7 +1889,14 @@ async def handle_collection_track(callback: CallbackQuery, bot: Bot):
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
-    track = coll["tracks"][int(idx_str)]
+    # Номер трека из кнопки проверяем: «tracks[int(idx)]» на подобранных данных давал
+    # не понятный отказ, а падение обработчика (ValueError/IndexError).
+    tracks = coll["tracks"]
+    if not idx_str.isdigit() or int(idx_str) >= len(tracks):
+        logger.warning("Кнопка трека с неверным номером: %r", idx_str)
+        await callback.answer(t("link_expired", lang), show_alert=True)
+        return
+    track = tracks[int(idx_str)]
     # Одно нажатие — один трек: раньше пять нажатий давали пять одинаковых файлов.
     if not _claim(callback.message.chat.id, coll_id, idx_str):
         await callback.answer(t("already_downloading", lang), show_alert=False)

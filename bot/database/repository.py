@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import statistics
+import time
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func, delete, update
@@ -273,14 +274,39 @@ async def get_stats(session: AsyncSession) -> dict:
     }
 
 
+# Выключенные функции читаются НА КАЖДОЕ сообщение (см. RoutingMiddleware), а меняются
+# раз в месяц через /setconfig. Поэтому держим их в памяти: это снимает один запрос к
+# базе с каждого сообщения в каждом чате. Кэш живёт минуту и сбрасывается сразу при
+# изменении настройки, так что «выключил функцию — она сразу выключилась» сохраняется.
+_DISABLED_CACHE: dict[int, tuple[float, set[str]]] = {}
+_DISABLED_TTL = 60.0
+
+
+def forget_chat_settings(chat_id: int | None = None) -> None:
+    """Сбрасывает кэш настроек чата (или весь, если чат не указан)."""
+    if chat_id is None:
+        _DISABLED_CACHE.clear()
+    else:
+        _DISABLED_CACHE.pop(chat_id, None)
+
+
 async def get_disabled_features(session: AsyncSession, chat_id: int) -> set[str]:
     """Множество выключенных в этом чате функций (пусто = всё включено)."""
+    hit = _DISABLED_CACHE.get(chat_id)
+    if hit and (time.monotonic() - hit[0]) < _DISABLED_TTL:
+        return set(hit[1])
     row = (await session.execute(
         select(ChatSettings).where(ChatSettings.chat_id == chat_id)
     )).scalar_one_or_none()
-    if not row or not row.disabled_features:
-        return set()
-    return {f for f in row.disabled_features.split(",") if f}
+    disabled = ({f for f in row.disabled_features.split(",") if f}
+                if row and row.disabled_features else set())
+    _DISABLED_CACHE[chat_id] = (time.monotonic(), set(disabled))
+    # Чатов у бота немного, но память не бесконечна: держим самые свежие.
+    if len(_DISABLED_CACHE) > 512:
+        oldest = sorted(_DISABLED_CACHE.items(), key=lambda kv: kv[1][0])[:128]
+        for key, _ in oldest:
+            _DISABLED_CACHE.pop(key, None)
+    return disabled
 
 
 async def set_feature(session: AsyncSession, chat_id: int, feature: str, enable: bool) -> None:
@@ -298,6 +324,7 @@ async def set_feature(session: AsyncSession, chat_id: int, feature: str, enable:
         disabled.add(feature)
     row.disabled_features = ",".join(sorted(disabled))
     await session.commit()
+    forget_chat_settings(chat_id)      # иначе тумблер сработал бы с задержкой
 
 
 async def get_slideshow_mode(session: AsyncSession, chat_id: int, default: str = "video") -> str:

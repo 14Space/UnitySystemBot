@@ -47,6 +47,17 @@ def _via(fn, *args, **kwargs):
         return fn(*args, proxies=_PROXIES, **kwargs)
 
 
+# Номер поста приходит от чужого сервиса (tikwm) и идёт прямо в ИМЯ ФАЙЛА. У настоящего
+# номера бывают только цифры; всё остальное — либо ошибка сервиса, либо попытка увести
+# запись в чужую папку («../..»). Подменяем на безопасное значение, а не падаем.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _safe_id(value) -> str:
+    text = str(value or "")
+    return text if _SAFE_ID_RE.match(text) else "tiktok"
+
+
 def _fetch_file(url: str, path: str, timeout: int = 120) -> str:
     """Качает файл НА ДИСК (потоком) с тем же откатом на прокси, что и остальные
     запросы модуля. Раньше каждый файл сначала целиком оказывался в памяти
@@ -114,10 +125,10 @@ def download_music(url: str) -> tuple[str, str] | None:
     # Уникальный хвост: один и тот же звук могут попросить сразу несколько человек,
     # и с общим именем один переписывал бы исходник, пока другой его перекодирует.
     tag = uuid.uuid4().hex[:8]
-    raw = os.path.join(DOWNLOADS_DIR, f"{info['id']}_{tag}_track_src")
+    raw = os.path.join(DOWNLOADS_DIR, f"{_safe_id(info['id'])}_{tag}_track_src")
     _fetch_file(music_url, raw, timeout=60)
     # Приводим к чистому mp3 (звук из tikwm бывает в контейнере m4a/без тегов).
-    out = os.path.join(DOWNLOADS_DIR, f"{info['id']}_{tag}_track.mp3")
+    out = os.path.join(DOWNLOADS_DIR, f"{_safe_id(info['id'])}_{tag}_track.mp3")
     subprocess.run(
         [_ffbin("ffmpeg"), "-y", "-i", raw, "-vn", "-acodec", "libmp3lame",
          "-b:a", "192k", out],
@@ -313,7 +324,7 @@ def _resolve_short(url: str) -> str:
     try:
         target = url
         for _ in range(5):                  # цепочка переходов бывает не одношаговой
-            nxt = requests.get(target, headers=HEADERS, timeout=15,
+            nxt = net.session().get(target, headers=HEADERS, timeout=15,
                                allow_redirects=False).headers.get("Location")
             if not nxt:
                 break
@@ -330,7 +341,8 @@ def _resolve_short(url: str) -> str:
     try:
         # Запасной путь: здесь по переходам идёт requests, поэтому проверяем, КУДА
         # в итоге пришли, и чужой адрес не возвращаем.
-        final = requests.get(url, headers=HEADERS, timeout=15, allow_redirects=True).url
+        final = net.session().get(url, headers=HEADERS, timeout=15,
+                                  allow_redirects=True).url
         return final if _is_tiktok_url(final) else url
     except Exception:
         return url
@@ -355,7 +367,8 @@ def _api_call_retry(url: str, attempts: int = 3, delay: float = 1.2,
     last = None
     for i in range(attempts):
         try:
-            data = _via_json(requests.get, API, params={"url": url, "hd": 1 if hd else 0},
+            data = _via_json(net.session().get, API,
+                             params={"url": url, "hd": 1 if hd else 0},
                              headers=HEADERS, timeout=30)
             if data.get("code") == 0:
                 return data                      # успех
@@ -371,7 +384,7 @@ def _fetch_backup(url: str) -> dict | None:
     """Запасной сервис (lovetik): когда основной не отдал видео. Возвращает данные
     в том же формате, что и основной (kind='video'), или None. Слайдшоу не умеет."""
     try:
-        j = _via_json(requests.post, BACKUP_API, data={"query": url},
+        j = _via_json(net.session().post, BACKUP_API, data={"query": url},
                       headers=HEADERS, timeout=25)
     except Exception:
         return None
@@ -494,7 +507,7 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
     # писали одни и те же файлы: один запрос доотправлял альбом и удалял файлы, пока
     # второй ещё грузил их в Telegram → FileNotFoundError на sendMediaGroup. item_id тут
     # используется ТОЛЬКО как имя файла, поэтому добавить случайный суффикс безопасно.
-    item_id = f"{info['id']}_{uuid.uuid4().hex[:8]}"
+    item_id = f"{_safe_id(info['id'])}_{uuid.uuid4().hex[:8]}"
 
     def _remember(paths):
         """Привязывает к скачанным файлам номер поста — по нему строится имя при

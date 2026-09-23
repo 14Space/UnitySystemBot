@@ -15,6 +15,7 @@ from aiogram.types import (
 from bot.config import (
     BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ,
     REPORT_HOUR, HEALTHCHECK_EVERY_HOURS, ADMIN_LANG, CRYPTOPAY_POLL_SECONDS,
+    THREAD_POOL_SIZE,
 )
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
@@ -495,6 +496,14 @@ async def main():
     # она чего-то ждёт, её вправе собрать сборщик мусора — и фоновая работа тихо
     # исчезнет, без ошибки и без следа. Набор живёт до конца процесса, а задача
     # убирает себя из него сама, когда закончится.
+    # Свой пул потоков под синхронную работу. Стандартный — «ядра + 4» (на сервере 8),
+    # а только загрузок одновременно бывает до восьми: в такой момент мгновенные вещи
+    # (курс валют, оплата, расшифровка) ждали свободного потока наравне с фильмом.
+    asyncio.get_running_loop().set_default_executor(
+        concurrent.futures.ThreadPoolExecutor(max_workers=THREAD_POOL_SIZE,
+                                              thread_name_prefix="work"))
+    logger.info("Пул рабочих потоков: %d", THREAD_POOL_SIZE)
+
     _background(heartbeat.beat())
     heartbeat.start_watchdog()
 

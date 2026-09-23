@@ -85,7 +85,14 @@ def test_refusal_is_not_silent(monkeypatch):
         def json():
             return {"ok": False, "error": {"code": 400, "name": "AUTHORIZATION_INVALID"}}
 
-    monkeypatch.setattr(cryptopay.requests, "post", lambda *a, **kw: Resp())
+    # Запрос идёт через ОБЩУЮ сессию (переиспользование TLS-соединений), поэтому
+    # подменяем именно её, а не requests.post.
+    class FakeSession:
+        @staticmethod
+        def post(*a, **kw):
+            return Resp()
+
+    monkeypatch.setattr(cryptopay.net, "session", lambda: FakeSession())
     monkeypatch.setattr(cryptopay, "CRYPTOPAY_TOKEN", "токен")
     with pytest.raises(RuntimeError):
         cryptopay.get_me()

@@ -4,6 +4,8 @@
 не нужна). Клавиатура ОДИНАКОВАЯ в группе и в личке; отличается лишь дефолт режима
 слайдшоу (в личке — «Выбор», в группе — «Видео»).
 """
+import logging
+
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -16,6 +18,13 @@ from bot.database.repository import (
 )
 from bot.features.currency.parser import ORDER as CURRENCY_ORDER, CURRENCIES
 from bot.utils.i18n import t, lang_of
+
+# Что вообще может прийти в кнопке слайдшоу. Список короткий и живёт рядом с обработчиком.
+_SLIDESHOW_MODES = ("video", "photos", "ask")
+
+from bot.features.currency.parser import CURRENCIES
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -174,6 +183,13 @@ async def set_slideshow(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     mode = callback.data.split(":", 2)[2]
+    # Значение из кнопки проверяем, а не доверяем: данные кнопки может подобрать любой
+    # клиент, а неизвестный режим потом уехал бы в базу и вылез ошибкой у другого
+    # человека в другом месте.
+    if mode not in _SLIDESHOW_MODES:
+        logger.warning("Неизвестный режим слайдшоу в кнопке: %r", mode)
+        await callback.answer()
+        return
     if not await _allowed(callback.bot, callback.message.chat, callback.from_user.id):
         await callback.answer(t("cfg_admin_only", lang), show_alert=True)
         return
@@ -217,6 +233,12 @@ async def toggle_currency(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
     chat_id = callback.message.chat.id
     code = callback.data.split(":", 2)[2]
+    # Только валюта, которую мы умеем: неизвестный код доходил до конвертера и падал
+    # там с KeyError — у человека это выглядело как «бот сломался на конвертере».
+    if code not in CURRENCIES:
+        logger.warning("Неизвестная валюта в кнопке: %r", code)
+        await callback.answer()
+        return
     if not await _allowed(callback.bot, callback.message.chat, callback.from_user.id):
         await callback.answer(t("cfg_admin_only", lang), show_alert=True)
         return
