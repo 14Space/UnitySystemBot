@@ -3,8 +3,13 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from bot.utils.i18n import t
 
+from bot.config import FREE_QUALITY_LIMIT as FREE_LIMIT
+
 PAGE_SIZE = 8
-from bot.config import FREE_QUALITY_LIMIT as FREE_LIMIT  # выше — премиум-заглушка
+# Качества, которые сам HDRezka отдаёт только по своей подписке: показывать их нельзя,
+# скачать всё равно не получится. Константа жила между двумя функциями и пропала вместе
+# с уборкой мёртвого кода — из-за этого клавиатура качеств падала бы при показе.
+_HDREZKA_PREMIUM_Q = ("ultra", "2k", "4k")
 
 
 def build_season_keyboard(sid: str, seasons: list, lang: str = "ru") -> InlineKeyboardMarkup:

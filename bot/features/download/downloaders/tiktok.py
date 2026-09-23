@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import subprocess
@@ -8,6 +9,8 @@ import requests
 from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
 from bot.utils import media_names, net
 from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
+
+logger = logging.getLogger(__name__)
 
 try:
     from bot.config import SLIDE_SEC, SLIDE_AUDIO_FADE_SEC

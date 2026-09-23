@@ -10,6 +10,7 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
+from bot.config import GROUP_TYPES
 from bot.database import SessionLocal
 from bot.database.repository import (
     get_disabled_features, set_feature, get_slideshow_mode, set_slideshow_mode,
@@ -165,7 +166,6 @@ async def cfg_noop(callback: CallbackQuery):
 @router.callback_query(F.data == "cfg:done")
 async def cfg_done(callback: CallbackQuery):
     lang = lang_of(callback.from_user)
-    chat_id = callback.message.chat.id
     if not await _allowed(callback.bot, callback.message.chat, callback.from_user.id):
         await callback.answer(t("cfg_admin_only", lang), show_alert=True)
         return
