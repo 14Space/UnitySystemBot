@@ -159,3 +159,28 @@ def test_frequent_requests_reuse_connections():
     assert net.session() is net.session()
     assert "net.session()" in _src("bot/features/common/cryptopay.py")
     assert "net.session()" in _src("bot/features/download/downloaders/tiktok.py")
+
+
+# --- Запуск не должен падать из-за косметики -----------------------------
+
+def test_startup_survives_a_cosmetic_failure():
+    """23.09.2026 бот не поднимался из-за НАДПИСИ в меню: после череды перезапусков
+    Telegram включил ограничение частоты на смену списка команд («Retry in 456
+    seconds»), ошибка ушла наверх и уронила запуск. Меню — косметика, и всё, что его
+    ставит, обязано быть в try."""
+    unguarded = []
+    for name in ("_setup_commands", "_setup_profile"):
+        node = _func("bot/main.py", name)
+        for call in ast.walk(node):
+            if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)):
+                continue
+            if not call.func.attr.startswith("set_my_"):
+                continue
+            # Ищем try, внутри которого этот вызов лежит.
+            inside = any(
+                any(call is c for c in ast.walk(stmt))
+                for t in ast.walk(node) if isinstance(t, ast.Try)
+                for stmt in t.body)
+            if not inside:
+                unguarded.append(f"{name}:{call.lineno} {call.func.attr}")
+    assert not unguarded, "запуск снова может упасть из-за меню: " + ", ".join(unguarded)

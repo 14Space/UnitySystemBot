@@ -113,14 +113,25 @@ async def _setup_commands(bot: Bot):
         BotCommand(command="ai", description="Спросить ИИ"),
         BotCommand(command="premium", description="Купить Premium ✨"),
     ]
-    await bot.set_my_commands(common, scope=BotCommandScopeDefault())
     # /setconfig в группах видят только их администраторы, а в личке — сам пользователь
     # (это его чат, там команда настраивает личные предпочтения).
     setconfig_cmd = BotCommand(command="setconfig", description="Настроить функции")
-    await bot.set_my_commands(common + [setconfig_cmd],
-                              scope=BotCommandScopeAllChatAdministrators())
-    await bot.set_my_commands(common + [setconfig_cmd],
-                              scope=BotCommandScopeAllPrivateChats())
+    scopes = (
+        (common, BotCommandScopeDefault()),
+        (common + [setconfig_cmd], BotCommandScopeAllChatAdministrators()),
+        (common + [setconfig_cmd], BotCommandScopeAllPrivateChats()),
+    )
+    # Меню команд — вещь КОСМЕТИЧЕСКАЯ, и падать из-за него нельзя. 23.09.2026 бот
+    # попал в перезапуски, на каждом старте переставлял команды, и Telegram включил
+    # ограничение частоты: «Retry in 456 seconds». Ошибка уходила наверх и роняла
+    # запуск — то есть бот не работал вообще из-за надписи в меню. Теперь список
+    # команд не выставился — просто останется прежним, а бот поднимется.
+    for cmds, scope in scopes:
+        try:
+            await bot.set_my_commands(cmds, scope=scope)
+        except Exception as e:
+            logger.warning("Не обновил меню команд (%s): %s",
+                           type(scope).__name__, e)
     if ADMIN_ID:
         admin_cmds = common + [
             BotCommand(command="statistics", description="Статистика"),
