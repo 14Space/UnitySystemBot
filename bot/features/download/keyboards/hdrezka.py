@@ -3,7 +3,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from bot.utils.i18n import t
 
-from bot.config import FREE_QUALITY_LIMIT as FREE_LIMIT
+from bot.config import FREE_QUALITY_LIMIT
 
 PAGE_SIZE = 8
 # Качества, которые сам HDRezka отдаёт только по своей подписке: показывать их нельзя,
@@ -68,7 +68,7 @@ def build_hdrezka_quality_keyboard(sid: str, tid: int, qualities: list, is_premi
             continue  # недоступно без подписки HDRezka — не показываем
         m = re.search(r"(\d+)", q)
         height = int(m.group(1)) if m else 0
-        if height > FREE_LIMIT and not is_premium:
+        if height > FREE_QUALITY_LIMIT and not is_premium:
             rows.append([InlineKeyboardButton(text=f"🔒 {q}", callback_data="buy_premium")])
         else:
             rows.append([InlineKeyboardButton(text=q, callback_data=f"hrq:{sid}:{tid}:{i}")])

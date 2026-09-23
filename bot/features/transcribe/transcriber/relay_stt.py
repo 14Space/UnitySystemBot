@@ -24,6 +24,7 @@ import re
 import subprocess
 import uuid
 
+from bot.utils import ffmpeg, files
 from bot.config import (
     DOWNLOADS_DIR,
     RELAY_STT_BOT, RELAY_STT_SESSION, RELAY_STT_TIMEOUT,
@@ -149,13 +150,11 @@ def _as_voice(path: str) -> tuple[str, bool]:
     """
     if path.lower().endswith((".ogg", ".oga", ".opus")):
         return path, False
-    from bot.features.transcribe.audio_prep import ffmpeg_bin
-
     out = os.path.join(DOWNLOADS_DIR, f"relay_{uuid.uuid4().hex[:8]}.ogg")
-    cmd = [ffmpeg_bin(), "-y", "-i", path, "-ac", "1", "-ar", "48000",
+    cmd = ["ffmpeg", "-y", "-i", path, "-ac", "1", "-ar", "48000",
            "-c:a", "libopus", "-b:a", "32k", out]
     try:
-        res = subprocess.run(cmd, capture_output=True, timeout=_CONVERT_TIMEOUT)
+        res = ffmpeg.run(cmd, timeout=_CONVERT_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as e:
         logger.info("Не собрал голосовое для бота-расшифровщика (%s) — шлю как есть",
                     type(e).__name__)
@@ -169,10 +168,7 @@ def _as_voice(path: str) -> tuple[str, bool]:
 
 
 def _drop(path: str) -> None:
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+    files.remove(path)
 
 
 def _as_result(text: str) -> str:

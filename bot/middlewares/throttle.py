@@ -16,14 +16,15 @@ THROTTLE_LIMIT запросов, остальные стоят в очереди
 голосовых заставил бы ждать всех остальных.
 """
 import asyncio
-import os
 import time
 from typing import Callable, Any
 
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message
 
-from bot.config import THROTTLE_LIMIT, THROTTLE_QUEUE_MAX
+from bot.config import (
+    THROTTLE_LIMIT, THROTTLE_QUEUE_MAX, CLICK_WINDOW_SECONDS, CLICK_MAX_PER_WINDOW,
+)
 from bot.middlewares.routing import is_request as _is_request
 from bot.utils.i18n import t, lang_of
 
@@ -83,8 +84,8 @@ class ThrottleMiddleware(BaseMiddleware):
 # крипто-счёта: удерживая палец на кнопке, можно было наделать десятки запросов.
 # Здесь не очередь, а именно частота: нажатие — вещь мгновенная, и «подожди секунду»
 # тут честный ответ.
-_CLICK_WINDOW = float(os.getenv("CLICK_WINDOW_SECONDS", "5"))
-_CLICK_MAX = int(os.getenv("CLICK_MAX_PER_WINDOW", "10"))
+_CLICK_WINDOW = CLICK_WINDOW_SECONDS
+_CLICK_MAX = CLICK_MAX_PER_WINDOW
 
 
 class CallbackThrottleMiddleware(BaseMiddleware):

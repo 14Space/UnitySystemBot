@@ -8,18 +8,10 @@
 """
 import json
 import logging
-import os
-import subprocess
 
-from bot.features.download.downloaders.ytdlp_wrapper import FFMPEG_DIR
-from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
+from bot.utils import ffmpeg
 
 logger = logging.getLogger(__name__)
-
-
-def _tool(name: str) -> str:
-    """Полный путь к ffmpeg/ffprobe, если знаем папку, иначе имя из PATH."""
-    return os.path.join(FFMPEG_DIR, name) if FFMPEG_DIR else name
 
 
 def probe_video(path: str) -> dict:
@@ -29,14 +21,14 @@ def probe_video(path: str) -> dict:
     """
     result = {"width": 0, "height": 0, "duration": 0}
     try:
-        proc = subprocess.run(
+        proc = ffmpeg.run(
             [
-                _tool("ffprobe"), "-v", "error",
+                "ffprobe", "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=width,height:format=duration",
                 "-of", "json", path,
             ],
-            capture_output=True, text=True, timeout=FFPROBE_TIMEOUT,
+            text=True,
         )
         data = json.loads(proc.stdout or "{}")
         stream = (data.get("streams") or [{}])[0]
@@ -55,14 +47,13 @@ def make_video_thumbnail(path: str, max_size: int = 320) -> bytes | None:
     """
     try:
         scale = f"scale='if(gt(iw,ih),{max_size},-2)':'if(gt(iw,ih),-2,{max_size})'"
-        proc = subprocess.run(
+        proc = ffmpeg.run(
             [
-                _tool("ffmpeg"), "-v", "error",
+                "ffmpeg", "-v", "error",
                 "-ss", "1", "-i", path,
                 "-frames:v", "1", "-vf", scale,
                 "-f", "image2", "-vcodec", "mjpeg", "-",
             ],
-            capture_output=True, timeout=FFMPEG_TIMEOUT,
         )
         data = proc.stdout
         return data if data else None

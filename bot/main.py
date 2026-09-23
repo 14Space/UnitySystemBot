@@ -149,12 +149,15 @@ async def _setup_commands(bot: Bot):
 async def _setup_profile(bot: Bot):
     """Ставит короткое описание (About) и описание (экран до Start) по языкам ru/uk/en,
     плюс английский по умолчанию для остальных языков."""
+    # Одной строкой, без трассировки: типовая причина здесь — то же ограничение
+    # частоты у Telegram, что и у меню команд. Полная простыня стека в логе на каждый
+    # язык только мешает искать настоящие ошибки.
     for lang in ("ru", "uk", "en"):
         try:
             await bot.set_my_short_description(short_description=t("about", lang), language_code=lang)
             await bot.set_my_description(description=t("desc", lang), language_code=lang)
-        except Exception:
-            logger.exception("Не задал профиль (%s)", lang)
+        except Exception as e:
+            logger.warning("Не обновил профиль (%s): %s", lang, e)
     try:  # дефолт для остальных языков — английский
         await bot.set_my_short_description(short_description=t("about", "en"))
         await bot.set_my_description(description=t("desc", "en"))
@@ -169,7 +172,7 @@ async def _restart_for_ytdlp(bot: Bot, old: str, new: str):
     версия сохранится (пересборка образа её бы затёрла). Сначала дожидаемся конца
     текущих скачиваний: обрывать их посреди работы нельзя.
     """
-    from bot.features.download.link import ACTIVE_DOWNLOADS
+    from bot.features.download.job import ACTIVE_DOWNLOADS
     for _ in range(30):                 # ждём до 15 минут, дальше уходим в любом случае
         if not ACTIVE_DOWNLOADS:
             break

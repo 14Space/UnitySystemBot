@@ -1,10 +1,11 @@
 import logging
 from io import BytesIO
-import requests
 from PIL import Image
 from mutagen.id3 import ID3, APIC, TIT2, TPE1
 from mutagen.id3 import error as ID3Error
 from mutagen.mp3 import MP3
+
+from bot.utils import net
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ def _fetch_resized(cover_url: str, max_size: int) -> bytes | None:
     if not cover_url:
         return None
     try:
-        data = requests.get(cover_url, timeout=15).content
+        data = net.fetch_bytes(cover_url, timeout=15)
         img = Image.open(BytesIO(data)).convert("RGB")
         img.thumbnail((max_size, max_size))
         out = BytesIO()
@@ -61,7 +62,7 @@ def get_soundcloud_cover(url: str) -> str | None:
     """Достаёт обложку трека SoundCloud через публичный oEmbed (без авторизации).
     Нужно для DRM-треков, которые мы качаем поиском с YouTube."""
     try:
-        r = requests.get(
+        r = net.session().get(
             "https://soundcloud.com/oembed",
             params={"url": url, "format": "json"},
             timeout=10,

@@ -312,3 +312,50 @@ WHISPER_PROBE_MIN_HITS = int(os.getenv("WHISPER_PROBE_MIN_HITS", "3"))
 # легче оригинала, но картинка ещё чёткая; 480/360 — быстрее, но уже мыло. Замер на
 # YouTube Shorts: скачивание 720p ~2.8-4.9с, 360p ~1.9-2.6с.
 SHORTS_CAP_HEIGHT = int(os.getenv("SHORTS_CAP_HEIGHT", "720"))
+
+# --- Раньше эти настройки модули читали сами, мимо этого файла ------------------
+# Из-за этого одно и то же значение жило в двух местах (DOWNLOADS_DIR, ADMIN_TZ, прокси,
+# куки YouTube) и по-тихому расходилось, стоило поменять его только в одном. Теперь
+# любая настройка из .env читается здесь и только здесь.
+
+# yt-dlp. POT-провайдер («выдаватель пропусков») – контейнер bgutil-ytdlp-pot-provider:
+# без его PO-токенов YouTube отдаёт 403 на скачивание. В docker бот ходит к нему по
+# имени сервиса; на хосте – POT_PROVIDER_URL=http://localhost:4416.
+POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://bgutil-provider:4416")
+# Сколько кусков ролика качаем разом (см. BASE_OPTS в ytdlp_wrapper).
+YTDLP_CONCURRENT_FRAGMENTS = int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "4"))
+
+# Предел времени на ffmpeg и ffprobe (см. bot/utils/ffmpeg.py). С запасом: перекодирование
+# идёт в разы быстрее реального времени, получаса хватает и фильму с HDRezka. Смысл не
+# угадать точно, а сделать из «навсегда» «не дольше получаса».
+FFMPEG_TIMEOUT = int(os.getenv("FFMPEG_TIMEOUT", str(30 * 60)))
+FFPROBE_TIMEOUT = int(os.getenv("FFPROBE_TIMEOUT", "60"))
+
+# Зеркала HDRezka. Список дополняется через .env без пересборки образа: площадка
+# меняет зеркала чаще, чем мы выпускаем версии.
+HDREZKA_DOMAINS = tuple(
+    d.strip().lower() for d in os.getenv(
+        "HDREZKA_DOMAINS",
+        "rezka.ag,hdrezka.me,hdrezka.ag,hdrezka.website,rezka.cc").split(",") if d.strip())
+
+# Очереди загрузок (см. bot/utils/limits.py). Сколько задача может держать слот, прежде
+# чем счесть её потерянной, и сколько места на диске нужно под тяжёлую загрузку.
+MAX_HOLD_SECONDS = int(os.getenv("MAX_HOLD_SECONDS", str(40 * 60)))
+MIN_FREE_BYTES = int(os.getenv("MIN_FREE_BYTES", str(4 * 1024 ** 3)))
+# Как часто разрешаем править сообщение с полоской загрузки, секунд.
+PROGRESS_MIN_INTERVAL = float(os.getenv("PROGRESS_MIN_INTERVAL", "3"))
+
+# Частота нажатий на кнопки от одного человека (см. middlewares/throttle.py).
+CLICK_WINDOW_SECONDS = float(os.getenv("CLICK_WINDOW_SECONDS", "5"))
+CLICK_MAX_PER_WINDOW = int(os.getenv("CLICK_MAX_PER_WINDOW", "10"))
+
+# «Пульс» бота для проверки живости контейнера (см. bot/utils/heartbeat.py).
+HEARTBEAT_FILE = os.getenv("HEARTBEAT_FILE", "/tmp/unitysystem-heartbeat")
+HEARTBEAT_STALE_AFTER = int(os.getenv("HEARTBEAT_STALE_AFTER", "300"))
+
+# Проверка функционала (см. features/common/healthcheck.py): потолок времени на пункт,
+# сколько пунктов гоняем разом и пауза перед повтором упавшего. Тестовые ссылки
+# HC_URL_<КЛЮЧ> читает сама проверка: это семейство переменных, а не одна настройка.
+HEALTHCHECK_TIMEOUT = int(os.getenv("HEALTHCHECK_TIMEOUT", "120"))
+HEALTHCHECK_CONCURRENCY = int(os.getenv("HEALTHCHECK_CONCURRENCY", "4"))
+HEALTHCHECK_RETRY_DELAY = int(os.getenv("HEALTHCHECK_RETRY_DELAY", "8"))

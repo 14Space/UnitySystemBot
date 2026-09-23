@@ -1,22 +1,14 @@
 import logging
 import os
 import re
-import subprocess
 import threading
 import time
 import uuid
 import requests
-from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
-from bot.utils import media_names, net
-from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
+from bot.config import DOWNLOADS_DIR, SLIDE_SEC, SLIDE_AUDIO_FADE_SEC
+from bot.utils import ffmpeg, files, media_names, net
 
 logger = logging.getLogger(__name__)
-
-try:
-    from bot.config import SLIDE_SEC, SLIDE_AUDIO_FADE_SEC
-except Exception:  # worker может запускаться отдельно от бота
-    SLIDE_SEC = float(os.getenv("SLIDE_SEC", "3.0"))
-    SLIDE_AUDIO_FADE_SEC = float(os.getenv("SLIDE_AUDIO_FADE_SEC", "1.5"))
 
 # Публичный API без авторизации: отдаёт видео без водяного знака и слайдшоу.
 # yt-dlp web-парсинг TikTok нестабилен (анти-бот), поэтому идём через него.
@@ -26,28 +18,16 @@ API = "https://www.tikwm.com/api/"
 BACKUP_API = "https://lovetik.com/api/ajax/search"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# Прокси (PROXY_URL из .env) — тот же, что у YouTube и PornHub. Нужен потому, что
-# tikwm режет дата-центровые адреса: с сервера во Франции API отдаёт ПУСТОЙ ответ
-# (падает .json()), а через домашний адрес тот же запрос отвечает нормально. Это не
-# отказ сервиса, а блок по IP, поэтому лечится именно прокси.
-# Логика как у YouTube: сперва напрямую (дома и на чистом IP прокси не нужен и только
-# замедлил бы), при отказе — повтор через прокси.
-_PROXY = os.getenv("PROXY_URL", "")
-_PROXY_FIRST = os.getenv("PROXY_FIRST", "false").lower() in ("1", "true", "yes")
-_PROXIES = {"http": _PROXY, "https": _PROXY} if _PROXY else None
+# Прокси (PROXY_URL) — тот же, что у YouTube и PornHub. Нужен потому, что tikwm режет
+# дата-центровые адреса: с сервера во Франции API отдаёт ПУСТОЙ ответ (падает .json()),
+# а через домашний адрес тот же запрос отвечает нормально. Это не отказ сервиса, а блок
+# по IP, поэтому лечится именно прокси. Порядок попыток — общий, см. net.with_proxy.
 
 
 def _via(fn, *args, **kwargs):
-    """Сетевой запрос с откатом на прокси: сначала напрямую, при ошибке — через прокси.
-    При PROXY_FIRST прямую попытку пропускаем. Прокси не задан — обычный вызов."""
-    if _PROXY_FIRST and _PROXIES:
-        return fn(*args, proxies=_PROXIES, **kwargs)
-    try:
-        return fn(*args, **kwargs)
-    except Exception:
-        if not _PROXIES:
-            raise
-        return fn(*args, proxies=_PROXIES, **kwargs)
+    """Сетевой запрос с откатом на прокси: сначала напрямую, при ошибке — через прокси."""
+    return net.with_proxy(
+        lambda proxy: fn(*args, proxies=net.as_requests(proxy), **kwargs), net.proxy_for())
 
 
 # Номер поста приходит от чужого сервиса (tikwm) и идёт прямо в ИМЯ ФАЙЛА. У настоящего
@@ -77,17 +57,11 @@ def _via_json(fn, *args, **kwargs):
     ПУСТЫМ телом с кодом 200. Сам запрос при этом успешен, падает только .json(). Если
     разбирать снаружи, прямая попытка будет считаться удачной, и до прокси дело никогда
     не дойдёт — ровно тот случай, ради которого прокси здесь и появился.
-
-    При PROXY_FIRST прямую попытку пропускаем совсем.
     """
-    if _PROXY_FIRST and _PROXIES:
-        return fn(*args, proxies=_PROXIES, **kwargs).json()
-    try:
-        return fn(*args, **kwargs).json()
-    except Exception:
-        if not _PROXIES:
-            raise
-        return fn(*args, proxies=_PROXIES, **kwargs).json()
+    return net.with_proxy(
+        lambda proxy: fn(*args, proxies=net.as_requests(proxy), **kwargs).json(),
+        net.proxy_for())
+
 
 # Короткий кэш ответов API: {url: (время, результат)}. Нужен, чтобы один и тот же
 # пост в рамках одного запроса (контент + аудиодорожка) не запрашивался дважды.
@@ -105,15 +79,8 @@ def _abs(url: str) -> str:
     return url
 
 
-def _ffbin(name: str) -> str:
-    return os.path.join(FFMPEG_DIR, name) if FFMPEG_DIR else name
-
-
 def _safe_remove(path: str):
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+    files.remove(path)
 
 
 def download_music(url: str) -> tuple[str, str] | None:
@@ -132,11 +99,8 @@ def download_music(url: str) -> tuple[str, str] | None:
     _fetch_file(music_url, raw, timeout=60)
     # Приводим к чистому mp3 (звук из tikwm бывает в контейнере m4a/без тегов).
     out = os.path.join(DOWNLOADS_DIR, f"{_safe_id(info['id'])}_{tag}_track.mp3")
-    subprocess.run(
-        [_ffbin("ffmpeg"), "-y", "-i", raw, "-vn", "-acodec", "libmp3lame",
-         "-b:a", "192k", out],
-        capture_output=True, timeout=FFMPEG_TIMEOUT,
-    )
+    ffmpeg.run(["ffmpeg", "-y", "-i", raw, "-vn", "-acodec", "libmp3lame",
+                "-b:a", "192k", out])
     _safe_remove(raw)
     if not (os.path.exists(out) and os.path.getsize(out) > 0):
         return None
@@ -161,10 +125,10 @@ def download_music(url: str) -> tuple[str, str] | None:
 def _media_duration(path: str) -> float:
     """Длительность медиафайла (аудио или видео) в секундах через ffprobe."""
     try:
-        out = subprocess.run(
-            [_ffbin("ffprobe"), "-v", "error", "-show_entries", "format=duration",
+        out = ffmpeg.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, timeout=FFPROBE_TIMEOUT,
+            text=True,
         )
         return float(out.stdout.strip())
     except Exception:
@@ -209,7 +173,7 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
 
     # Каждая картинка — отдельный вход (показывается per секунд), масштабируется
     # независимо к холсту 1080x1920, потом всё склеивается concat-фильтром.
-    cmd = [_ffbin("ffmpeg"), "-y"]
+    cmd = ["ffmpeg", "-y"]
     for img in images:
         cmd += ["-loop", "1", "-t", f"{per:.3f}", "-i", img]
     if single_full_audio:
@@ -241,8 +205,7 @@ def _build_slideshow(images: list[str], audio: str, out_path: str) -> str:
         "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
         "-shortest", out_path,
     ]
-    subprocess.run(cmd, capture_output=True,
-                         timeout=FFMPEG_TIMEOUT)
+    ffmpeg.run(cmd)
     return out_path
 
 
@@ -260,7 +223,7 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
     if single_full_audio:
         still_sec = _media_duration(audio) or still_sec
 
-    cmd = [_ffbin("ffmpeg"), "-y"]
+    cmd = ["ffmpeg", "-y"]
     video_len = 0.0
     for path, is_video in items:
         if is_video:
@@ -301,8 +264,7 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
         "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
         "-shortest", out_path,
     ]
-    subprocess.run(cmd, capture_output=True,
-                         timeout=FFMPEG_TIMEOUT)
+    ffmpeg.run(cmd)
     return out_path
 
 
@@ -353,8 +315,7 @@ def _resolve_short(url: str) -> str:
 
 def _is_tiktok_url(url: str) -> bool:
     """Ссылка действительно ведёт на TikTok (хозяин адреса, а не «есть в строке»)."""
-    from bot.utils.platform_detector import Platform, detect_platform
-    return detect_platform(url) == Platform.TIKTOK
+    return net.url_on(url, "tiktok.com")
 
 
 def _api_call(url: str, hd: bool = True) -> dict:

@@ -23,16 +23,18 @@ import os
 import threading
 import time
 
+from bot.config import HEARTBEAT_FILE, HEARTBEAT_STALE_AFTER
+
 logger = logging.getLogger(__name__)
 
 # Файл с отметкой. В контейнере это временная папка, которая живёт ровно столько же,
 # сколько сам контейнер, — то есть перезапуск всегда начинается с чистого листа.
-PATH = os.getenv("HEARTBEAT_FILE", "/tmp/unitysystem-heartbeat")
+PATH = HEARTBEAT_FILE
 
 # Как часто основной цикл ставит отметку.
 BEAT_EVERY = 30
 # Сколько тишины считаем зависанием.
-STALE_AFTER = int(os.getenv("HEARTBEAT_STALE_AFTER", "300"))
+STALE_AFTER = HEARTBEAT_STALE_AFTER
 # Как часто сторож смотрит на отметку.
 _WATCH_EVERY = 60
 

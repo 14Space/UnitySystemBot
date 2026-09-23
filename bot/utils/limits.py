@@ -1,9 +1,9 @@
 import asyncio
 import logging
-import os
 import shutil
 import time
 
+from bot import config
 from bot.utils.i18n import t
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ TRANSCRIBE_BOOST = 2   # модель общая, не дублируется; �
 # не отпустили (сообщение о прогрессе не отправилось, а освобождение стояло в finally
 # ниже по коду), и все лёгкие загрузки встали в очередь за мёртвым держателем. Ждали
 # они молча – со стороны бот выглядел живым и просто не отвечал.
-MAX_HOLD_SECONDS = int(os.getenv("MAX_HOLD_SECONDS", str(40 * 60)))
+MAX_HOLD_SECONDS = config.MAX_HOLD_SECONDS
 
 # Предел размера файла (лимит локального Telegram Bot API — 2 ГБ, берём с запасом).
 MAX_FILE_BYTES = 1_950_000_000
@@ -53,7 +53,7 @@ class NoDiskSpaceError(Exception):
 # Фильм на HDRezka спокойно весит полтора гигабайта, плюс yt-dlp держит видео и звук
 # отдельными файлами и склеивает их третьим — пик занимает примерно вдвое больше
 # итогового размера.
-MIN_FREE_BYTES = int(os.getenv("MIN_FREE_BYTES", str(4 * 1024 ** 3)))
+MIN_FREE_BYTES = config.MIN_FREE_BYTES
 
 
 def free_space(path: str) -> int:
@@ -187,8 +187,11 @@ async def acquire_or_tell(category: str, message, lang: str = "ru") -> int:
 
     Раньше ожидание было молчаливым, и «бот не отвечает» выглядело одинаково и когда
     он занят, и когда сломан. Теперь человек видит, что его услышали.
+
+    message=None – говорить некому (загрузка по кнопке, у которой нет своего
+    сообщения): просто ждём слот.
     """
-    if not queue_is_full(category):
+    if message is None or not queue_is_full(category):
         return await acquire(category)
     notice = None
     try:

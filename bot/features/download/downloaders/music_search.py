@@ -56,7 +56,7 @@ def _search_youtube(artist: str, title: str, duration: int) -> str | None:
     """Умный поиск на YouTube: приоритет официальному аудио исполнителя."""
     # Через общий механизм прокси: с дата-центрового IP YouTube отвечает на поиск
     # бот-чеком, и без этого Spotify-треки не находились вовсе (см. _needs_proxy).
-    from bot.features.download.downloaders.ytdlp_wrapper import _with_music_fallback
+    from bot.features.download.downloaders.ytdlp_wrapper import via_proxy
 
     term = f"ytsearch8:{artist} {title}"
 
@@ -66,7 +66,7 @@ def _search_youtube(artist: str, title: str, duration: int) -> str | None:
             return ydl.extract_info(term, download=False)
 
     try:
-        res = _with_music_fallback(term, _op)
+        res = via_proxy(term, _op)
     except Exception:
         logger.warning("YouTube поиск не удался", exc_info=True)
         return None

@@ -33,7 +33,8 @@ class FakeBrowser:
 
 
 def _render(monkeypatch, proxy, cookies):
-    monkeypatch.setattr(instagram, "INSTAGRAM_PROXY", proxy)
+    monkeypatch.setattr(instagram.net, "INSTAGRAM_PROXY", proxy)
+    monkeypatch.setattr(instagram.net, "PROXY_URL", "")
     monkeypatch.setattr(instagram, "_pw_cookies", lambda: cookies)
     browser = FakeBrowser()
     try:

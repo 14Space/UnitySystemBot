@@ -16,11 +16,13 @@ import uuid
 from aiogram import Router, F
 from aiogram.types import Message
 
+from bot.utils import files
+from bot.utils.tg_messages import safe_edit
 from bot.config import (
     DOWNLOADS_DIR, TELEGRAM_LOCAL_API_URL, TELEGRAM_LOCAL_FILES_DIR,
     TELEGRAM_BOT_API_ROOT, TELEGRAM_API_CONTAINER, MAX_VOICE_SECONDS,
 )
-from bot.utils import limits, traffic, chat_action
+from bot.utils import limits, chat_action
 from bot.utils.i18n import t, lang_of
 from bot.features.common import alerts
 from bot.features.transcribe.transcriber import transcribe_audio
@@ -113,17 +115,17 @@ async def _handle(message: Message, file_id: str, suffix: str):
         # Если правка не прошла (человек удалил своё голосовое, у бота забрали права),
         # текст НЕ теряем: отправляем отдельным сообщением. Раньше он в этом случае
         # исчезал молча, а «Расшифровываю…» оставалось висеть.
-        if not await _safe_edit(status, _quoted(parts[0]), parse_mode="HTML"):
+        if not await safe_edit(status, _quoted(parts[0]), parse_mode="HTML"):
             await message.reply(_quoted(parts[0]), parse_mode="HTML")
         for part in parts[1:]:
             await message.reply(_quoted(part), parse_mode="HTML")
     except Exception as e:
         logger.exception("Transcription failed")
         alerts.note_failure(e)            # раньше сбои расшифровки молчали в алертах
-        await _safe_edit(status, t("transcribe_nothing", lang))
+        await safe_edit(status, t("transcribe_nothing", lang))
     finally:
         await limits.release(limits.TRANSCRIBE, slot)
-        _cleanup(file_path)
+        files.remove(file_path, record=True)
 
 
 async def _fetch_file(message: Message, file_id: str, dest: str):
@@ -254,24 +256,3 @@ async def handle_video_note(message: Message):
                               minutes=MAX_VOICE_SECONDS // 60))
         return
     await _handle(message, message.video_note.file_id, ".mp4")
-
-
-async def _safe_edit(msg, text: str, parse_mode: str | None = None) -> bool:
-    """Правит сообщение. False — не вышло (сообщение удалили, отобрали права и т.п.),
-    и тогда вызывающий решает, как доставить текст другим путём."""
-    try:
-        await msg.edit_text(text, parse_mode=parse_mode)
-        return True
-    except Exception:
-        logger.info("Не смог отредактировать сообщение — отдам текст отдельно",
-                    exc_info=True)
-        return False
-
-
-def _cleanup(file_path: str):
-    try:
-        if file_path and os.path.exists(file_path):
-            traffic.record(file_path)
-            os.remove(file_path)
-    except Exception:
-        logger.warning("Не смог удалить %s", file_path)

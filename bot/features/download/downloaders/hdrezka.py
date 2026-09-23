@@ -3,14 +3,14 @@ import logging
 import os
 import re
 import uuid
-import subprocess
 import time
 import requests
 import HdRezkaApi.api as _hdrezka_api
 from HdRezkaApi import HdRezkaApi
-from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR, FFMPEG_DIR
+from bot.config import DOWNLOADS_DIR
 from bot.features.download.downloaders import hdrezka_gate
-from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
+from bot.utils import ffmpeg, files, net
+from bot.utils.limits import FileTooLargeError, MAX_FILE_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -165,29 +165,12 @@ def stream_qualities(stream) -> list[str]:
 
 
 def _download_file(url: str, path: str, total: int = 0, progress_callback=None):
-    downloaded = 0
-    last = -1
-    with requests.get(url, stream=True, timeout=180) as resp:
-        resp.raise_for_status()
-        total = total or int(resp.headers.get("Content-Length", 0))
-        with open(path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1 << 16):
-                if not chunk:
-                    continue
-                f.write(chunk)
-                if progress_callback and total:
-                    downloaded += len(chunk)
-                    percent = round(downloaded / total * 100)
-                    if percent >= last + 5:  # шаг 5%, чтобы не спамить
-                        last = percent
-                        progress_callback(percent)
+    """Потоком на диск, с пределом размера и полоской – общим загрузчиком (net)."""
+    net.fetch_to_file(url, path, timeout=180, total=total, progress=progress_callback)
 
 
 def _safe_rm(path: str):
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+    files.remove(path)
 
 
 # Код языка субтитров: буквы, цифры и дефис, не длиннее десяти знаков.
@@ -196,8 +179,7 @@ _SUB_CODE_RE = re.compile(r"^[A-Za-z0-9-]{1,10}$")
 
 def _mux_subtitles(video: str, subs: list, out_path: str) -> bool:
     """Вшивает субтитры мягкой дорожкой (mov_text) — без перекодирования видео."""
-    ffmpeg = os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
-    cmd = [ffmpeg, "-y", "-i", video]
+    cmd = ["ffmpeg", "-y", "-i", video]
     for _, sub_path in subs:
         cmd += ["-i", sub_path]
     cmd += ["-map", "0"]
@@ -208,14 +190,8 @@ def _mux_subtitles(video: str, subs: list, out_path: str) -> bool:
         cmd += [f"-metadata:s:s:{idx}", f"language={_LANG.get(code, code)}"]
     # faststart — moov-атом в начало файла, иначе на iOS видео стримится чёрным экраном
     cmd += ["-movflags", "+faststart", out_path]
-    res = subprocess.run(cmd, capture_output=True,
-                         timeout=FFMPEG_TIMEOUT)
+    res = ffmpeg.run(cmd)
     return res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
-
-
-# Предел размера — из одного места на весь проект (bot/utils/limits.py): здесь была
-# вторая копия того же числа, и правка одной из них молча расходилась с другой.
-from bot.utils.limits import MAX_FILE_BYTES
 
 
 def download_stream(stream, quality: str, name="video", season=None, episode=None,
@@ -225,14 +201,16 @@ def download_stream(stream, quality: str, name="video", season=None, episode=Non
     value = stream.videos[quality]
     video_url = value[0] if isinstance(value, (list, tuple)) else value
 
-    # Заранее узнаём размер — чтобы не качать 80% и не упереться в лимит в конце
+    # Заранее узнаём размер — чтобы не качать 80% и не упереться в лимит в конце.
+    # Предел проверяет сам загрузчик (net.fetch_to_file), здесь – только размер для
+    # полоски, если сервер назовёт его на HEAD и промолчит на GET.
     try:
         head = requests.head(video_url, timeout=30, allow_redirects=True)
         size = int(head.headers.get("Content-Length", 0))
     except Exception:
         size = 0
     if size and size > MAX_FILE_BYTES:
-        raise ValueError("file too large")
+        raise FileTooLargeError(f"{size / 1024 ** 3:.1f} ГБ")
 
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     safe = re.sub(r"[^\w]+", "_", name)[:40] or "video"
@@ -286,8 +264,6 @@ def download_stream(stream, quality: str, name="video", season=None, episode=Non
 
 def _faststart(src: str, dst: str) -> bool:
     """Ремукс mp4 с moov-атомом в начале (-c copy, без перекодирования)."""
-    ffmpeg = os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
-    cmd = [ffmpeg, "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", dst]
-    res = subprocess.run(cmd, capture_output=True,
-                         timeout=FFMPEG_TIMEOUT)
+    res = ffmpeg.run(["ffmpeg", "-y", "-i", src, "-c", "copy",
+                      "-movflags", "+faststart", dst])
     return res.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0

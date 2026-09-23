@@ -25,23 +25,27 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from bot.config import ADMIN_LANG, STT_ORDER, CRYPTOPAY_TOKEN
+from bot.config import (
+    ADMIN_LANG, ADMIN_TZ, STT_ORDER, CRYPTOPAY_TOKEN,
+    HEALTHCHECK_TIMEOUT, HEALTHCHECK_CONCURRENCY, HEALTHCHECK_RETRY_DELAY,
+)
+from bot.utils import files, net
 from bot.utils.secrets_filter import mask
 from bot.utils.i18n import t, t_check
 
 logger = logging.getLogger(__name__)
 
 # Часовой пояс админа — для отметки времени последней проверки в /statistics.
-_ADMIN_ZONE = ZoneInfo(os.getenv("ADMIN_TZ", "Europe/Chisinau"))
+_ADMIN_ZONE = ZoneInfo(ADMIN_TZ)
 
 # Потолок времени на одну проверку (сек) — чтобы зависшая площадка не тормозила отчёт.
-_PROBE_TIMEOUT = int(os.getenv("HEALTHCHECK_TIMEOUT", "120"))
+_PROBE_TIMEOUT = HEALTHCHECK_TIMEOUT
 # Сколько проверок гоняем одновременно (чтобы не перегружать сеть и не ловить лимиты).
-_CONCURRENCY = int(os.getenv("HEALTHCHECK_CONCURRENCY", "4"))
+_CONCURRENCY = HEALTHCHECK_CONCURRENCY
 # Пауза перед ПОВТОРНОЙ проверкой упавшего пункта. Внешние сервисы иногда икают (разовая
 # 500/таймаут/анти-бот) — чтобы не слать ложную тревогу, упавший пункт перепроверяем один
 # раз через эту паузу и считаем сбоем, только если он упал дважды подряд.
-_RETRY_DELAY = int(os.getenv("HEALTHCHECK_RETRY_DELAY", "8"))
+_RETRY_DELAY = HEALTHCHECK_RETRY_DELAY
 
 
 def _url(key: str, default: str = "") -> str:
@@ -103,14 +107,8 @@ def _size_of(paths) -> int:
 
 
 def _cleanup(paths):
-    """Удаляет за собой скачанные тестовые файлы."""
-    if isinstance(paths, str):
-        paths = [paths]
-    for p in paths or []:
-        try:
-            os.remove(p)
-        except OSError:
-            pass
+    """Удаляет за собой скачанные тестовые файлы (в статистику трафика не идут)."""
+    files.remove(paths)
 
 
 def _kb(nbytes: int) -> str:
@@ -164,20 +162,18 @@ async def _check_ytdlp():
 
 
 # Браузерный User-Agent: с «python-requests» площадки отвечают иначе и проверка соврёт.
-def _home_proxies(platform_env: str = "") -> dict | None:
+def _home_proxies(platform: str | None = None) -> dict | None:
     """Через что ходить с КУКАМИ — домашний туннель, если он настроен.
 
     Проверка кук обязана идти тем же путём, что и боевой запрос. Иначе она сама себе
     вредит: площадка видит сессию из дата-центра и закрывает её — то есть проверка
     «жива ли сессия» эту сессию и убивает. Каждые два часа и сразу после деплоя.
 
-    platform_env — имя настройки прокси ИМЕННО этой площадки (у Instagram своя,
-    INSTAGRAM_PROXY). Раньше проверка всегда брала общий PROXY_URL: пока значения
-    совпадают, разницы нет, но стоит их развести — и проверка начнёт бить в площадку
-    прямо из дата-центра. Такую ошибку мы уже проходили, второй раз ждать не будем.
+    Поэтому прокси берём у того же net.proxy_for, что и загрузчики: раньше проверка
+    читала переменные окружения сама, и стоило развести INSTAGRAM_PROXY и PROXY_URL,
+    как она и загрузчик пошли бы разными путями.
     """
-    proxy = (os.getenv(platform_env, "") if platform_env else "") or os.getenv("PROXY_URL", "")
-    return {"http": proxy, "https": proxy} if proxy else None
+    return net.as_requests(net.proxy_for(platform))
 
 
 _COOKIE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -216,7 +212,7 @@ async def _check_ig_cookies():
     видно только здесь – и лучше узнать о нём до того, как заметят пользователи.
     Страница настроек аккаунта вошедшему отдаёт 200, а гостя уводит на вход (302).
     """
-    from bot.features.download.downloaders.instagram import INSTAGRAM_COOKIES
+    from bot.config import INSTAGRAM_COOKIES
 
     jar = _load_cookies(INSTAGRAM_COOKIES)
     if jar is None:
@@ -228,7 +224,7 @@ async def _check_ig_cookies():
     def work():
         r = requests.get("https://www.instagram.com/accounts/edit/", cookies=jar,
                          headers={"User-Agent": _COOKIE_UA}, timeout=25,
-                         proxies=_home_proxies("INSTAGRAM_PROXY"),
+                         proxies=_home_proxies("instagram"),
                          allow_redirects=False)
         if r.status_code == 200:
             return True, t("hc_ck_alive", _admin_lang())
@@ -253,7 +249,7 @@ async def _check_yt_cookies():
     """
     from bot.config import YOUTUBE_COOKIES
     from bot.features.download.downloaders.ytdlp_wrapper import (
-        BASE_OPTS, _cookie_opts, _with_music_fallback)
+        BASE_OPTS, _cookie_opts, via_proxy)
 
     if not _load_cookies(YOUTUBE_COOKIES):
         return False, t("hc_ck_missing", _admin_lang(), path=YOUTUBE_COOKIES)
@@ -272,7 +268,7 @@ async def _check_yt_cookies():
 
         try:
             # Тот же путь, что у боевого скачивания: при необходимости через прокси.
-            _with_music_fallback(U_YT_AGE, op)
+            via_proxy(U_YT_AGE, op)
         except Exception as e:
             if "confirm your age" in str(e).lower():
                 return False, t("hc_ck_dead", _admin_lang())
@@ -643,7 +639,7 @@ async def _check_send_path():
     """
     from bot.config import BOT_TOKEN, ADMIN_ID, TELEGRAM_LOCAL_API_URL
     from bot.utils import tg_files
-    from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
+    from bot.config import DOWNLOADS_DIR
 
     if not (BOT_TOKEN and ADMIN_ID):
         return True, "нечем проверить (нет токена или ADMIN_ID)"

@@ -17,7 +17,7 @@ QUALITY_LABELS = {
 ALL_QUALITIES = [144, 240, 360, 480, 720, 1080, 1440, 2160]
 
 # Граница бесплатного качества — 720p. Всё выше = премиум (заглушка).
-from bot.config import FREE_QUALITY_LIMIT as FREE_LIMIT
+from bot.config import FREE_QUALITY_LIMIT
 
 
 def build_quality_keyboard(url_id: str, available: list[int], is_premium: bool = False) -> InlineKeyboardMarkup:
@@ -39,7 +39,7 @@ def build_quality_keyboard(url_id: str, available: list[int], is_premium: bool =
         return builder.as_markup()
 
     # Бесплатное качество: лучшее из доступного, но не выше 720p.
-    free_candidates = [q for q in available if q <= FREE_LIMIT]
+    free_candidates = [q for q in available if q <= FREE_QUALITY_LIMIT]
     free_q = max(free_candidates) if free_candidates else min(available)
 
     builder.button(

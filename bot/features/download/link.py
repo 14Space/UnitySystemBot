@@ -3,7 +3,6 @@ import html
 import json
 import logging
 import os
-import uuid
 from functools import partial
 from urllib.parse import urlparse, unquote
 from aiogram import Router, F, Bot
@@ -12,22 +11,21 @@ from aiogram.types import (
     InputMediaPhoto, InputMediaVideo,
 )
 from bot.utils.platform_detector import detect_platform, Platform, extract_url
-from bot.features.download.keyboards.quality import build_quality_keyboard, FREE_LIMIT
+from bot.features.download.keyboards.quality import build_quality_keyboard
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
-from bot.utils.progress_bar import make_progress_bar, ProgressThrottle
-from bot.config import GROUP_TYPES, SHORTS_CAP_HEIGHT, DOWNLOADS_DIR
-from bot.utils import limits, traffic, tg_files, chat_action
-from bot.utils import inflight
-from bot.utils.cache_guard import send_cached_or_drop
-from bot.utils import media_names
+from bot.config import GROUP_TYPES, SHORTS_CAP_HEIGHT, DOWNLOADS_DIR, FREE_QUALITY_LIMIT
+from bot.utils import limits, tg_files, chat_action, media_names
+from bot.utils.tg_messages import safe_edit, safe_delete
 from bot.features.common import alerts
 from bot.utils.i18n import t, lang_of, t_kind
 from bot.database import SessionLocal
 from bot.database.repository import (
-    get_cached_file_id, save_cached_file_id, increment_download, is_premium,
+    increment_download, is_premium,
     get_slideshow_mode, get_audio_track, get_compress_shorts,
-    save_link_stash, load_link_stash,
 )
+from bot.features.download import job
+from bot.features.download.job import Cache
+from bot.features.download.screens import Screens
 from bot.features.download.downloaders.audio_extract import extract_audio_track
 from bot.features.download.downloaders.ytdlp_wrapper import (
     youtube_search_query,
@@ -52,39 +50,65 @@ from bot.features.download.downloaders.video_meta import probe_video, make_video
 router = Router()
 logger = logging.getLogger(__name__)
 
-# url_id -> {"url": ..., "chat_id": ..., "user_msg_id": ..., "info": ...}
-URL_STORE: dict[str, dict] = {}
 
-# coll_id -> {"kind", "title", "cover", "tracks": [...]}
-# где каждый трек: {"title", "cache_url", "source", "meta", "fallback_query"}
-COLLECTION_STORE: dict[str, dict] = {}
+# --- Экраны с кнопками (см. screens.py) -------------------------------------
 
-# sid -> {"api", "name", "is_series", "translators", "season", "episode",
-#         "chat_id", "user_msg_id", "streams": {tid: stream}}
-HDREZKA_STORE: dict[str, dict] = {}
+def _hdrezka_state(api, info: dict) -> dict:
+    """Что помнит экран HDRezka, кроме общих полей: объект сессии (переиспользуем на
+    всех шагах, чтобы не качать страницу заново), разбор страницы и выбор человека."""
+    return {
+        "api": api,
+        "name": info["name"],
+        "is_series": info["is_series"],
+        "translators": info.get("translators", []),
+        "seasons": info.get("seasons", []),
+        "season": None,
+        "episode": None,
+        "thumbnail": info.get("thumbnail"),
+        "streams": {},  # tid -> объект потока (кэш между «озвучкой» и «качеством»)
+    }
 
-# sid -> {"url", "info"} — данные слайдшоу TikTok между вопросом и выбором формата
-TIKTOK_STORE: dict[str, dict] = {}
 
-# Чтобы хранилища не росли бесконечно (утечка памяти при долгой работе),
-# держим не больше последних N записей — старые выкидываем.
-_STORE_CAP = 300
+async def _restore_hdrezka(saved: dict) -> dict | None:
+    """Экран HDRezka после перезапуска бота: страницу и объект сессии сохранить нельзя,
+    но их можно открыть повторно. Это стоит секунд (анти-бот-проверка и чтение
+    страницы), зато кнопка работает, а не отвечает «ссылка устарела».
+
+    Сезон и серию не восстанавливаем: человек выберет их теми же кнопками. Потоки
+    (streams) тоже – они добываются при выборе озвучки и живут недолго.
+    """
+    try:
+        api = await asyncio.to_thread(hdrezka.open_media, saved["url"])
+        info = await asyncio.to_thread(hdrezka.get_info, api, saved["url"])
+    except Exception as e:
+        logger.warning("HDRezka: не смог восстановить экран", exc_info=True)
+        alerts.note_failure(e)
+        return None
+    return _hdrezka_state(api, info)
 
 
-def _remember(store: dict, key: str, value: dict):
-    store[key] = value
-    if len(store) > _STORE_CAP:
-        for old in list(store.keys())[: len(store) - _STORE_CAP]:
-            store.pop(old, None)
+async def _restore_tiktok(saved: dict) -> dict:
+    """Экран «видео или фото» TikTok: данные поста (ссылки на кадры и звук) живут у
+    TikTok недолго, поэтому мы их не храним, а перезапрашиваем – это один запрос."""
+    info = await asyncio.to_thread(tiktok.fetch_tiktok, saved["url"])
+    return {"info": info, "cache_url": saved.get("cache_url") or saved["url"]}
 
-# Пользователи с активной (идущей прямо сейчас) загрузкой — у каждого не больше одной
-ACTIVE_DOWNLOADS: set[int] = set()
+
+# Выбор качества: метаданные площадки живут только в памяти. После перезапуска
+# кнопка поднимается из базы без них – качество скачается на полторы секунды дольше.
+QUALITY = Screens("quality")
+HDREZKA = Screens("hdrezka", _restore_hdrezka)
+TIKTOK = Screens("tiktok", _restore_tiktok)
+# Список треков альбома/плейлиста/сета хранится в базе целиком: пересобрать его
+# заново – это снова спросить Spotify или SoundCloud, а треки уже известны.
+COLLECTIONS = Screens("collection")
+
 
 # Нажатия, которые СОЗДАЮТ контент: слайдшоу TikTok, трек из коллекции. Одно нажатие —
 # один результат. Защиты тут не было вовсе: кнопки убираются только ПОСЛЕ отправки, а
 # за время скачивания успевают запуститься несколько обработчиков — человек нажал
 # «Фото» пять раз и получил пять одинаковых наборов. У тяжёлых загрузок своя защита
-# (ACTIVE_DOWNLOADS, «дождись текущей»), а у лёгких не было никакой.
+# (job.exclusive, «дождись текущей»), а у лёгких не было никакой.
 _IN_PROGRESS: set[tuple] = set()
 
 
@@ -99,15 +123,20 @@ def _claim(*key) -> bool:
 def _unclaim(*key) -> None:
     _IN_PROGRESS.discard(key)
 
-# Короткий id -> ссылка, для inline-перехода в личку (deep link короче 64 символов)
-INLINE_LINKS: dict[str, str] = {}
+
+def _reply_error(message: Message, lang: str, fallback_key: str | None = None):
+    """Сбой загрузки – понятным текстом в ответ на сообщение человека. fallback_key –
+    платформенная подсказка (например, про приватность), если причина не распознана."""
+    async def on_error(e: Exception):
+        msg = limits.friendly_error(e, lang)
+        if fallback_key and msg == t("generic_dl_failed", lang):
+            msg = t(fallback_key, lang)
+        await message.reply(msg)
+    return on_error
 
 
-def stash_inline_link(url: str) -> str:
-    """Сохраняет ссылку под коротким id (для кнопки-перехода из inline в личку)."""
-    sid = uuid.uuid4().hex[:8]
-    _remember(INLINE_LINKS, sid, url)
-    return sid
+async def _quiet(e: Exception):
+    """Сбой, о котором человеку не говорим: это был бонус, а не то, что он просил."""
 
 
 @router.message(F.text | F.caption)
@@ -149,9 +178,6 @@ async def process_link(message: Message, url: str):
         await increment_download(session, platform.value)
 
     await _dispatch_platform(message, url, platform, lang)
-
-
-
 
 
 async def _shorts_cap(chat) -> int | None:
@@ -285,47 +311,31 @@ async def _maybe_send_audio_track(message: Message, url: str, platform, lang: st
 
     # Быстрый кэш по ссылке — мгновенно и БЕЗ запроса к TikTok (частый случай:
     # та же ссылка; устойчиво к сбоям API TikTok).
-    async with SessionLocal() as session:
-        cached = await get_cached_file_id(session, url, "audiotrack")
-    if cached:
-        await message.reply_audio(cached)
+    cache = Cache(url, "audiotrack")
+    if await job.try_cached(cache, message.reply_audio):
         return
 
     # Для TikTok — запасной ключ по номеру видео (дедуп разных коротких ссылок).
     # Номер берём из данных поста (они уже в памяти после показа видео).
-    cache_url = url
     if platform == Platform.TIKTOK:
         try:
             info = await asyncio.to_thread(tiktok.fetch_tiktok, url)
-            cache_url = f"tt:{info['id']}"
-            if cache_url != url:
-                async with SessionLocal() as session:
-                    cached = await get_cached_file_id(session, cache_url, "audiotrack")
-                if cached:
-                    await message.reply_audio(cached)
-                    return
+            cache = Cache(f"tt:{info['id']}", "audiotrack", also=(url,))
+            if await job.try_cached(cache, message.reply_audio):
+                return
         except Exception:
             pass  # не смогли определить номер — откатываемся на ссылку
 
-    slot = await limits.acquire(limits.LIGHT)
-    path = None
-    try:
+    async def work(paths):
         result = await asyncio.to_thread(extract_audio_track, url, platform)
         if not result:
-            return  # нет звука или не удалось извлечь — молча пропускаем (это бонус)
-        path, title = result
+            return None  # нет звука или не удалось извлечь — молча пропускаем (это бонус)
+        path, title = paths.keep(result[0]), result[1]
         sent = await message.reply_audio(
             await tg_files.input_file_async(path, await _nice_name(path, quality="")), title=title)
-        if sent.audio:
-            async with SessionLocal() as session:
-                await _tt_cache_save(session, url, cache_url, sent.audio.file_id, "audiotrack")
-    except Exception:
-        logger.exception("Не удалось отправить аудиодорожку")
-    finally:
-        # Уборка именно здесь: файл скачан ещё до отправки, и если отправка упала,
-        # он оставался на диске до перезапуска бота.
-        _cleanup_all(path)
-        await limits.release(limits.LIGHT, slot)
+        return sent.audio.file_id if sent.audio else None
+
+    await job.produce(cache=cache, work=work, on_error=_quiet, label="аудиодорожка")
 
 
 async def _handle_quality_video(message: Message, url: str, lang: str):
@@ -336,7 +346,7 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
         # Идущий (или предстоящий) прямой эфир не качаем — yt-dlp запишет лишь кусок
         # с момента подключения. Просим прислать ссылку после завершения трансляции.
         if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
-            await _safe_edit(status, t("live_stream", lang))
+            await safe_edit(status, t("live_stream", lang))
             return
         available = await asyncio.to_thread(get_available_qualities, info)
 
@@ -347,7 +357,7 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
         if not available:
             logger.warning("Пустой список качеств (деградация источника): %s", url)
             alerts.note_failure(RuntimeError(f"нет доступных качеств: {url}"))
-            await _safe_edit(status, t("video_info_failed", lang))
+            await safe_edit(status, t("video_info_failed", lang))
             return
 
         title = info.get("title")
@@ -360,20 +370,9 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
             premium = await is_premium(session, message.from_user.id)
 
         await status.delete()
-        url_id = uuid.uuid4().hex[:8]
-        _remember(URL_STORE, url_id, {
-            "url": url,
-            "chat_id": message.chat.id,
-            "user_msg_id": message.message_id,
-            "info": info,  # сохраняем метаданные — не запрашиваем источник второй раз
-            "premium": premium,
-        })
-        # То же самое в базу, но без метаданных: кнопки в Telegram живут дольше, чем
-        # память бота, и после перезапуска нажатие должно работать, а не отвечать
-        # «ссылка устарела». Метаданные при таком возврате запросятся заново.
-        async with SessionLocal() as session:
-            await save_link_stash(session, url_id, url, message.chat.id,
-                                  message.message_id, premium)
+        # Метаданные — только в память: не запрашиваем источник второй раз. В базу уходит
+        # ссылка и чей это запрос: кнопки в Telegram живут дольше, чем память бота.
+        url_id = await QUALITY.open(message, url, premium=premium, memory={"info": info})
 
         caption = t("choose_quality", lang, title=title)
 
@@ -397,7 +396,7 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
     except Exception as e:
         logger.exception("Failed to get video info")
         alerts.note_failure(e)            # раньше этот путь молчал в алертах — теперь нет
-        await _safe_edit(status, t("video_info_failed", lang))
+        await safe_edit(status, t("video_info_failed", lang))
 
 
 async def _handle_hdrezka(message: Message, url: str, lang: str):
@@ -408,41 +407,20 @@ async def _handle_hdrezka(message: Message, url: str, lang: str):
         # В потоке, как и открытие страницы: у сериала get_info делает ещё один
         # запрос к сайту (список сезонов) и умеет ждать между повторами. В главном
         # потоке это значило, что бот на пару секунд замирал для ВСЕХ, а не только
-        # для того, кто прислал ссылку. Рядом, в обработчике сезонов, это уже было
-        # сделано правильно — здесь просто забыли.
+        # для того, кто прислал ссылку.
         info = await asyncio.to_thread(hdrezka.get_info, api, url)
     except Exception as e:
         logger.exception("HDRezka info failed")
         alerts.note_failure(e)            # fetch-ошибки тоже должны доходить до админа
-        await _safe_edit(status, t("hdrezka_open_failed", lang))
+        await safe_edit(status, t("hdrezka_open_failed", lang))
         return
 
     async with SessionLocal() as session:
         premium = await is_premium(session, message.from_user.id)
 
-    sid = uuid.uuid4().hex[:8]
-    _remember(HDREZKA_STORE, sid, {
-        "api": api,  # переиспользуем объект на всех шагах — не качаем страницу заново
-        "url": url,  # исходная ссылка — нужна как ключ кэша file_id
-        "name": info["name"],
-        "is_series": info["is_series"],
-        "translators": info.get("translators", []),
-        "seasons": info.get("seasons", []),
-        "season": None,
-        "episode": None,
-        "thumbnail": info.get("thumbnail"),
-        "premium": premium,
-        "chat_id": message.chat.id,
-        "user_msg_id": message.message_id,
-        "streams": {},  # tid -> объект потока (кэш между «озвучкой» и «качеством»)
-    })
-    entry = HDREZKA_STORE[sid]
-    # В базу — то, из чего экран собирается заново после перезапуска бота: ссылка и
-    # чей это запрос. Страницу HDRezka и объект сессии сохранить нельзя, но их можно
-    # открыть повторно — это и делает _hdrezka_entry.
-    async with SessionLocal() as session:
-        await save_link_stash(session, sid, url, message.chat.id, message.message_id,
-                              premium, kind="hdrezka")
+    # В базу — ссылка и чей это запрос; объект сессии и разбор страницы — в память
+    # (после перезапуска их откроет заново _restore_hdrezka).
+    sid = await HDREZKA.open(message, url, premium=premium, memory=_hdrezka_state(api, info))
     await status.delete()
 
     if info["is_series"]:
@@ -452,58 +430,10 @@ async def _handle_hdrezka(message: Message, url: str, lang: str):
         caption = f"{t('word_movie', lang)}: {info['name']}\n\n{t('label_choose_translation', lang)}"
         keyboard = build_translator_keyboard(sid, info["translators"], 0, lang)
 
-    if entry["thumbnail"]:
-        await message.answer_photo(entry["thumbnail"], caption=caption, reply_markup=keyboard)
+    if info.get("thumbnail"):
+        await message.answer_photo(info["thumbnail"], caption=caption, reply_markup=keyboard)
     else:
         await message.answer(caption, reply_markup=keyboard)
-
-
-async def _hdrezka_entry(sid: str) -> dict | None:
-    """Экран HDRezka по его id: из памяти, а если бот перезапускался — собираем заново.
-
-    Восстановление стоит секунд: надо снова пройти анти-бот-проверку и прочитать
-    страницу. Зато кнопка работает, а не отвечает «ссылка устарела» — при том что
-    сообщение с ней висит в чате и выглядит живым.
-
-    Сезон и серию не восстанавливаем: человек выберет их теми же кнопками. Потоки
-    (streams) тоже — они добываются при выборе озвучки и живут недолго.
-    """
-    entry = HDREZKA_STORE.get(sid)
-    if entry:
-        return entry
-
-    async with SessionLocal() as session:
-        saved = await load_link_stash(session, sid)
-    if not saved or saved.get("kind") != "hdrezka":
-        return None
-
-    url = saved["url"]
-    try:
-        api = await asyncio.to_thread(hdrezka.open_media, url)
-        info = await asyncio.to_thread(hdrezka.get_info, api, url)
-    except Exception as e:
-        logger.warning("HDRezka: не смог восстановить экран %s", sid, exc_info=True)
-        alerts.note_failure(e)
-        return None
-
-    entry = {
-        "api": api,
-        "url": url,
-        "name": info["name"],
-        "is_series": info["is_series"],
-        "translators": info.get("translators", []),
-        "seasons": info.get("seasons", []),
-        "season": None,
-        "episode": None,
-        "thumbnail": info.get("thumbnail"),
-        "premium": saved.get("premium", False),
-        "chat_id": saved["chat_id"],
-        "user_msg_id": saved["user_msg_id"],
-        "streams": {},
-    }
-    _remember(HDREZKA_STORE, sid, entry)
-    logger.info("HDRezka: экран %s восстановлен после перезапуска", sid)
-    return entry
 
 
 @router.callback_query(F.data.startswith("hrss:"))
@@ -511,9 +441,8 @@ async def handle_hdrezka_season(callback: CallbackQuery):
     """Сезон выбран — показываем серии"""
     lang = lang_of(callback.from_user)
     _, sid, season = callback.data.split(":")
-    entry = await _hdrezka_entry(sid)
+    entry = await HDREZKA.for_click(callback, sid, lang)
     if not entry:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
     season = int(season)
     entry["season"] = season
@@ -529,9 +458,8 @@ async def handle_hdrezka_episode(callback: CallbackQuery):
     """Серия выбрана — показываем озвучки этой серии"""
     lang = lang_of(callback.from_user)
     _, sid, season, episode = callback.data.split(":")
-    entry = await _hdrezka_entry(sid)
+    entry = await HDREZKA.for_click(callback, sid, lang)
     if not entry:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
     entry["season"] = int(season)
     entry["episode"] = int(episode)
@@ -550,9 +478,8 @@ async def handle_hdrezka_back(callback: CallbackQuery):
     """Назад к выбору сезона"""
     lang = lang_of(callback.from_user)
     _, sid = callback.data.split(":")
-    entry = await _hdrezka_entry(sid)
+    entry = await HDREZKA.for_click(callback, sid, lang)
     if not entry:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
     await callback.answer()
     text = f"{t('word_series', lang)}: {entry['name']}\n\n{t('label_choose_season', lang)}"
@@ -564,9 +491,8 @@ async def handle_hdrezka_page(callback: CallbackQuery):
     """Пагинация списка озвучек"""
     lang = lang_of(callback.from_user)
     _, sid, page = callback.data.split(":")
-    entry = await _hdrezka_entry(sid)
+    entry = await HDREZKA.for_click(callback, sid, lang)
     if not entry:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
     keyboard = build_translator_keyboard(sid, entry["translators"], int(page), lang)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
@@ -613,9 +539,8 @@ async def handle_hdrezka_translator(callback: CallbackQuery):
     """Озвучка выбрана — получаем поток (один запрос) и показываем качества"""
     lang = lang_of(callback.from_user)
     _, sid, tid = callback.data.split(":")
-    entry = await _hdrezka_entry(sid)
+    entry = await HDREZKA.for_click(callback, sid, lang)
     if not entry:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     alerts.current_request.set(f"hdrezka: {entry.get('name','')} — {entry.get('url','')}")
@@ -642,30 +567,52 @@ async def handle_hdrezka_translator(callback: CallbackQuery):
     await _show_hdrezka_quality(callback.message, entry, sid, tid, lang)
 
 
+async def _heavy_from_cache(callback: CallbackQuery, cache: Cache, send) -> bool | None:
+    """Готовое тяжёлое видео из кэша: убираем меню и отдаём.
+
+    True – отдали. None – кэша нет, на нажатие ещё не отвечали. False – кэш был, но
+    расписка оказалась мёртвой: на нажатие уже ответили и меню убрали, качаем заново.
+    """
+    if await cache.get() is None:
+        return None
+    await callback.answer()
+    await safe_delete(callback.message)
+    return await job.try_cached(cache, send)
+
+
+async def _alert(callback: CallbackQuery, answered: bool, chat_id: int, text: str):
+    """Отказ по нажатию: всплывающим окном, а если на нажатие уже ответили (Telegram
+    второй ответ не примет) – сообщением в чат."""
+    if answered:
+        await callback.bot.send_message(chat_id, text)
+    else:
+        await callback.answer(text, show_alert=True)
+
+
 @router.callback_query(F.data.startswith("hrq:"))
 async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
     """Качество выбрано — качаем и отправляем"""
     lang = lang_of(callback.from_user)
     _, sid, tid, qidx = callback.data.split(":")
-    entry = await _hdrezka_entry(sid)
+    entry = await HDREZKA.for_click(callback, sid, lang)
     if not entry:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     alerts.current_request.set(f"hdrezka: {entry.get('name','')} — {entry.get('url','')}")
     tid = int(tid)
     stream = entry["streams"].get(tid)
     qualities = hdrezka.stream_qualities(stream) if stream else []
-    if not stream or int(qidx) >= len(qualities):
+    if not stream or not qidx.isdigit() or int(qidx) >= len(qualities):
         await callback.answer(t("reselect_translation", lang), show_alert=True)
         return
     quality = qualities[int(qidx)]
     user_id = callback.from_user.id
+    chat_id = entry["chat_id"]
 
-    # Защита: качество выше 720p — только для Premium (см. пояснение ниже по файлу:
-    # смотрим на нажавшего, а не на владельца меню).
+    # Защита: качество выше 720p — только для Premium. Смотрим на нажавшего, а не на
+    # отметку в экране: Premium мог закончиться с тех пор, как рисовали кнопки.
     height = 9999 if "K" in quality.upper() else int("".join(filter(str.isdigit, quality)) or 0)
-    if height > FREE_LIMIT:
+    if height > FREE_QUALITY_LIMIT:
         async with SessionLocal() as session:
             if not await is_premium(session, user_id):
                 await callback.answer(t("premium_alert", lang), show_alert=True)
@@ -673,80 +620,55 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
 
     # Кэш: этот фильм/серию в этой озвучке и качестве уже качали — отдаём мгновенно,
     # без повторного скачивания (ключ = ссылка + озвучка + сезон + серия, качество — отдельно).
-    cache_url = f"{entry.get('url', '')}|hr|{tid}|{entry['season']}|{entry['episode']}"
-    async with SessionLocal() as session:
-        cached_id = await get_cached_file_id(session, cache_url, quality)
-    if cached_id:
+    cache = Cache(f"{entry.get('url', '')}|hr|{tid}|{entry['season']}|{entry['episode']}",
+                  quality)
+
+    async def send_cached(file_id):
+        await bot.send_video(chat_id, file_id, supports_streaming=True,
+                             reply_to_message_id=entry["user_msg_id"])
+
+    got = await _heavy_from_cache(callback, cache, send_cached)
+    if got:
+        return
+    answered = got is False
+
+    if job.busy(user_id):
+        await _alert(callback, answered, chat_id, t("wait_current", lang))
+        return
+
+    if not answered:
         await callback.answer()
-        await callback.message.delete()
-        await bot.send_video(
-            entry["chat_id"], cached_id,
-            supports_streaming=True,
-            reply_to_message_id=entry["user_msg_id"],
-        )
-        return
+        await safe_delete(callback.message)
 
-    if user_id in ACTIVE_DOWNLOADS:
-        await callback.answer(t("wait_current", lang), show_alert=True)
-        return
+    async with job.exclusive(user_id):
+        progress = job.Progress(bot, chat_id, entry["user_msg_id"], lang)
 
-    await callback.answer()
-    await callback.message.delete()
-    ACTIVE_DOWNLOADS.add(user_id)
-    slot = await limits.acquire(limits.HEAVY)
-    # Всё, что после занятия слота, — строго внутри try: 23.09.2026 бот замолчал на
-    # ссылки насовсем именно здесь. Отправка полоски прогресса стояла ВНЕ защищённого
-    # блока, она не прошла (исходное сообщение к тому времени удалили), слот остался
-    # занятым навсегда, и следующие загрузки встали в очередь за мёртвым держателем.
-    status = None
-    file_path = None
-    try:
-        chat_id = entry["chat_id"]
-        status = await bot.send_message(chat_id, make_progress_bar(0, lang),
-                                        reply_to_message_id=entry["user_msg_id"])
+        async def work(paths):
+            await progress.start()
+            limits.check_disk_space(DOWNLOADS_DIR)      # фильм весит гигабайты
+            file_path = paths.keep(await asyncio.to_thread(
+                hdrezka.download_stream, stream, quality,
+                entry["name"], entry["season"], entry["episode"], progress.hook,
+            ))
+            await progress.say("uploading")
+            hr_title = entry["name"]
+            if entry.get("season") and entry.get("episode"):
+                hr_title = f"{hr_title} S{entry['season']:02d}E{entry['episode']:02d}"
+            sent = await bot.send_video(
+                chat_id,
+                await tg_files.input_file_async(file_path, tg_files.display_name(
+                    hr_title, str(quality or ""), os.path.splitext(file_path)[1] or ".mp4")),
+                reply_to_message_id=entry["user_msg_id"],
+                **await _video_kwargs(file_path),
+            )
+            await progress.done()
+            return sent.video.file_id if sent.video else None
 
-        loop = asyncio.get_running_loop()
-        # Полоску обновляем не чаще раза в пару секунд: правка на каждый процент — это
-        # до сотни правок за загрузку, и Telegram на такую частоту отвечает «подожди».
-        throttle = ProgressThrottle()
+        async def on_error(e):
+            await progress.fail(limits.friendly_error(e, lang))
 
-        def on_progress(percent: int):
-            if throttle.should_send(percent):
-                asyncio.run_coroutine_threadsafe(
-                    _safe_edit(status, make_progress_bar(percent, lang)), loop
-                )
-
-        limits.check_disk_space(DOWNLOADS_DIR)      # фильм весит гигабайты (см. выше)
-        file_path = await asyncio.to_thread(
-            hdrezka.download_stream, stream, quality,
-            entry["name"], entry["season"], entry["episode"], on_progress,
-        )
-        await _safe_edit(status, t("uploading", lang))
-        hr_title = entry["name"]
-        if entry.get("season") and entry.get("episode"):
-            hr_title = f"{hr_title} S{entry['season']:02d}E{entry['episode']:02d}"
-        sent = await bot.send_video(
-            chat_id,
-            await tg_files.input_file_async(file_path, tg_files.display_name(
-                hr_title, str(quality or ""), os.path.splitext(file_path)[1] or ".mp4")),
-            reply_to_message_id=entry["user_msg_id"],
-            **await _video_kwargs(file_path),
-        )
-        await status.delete()
-        # Сохраняем file_id в кэш — следующему такой же фильм отдадим без скачивания
-        if sent.video:
-            async with SessionLocal() as session:
-                await save_cached_file_id(session, cache_url, sent.video.file_id, quality)
-    except Exception as e:
-        logger.exception("HDRezka download failed")
-        if status is not None:
-            await _safe_edit(status, limits.friendly_error(e, lang))
-    finally:
-        # Фильм весит гигабайты: оставить его на диске из-за сбоя отправки — самый
-        # дорогой из возможных мусоров.
-        _cleanup_all(file_path)
-        await limits.release(limits.HEAVY, slot)
-        ACTIVE_DOWNLOADS.discard(user_id)
+        await job.produce(cache=cache, work=work, on_error=on_error, lane=limits.HEAVY,
+                          label=f"HDRezka {quality}")
 
 
 async def _handle_simple_video(message: Message, url: str, download_fn, cache_key: str, lang: str,
@@ -754,49 +676,32 @@ async def _handle_simple_video(message: Message, url: str, download_fn, cache_ke
     """Качает короткое видео сразу (Shorts, Instagram Reel): кэш, лимит, отправка.
     Одну и ту же ссылку качает только один запрос — остальные ждут и берут из кэша
     (см. bot.utils.inflight)."""
-    async def get_cached():
-        async with SessionLocal() as session:
-            return await get_cached_file_id(session, url, cache_key)
+    async def send(file_id):
+        await message.reply_video(file_id, supports_streaming=True)
 
-    async def send_cached(cached_id):
-        await message.reply_video(cached_id, supports_streaming=True)
+    async def work(paths):
+        # «Отправляет видео…» в шапке чата, пока качаем и заливаем: иначе
+        # непонятно, живой бот или задумался (см. bot/utils/chat_action.py).
+        async with chat_action.show(message.bot, message.chat.id, chat_action.VIDEO):
+            file_path = paths.keep(await asyncio.to_thread(download_fn, url))
+            sent = await message.reply_video(
+                await tg_files.input_file_async(
+                    file_path, await _nice_name(file_path, use_title=use_title)),
+                **await _video_kwargs(file_path))
+        return sent.video.file_id if sent.video else None
 
-    async def produce():
-        # Лёгкие задачи не ограничиваем «одна за раз» — можно кидать подряд, общий
-        # лимит (limits.LIGHT) сам поставит лишние в очередь.
-        slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
-        file_path = None
-        try:
-            # «Отправляет видео…» в шапке чата, пока качаем и заливаем: иначе
-            # непонятно, живой бот или задумался (см. bot/utils/chat_action.py).
-            async with chat_action.show(message.bot, message.chat.id, chat_action.VIDEO):
-                file_path = await asyncio.to_thread(download_fn, url)
-                sent = await message.reply_video(
-                    await tg_files.input_file_async(
-                        file_path, await _nice_name(file_path, use_title=use_title)),
-                    **await _video_kwargs(file_path))
-            if sent.video:
-                async with SessionLocal() as session:
-                    await save_cached_file_id(session, url, sent.video.file_id, cache_key)
-        except Exception as e:
-            logger.exception("%s download failed", cache_key)
-            await message.reply(limits.friendly_error(e, lang))
-        finally:
-            _cleanup_all(file_path)
-            await limits.release(limits.LIGHT, slot)
-
-    await inflight.deduped(url, cache_key, get_cached, send_cached, produce)
+    # Лёгкие задачи не ограничиваем «одна за раз» — можно кидать подряд, общий
+    # лимит (limits.LIGHT) сам поставит лишние в очередь.
+    await job.run(cache=Cache(url, cache_key), send=send, work=work,
+                  on_error=_reply_error(message, lang), tell=message, lang=lang,
+                  label=cache_key, dedupe=True)
 
 
 async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
-    """Качает одно медиа (TikTok, Pinterest) и шлёт как фото/гиф/видео — по типу файла.
+    """Качает одно медиа (Pinterest) и шлёт как фото/гиф/видео — по типу файла.
     Дедуп по ссылке: параллельные запросы одной ссылки не качают повторно (inflight)."""
     # Кэш: в file_id храним префикс типа — "P:" фото, "A:" гиф, "V:" видео
-    async def get_cached():
-        async with SessionLocal() as session:
-            return await get_cached_file_id(session, url, cache_key)
-
-    async def send_cached(cached):
+    async def send(cached):
         if cached.startswith("P:"):
             await message.reply_photo(cached[2:])
         elif cached.startswith("A:"):
@@ -804,37 +709,26 @@ async def _handle_media(message: Message, url: str, cache_key: str, lang: str):
         else:
             await message.reply_video(cached[2:], supports_streaming=True)
 
-    async def produce():
-        slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
-        file_path = mp4 = None
-        try:
-            file_path = await asyncio.to_thread(download_media, url)
-            if file_path.lower().endswith(".gif"):
-                # GIF → чистый mp4 (без грубой авто-конвертации Telegram), шлём анимацией
-                mp4 = await asyncio.to_thread(convert_gif_to_mp4, file_path)
-                sent = await message.reply_animation(await tg_files.input_file_async(mp4, await _nice_name(mp4, quality="", use_title=False)))
-                fid = "A:" + sent.animation.file_id if sent.animation else None
-            elif is_image(file_path):
-                sent = await message.reply_photo(await tg_files.input_file_async(file_path, await _nice_name(file_path, quality="", use_title=False)))
-                fid = "P:" + sent.photo[-1].file_id if sent.photo else None
-            else:
-                sent = await message.reply_video(
-                await tg_files.input_file_async(file_path, await _nice_name(file_path, use_title=False)),
-                **await _video_kwargs(file_path))
-                fid = "V:" + sent.video.file_id if sent.video else None
-            if fid:
-                async with SessionLocal() as session:
-                    await save_cached_file_id(session, url, fid, cache_key)
-        except Exception as e:
-            logger.exception("%s download failed", cache_key)
-            await message.reply(limits.friendly_error(e, lang))
-        finally:
-            # mp4 — результат конвертации гифки; если он совпал с исходником, повторная
-            # уборка того же пути безвредна (файла уже нет).
-            _cleanup_all(file_path, mp4 if mp4 != file_path else None)
-            await limits.release(limits.LIGHT, slot)
+    async def work(paths):
+        file_path = paths.keep(await asyncio.to_thread(download_media, url))
+        if file_path.lower().endswith(".gif"):
+            # GIF → чистый mp4 (без грубой авто-конвертации Telegram), шлём анимацией
+            mp4 = paths.keep(await asyncio.to_thread(convert_gif_to_mp4, file_path))
+            sent = await message.reply_animation(await tg_files.input_file_async(
+                mp4, await _nice_name(mp4, quality="", use_title=False)))
+            return "A:" + sent.animation.file_id if sent.animation else None
+        if is_image(file_path):
+            sent = await message.reply_photo(await tg_files.input_file_async(
+                file_path, await _nice_name(file_path, quality="", use_title=False)))
+            return "P:" + sent.photo[-1].file_id if sent.photo else None
+        sent = await message.reply_video(
+            await tg_files.input_file_async(file_path, await _nice_name(file_path, use_title=False)),
+            **await _video_kwargs(file_path))
+        return "V:" + sent.video.file_id if sent.video else None
 
-    await inflight.deduped(url, cache_key, get_cached, send_cached, produce)
+    await job.run(cache=Cache(url, cache_key), send=send, work=work,
+                  on_error=_reply_error(message, lang), tell=message, lang=lang,
+                  label=cache_key, dedupe=True)
 
 
 async def _send_cached_post(message: Message, cached: str):
@@ -859,50 +753,25 @@ async def _send_cached_post(message: Message, cached: str):
 
 
 async def _handle_files(message: Message, url: str, download_fn, error_key: str, lang: str):
-    """Качает набор файлов (Instagram пост, TikTok) и отдаёт фото/видео или альбомом.
+    """Качает набор файлов (Instagram пост) и отдаёт фото/видео или альбомом.
     Дедуп по ссылке: параллельные запросы одной ссылки не качают повторно (inflight)."""
-    async def get_cached():
-        # Кэш: этот пост/карусель уже качали — переотправляем мгновенно, без скачивания
-        async with SessionLocal() as session:
-            return await get_cached_file_id(session, url, "post")
+    async def work(paths):
+        # «Отправляет фото…» в шапке чата, пока качаем и заливаем альбом.
+        async with chat_action.show(message.bot, message.chat.id, chat_action.PHOTO):
+            files = paths.keep(await asyncio.to_thread(download_fn, url))
+        if not files:
+            # Пустой результат у поста/карусели = обычно деградация источника, а не
+            # реально пустой пост. Раньше молчали — теперь видно в логах и в алерте.
+            logger.warning("%s: пустой результат (нет медиа) — %s", error_key, url)
+            alerts.note_failure(RuntimeError(f"пустой результат ({error_key}): {url}"))
+            await message.reply(t("no_media", lang))
+            return None
+        tokens = await _send_media_files(message, files, lang)
+        return "\n".join(tokens) or None
 
-    async def send_cached(cached):
-        await _send_cached_post(message, cached)
-
-    async def produce():
-        slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
-        files = None
-        try:
-            # «Отправляет фото…» в шапке чата, пока качаем и заливаем альбом.
-            async with chat_action.show(message.bot, message.chat.id, chat_action.PHOTO):
-                files = await asyncio.to_thread(download_fn, url)
-            if not files:
-                # Пустой результат у поста/карусели = обычно деградация источника, а не
-                # реально пустой пост. Раньше молчали — теперь видно в логах и в алерте.
-                logger.warning("%s: пустой результат (нет медиа) — %s", error_key, url)
-                alerts.note_failure(RuntimeError(f"пустой результат ({error_key}): {url}"))
-                await message.reply(t("no_media", lang))
-                return
-
-            tokens = await _send_media_files(message, files, lang)
-
-            # Сохраняем набор в кэш — следующему такой же пост отдадим без скачивания
-            if tokens:
-                async with SessionLocal() as session:
-                    await save_cached_file_id(session, url, "\n".join(tokens), "post")
-
-        except Exception as e:
-            logger.exception("%s download failed", url)
-            msg = limits.friendly_error(e, lang)
-            # ошибка не распознана — даём платформенную подсказку (напр. про приватность)
-            if msg == t("generic_dl_failed", lang):
-                msg = t(error_key, lang)
-            await message.reply(msg)
-        finally:
-            _cleanup_all(files)
-            await limits.release(limits.LIGHT, slot)
-
-    await inflight.deduped(url, "post", get_cached, send_cached, produce)
+    await job.run(cache=Cache(url, "post"), send=lambda v: _send_cached_post(message, v),
+                  work=work, on_error=_reply_error(message, lang, error_key),
+                  tell=message, lang=lang, label=url, dedupe=True)
 
 
 async def _send_media_files(message: Message, files: list[str], lang: str) -> list[str]:
@@ -950,31 +819,14 @@ async def _send_media_files(message: Message, files: list[str], lang: str) -> li
     return tokens
 
 
-async def _tt_cache_save(session, url: str, cache_url: str, value: str, cache_key: str):
-    """Сохраняем file_id по ДВУМ ключам: по ссылке (мгновенный повтор той же ссылки
-    без запроса к TikTok) и по номеру видео (дедуп разных коротких ссылок)."""
-    await save_cached_file_id(session, cache_url, value, cache_key)
-    if url != cache_url:
-        await save_cached_file_id(session, url, value, cache_key)
-
-
 async def _handle_tiktok(message: Message, url: str, lang: str):
     """TikTok: обычное видео — сразу; слайдшоу — спрашиваем формат (видео/фото)."""
     # Быстрый кэш ПО ССЫЛКЕ — мгновенно и БЕЗ запроса к TikTok. Частый случай:
     # переслали ту же ссылку. Устойчиво к сбоям API TikTok (он иногда отвечает
     # ошибкой на частые запросы). Проверяем все возможные форматы поста.
-    async with SessionLocal() as session:
-        for ck in ("tt_auto", "tt_video", "tt_photos"):
-            cached = await get_cached_file_id(session, url, ck)
-            if cached:
-                break
-        else:
-            cached, ck = None, None
-    # Отправляем ВНЕ сессии базы: если расписка окажется мёртвой, её надо удалить
-    # своим запросом, а вложенная сессия на том же файле — лишний повод для блокировки.
-    if cached and await send_cached_or_drop(
-            lambda: _send_cached_post(message, cached), url, ck):
-        return
+    for ck in ("tt_auto", "tt_video", "tt_photos"):
+        if await job.try_cached(Cache(url, ck), lambda v: _send_cached_post(message, v)):
+            return
 
     # По ссылке не нашли — узнаём данные поста (запрос к TikTok, кэшируется в памяти):
     # из них берём НАСТОЯЩИЙ номер видео — по нему кэшируем как запасной ключ.
@@ -1003,17 +855,9 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
             ss_mode = await get_slideshow_mode(session, message.chat.id, default=default_mode)
 
         if ss_mode == "ask":
-            sid = uuid.uuid4().hex[:8]
-            # запоминаем автора — в группе кнопки слушаются только его
-            # Тот же приём, что у HDRezka: в базу — ссылка и кто спросил, остальное
-            # (данные поста) перезапрашивается у TikTok, это быстро.
-            async with SessionLocal() as session:
-                await save_link_stash(session, sid, url, message.chat.id, message.message_id,
-                                      kind="tiktok",
-                                      payload={"cache_url": cache_url,
-                                               "owner": message.from_user.id})
-            _remember(TIKTOK_STORE, sid, {"url": url, "cache_url": cache_url,
-                                          "info": info, "owner": message.from_user.id})
+            # В базу — ссылка и номер видео, данные поста перезапрашиваются у TikTok.
+            sid = await TIKTOK.open(message, url, memory={"info": info},
+                                    saved={"cache_url": cache_url})
             await message.reply(
                 t("tt_slideshow_ask", lang),
                 reply_markup=build_tiktok_slideshow_keyboard(sid, lang),
@@ -1029,56 +873,20 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         compress = not want_hd
         mode, cache_key = "auto", ("tt_auto_c" if compress else "tt_auto")
 
+    async def work(paths):
+        files = paths.keep(await asyncio.to_thread(tiktok.download_from, info, mode, compress))
+        tokens = await _send_media_files(message, files, lang)
+        if mode == "photos":     # у фото нет звука — доложим музыку слайдшоу (если вкл)
+            await _maybe_send_audio_track(message, url, Platform.TIKTOK, lang)
+        return "\n".join(tokens) or None
+
     # Кэш по номеру видео + дедуп: параллельные запросы одного видео (в т.ч. с разными
-    # короткими ссылками) ждут ведущего и берут готовое из кэша.
-    async def get_cached():
-        async with SessionLocal() as session:
-            return await get_cached_file_id(session, cache_url, cache_key)
-
-    async def send_cached(cached):
-        await _send_cached_post(message, cached)
-
-    async def produce():
-        slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
-        files = None
-        try:
-            files = await asyncio.to_thread(tiktok.download_from, info, mode, compress)
-            tokens = await _send_media_files(message, files, lang)
-            if tokens:
-                async with SessionLocal() as session:
-                    await _tt_cache_save(session, url, cache_url, "\n".join(tokens), cache_key)
-            if mode == "photos":     # у фото нет звука — доложим музыку слайдшоу (если вкл)
-                await _maybe_send_audio_track(message, url, Platform.TIKTOK, lang)
-        except Exception as e:
-            logger.exception("TikTok download failed")
-            await message.reply(limits.friendly_error(e, lang))
-        finally:
-            _cleanup_all(files)
-            await limits.release(limits.LIGHT, slot)
-
-    await inflight.deduped(cache_url, cache_key, get_cached, send_cached, produce)
-
-
-async def _tiktok_entry(sid: str) -> dict | None:
-    """Экран выбора «видео или фото» по его id — из памяти или заново из базы.
-
-    Данные поста (ссылки на кадры и звук) живут у TikTok недолго, поэтому мы их не
-    храним, а перезапрашиваем: это один запрос к их API.
-    """
-    async with SessionLocal() as session:
-        saved = await load_link_stash(session, sid)
-    if not saved or saved.get("kind") != "tiktok":
-        return None
-    try:
-        info = await asyncio.to_thread(tiktok.fetch_tiktok, saved["url"])
-    except Exception:
-        logger.warning("TikTok: не смог восстановить экран %s", sid, exc_info=True)
-        return None
-    entry = {"url": saved["url"], "cache_url": saved.get("cache_url") or saved["url"],
-             "info": info, "owner": saved.get("owner")}
-    _remember(TIKTOK_STORE, sid, entry)
-    logger.info("TikTok: экран %s восстановлен после перезапуска", sid)
-    return entry
+    # короткими ссылками) ждут ведущего и берут готовое из кэша. Сохраняем и по ссылке —
+    # чтобы повтор той же ссылки не спрашивал TikTok вовсе.
+    await job.run(cache=Cache(cache_url, cache_key, also=(url,)),
+                  send=lambda v: _send_cached_post(message, v), work=work,
+                  on_error=_reply_error(message, lang), tell=message, lang=lang,
+                  label=f"TikTok {cache_url}", dedupe=True)
 
 
 @router.callback_query(F.data.startswith("ttdl:"))
@@ -1086,17 +894,13 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     """Выбран формат слайдшоу TikTok: 'video' (со звуком) или 'photos' (отдельные фото)."""
     lang = lang_of(callback.from_user)
     _, mode, sid = callback.data.split(":")
-    entry = TIKTOK_STORE.get(sid)
-    if not entry:
-        entry = await _tiktok_entry(sid)
-    if not entry:
+    if mode not in ("video", "photos"):
         await callback.answer(t("link_expired", lang), show_alert=True)
         return
-
     # Кнопки слушаются только у того, кто прислал ссылку (важно для групп в режиме
-    # «Выбор»). Чужое нажатие тихо гасим — «часики» на кнопке уберутся, скачивание нет.
-    if callback.from_user.id != entry.get("owner"):
-        await callback.answer()
+    # «Выбор»). Чужое нажатие тихо гасится внутри for_click.
+    entry = await TIKTOK.for_click(callback, sid, lang)
+    if not entry:
         return
 
     url, info = entry["url"], entry["info"]
@@ -1105,48 +909,36 @@ async def handle_tiktok_slideshow(callback: CallbackQuery):
     if not _claim(callback.message.chat.id, sid, mode):
         await callback.answer(t("already_downloading", lang), show_alert=False)
         return
-    alerts.current_request.set(f"tiktok слайдшоу [{mode}]: {url}")  # контекст для тревог
-    # Ключ по номеру видео (как в _handle_tiktok): устойчив к разным коротким ссылкам.
-    cache_url = entry.get("cache_url") or f"tt:{info['id']}"
-    cache_key = "tt_" + mode  # tt_video / tt_photos
-
-    # Отвечаем на исходное сообщение пользователя, а не на своё с кнопками: своё мы
-    # тут же удаляем, и ответ на него повис бы с пометкой «Удалённое сообщение».
-    # Вопрос с кнопками отправлен реплаем, поэтому оригинал лежит в reply_to_message.
-    target = callback.message.reply_to_message or callback.message
-
-    # Кэш выбранного формата — отдаём мгновенно (сначала по ссылке, потом по номеру)
-    async with SessionLocal() as session:
-        cached = (await get_cached_file_id(session, url, cache_key)
-                  or await get_cached_file_id(session, cache_url, cache_key))
-    if cached:
-        await callback.answer()
-        try:
-            await _send_cached_post(target, cached)
-            await _safe_delete(callback.message)
-        finally:
-            _unclaim(callback.message.chat.id, sid, mode)
-        return
-
-    await callback.answer()
-
-    slot = await limits.acquire(limits.LIGHT)
-    files = None
     try:
-        files = await asyncio.to_thread(tiktok.download_from, info, mode)
-        tokens = await _send_media_files(target, files, lang)
-        if tokens:
-            async with SessionLocal() as session:
-                await _tt_cache_save(session, url, cache_url, "\n".join(tokens), cache_key)
-        await _safe_delete(callback.message)  # убираем сообщение с кнопками
-        if mode == "photos":     # выбрали «Фото» — у них нет звука, доложим музыку (если вкл)
-            await _maybe_send_audio_track(target, url, Platform.TIKTOK, lang)
-    except Exception as e:
-        logger.exception("TikTok slideshow download failed")
-        await _safe_edit(callback.message, limits.friendly_error(e, lang))
+        alerts.current_request.set(f"tiktok слайдшоу [{mode}]: {url}")  # контекст для тревог
+        # Ключ по номеру видео (как в _handle_tiktok): устойчив к разным коротким ссылкам.
+        cache = Cache(entry.get("cache_url") or f"tt:{info['id']}", "tt_" + mode, also=(url,))
+
+        # Отвечаем на исходное сообщение пользователя, а не на своё с кнопками: своё мы
+        # тут же удаляем, и ответ на него повис бы с пометкой «Удалённое сообщение».
+        # Вопрос с кнопками отправлен реплаем, поэтому оригинал лежит в reply_to_message.
+        target = callback.message.reply_to_message or callback.message
+        await callback.answer()
+
+        # Кэш выбранного формата — отдаём мгновенно
+        if await job.try_cached(cache, lambda v: _send_cached_post(target, v)):
+            await safe_delete(callback.message)
+            return
+
+        async def work(paths):
+            files = paths.keep(await asyncio.to_thread(tiktok.download_from, info, mode))
+            tokens = await _send_media_files(target, files, lang)
+            await safe_delete(callback.message)  # убираем сообщение с кнопками
+            if mode == "photos":     # выбрали «Фото» — у них нет звука, доложим музыку (если вкл)
+                await _maybe_send_audio_track(target, url, Platform.TIKTOK, lang)
+            return "\n".join(tokens) or None
+
+        async def on_error(e):
+            await safe_edit(callback.message, limits.friendly_error(e, lang))
+
+        await job.produce(cache=cache, work=work, on_error=on_error,
+                          label=f"слайдшоу TikTok [{mode}]")
     finally:
-        _cleanup_all(files)
-        await limits.release(limits.LIGHT, slot)
         _unclaim(callback.message.chat.id, sid, mode)
 
 
@@ -1160,10 +952,10 @@ async def _handle_twitter(message: Message, url: str, lang: str):
       • чисто текст       → карточка-скриншот твита;
       • цитата-твит       → карточка + медиа цитаты + текст цитаты «цитатой» снизу.
     """
-    # Кэш: этот твит уже отправляли — мгновенно переотправляем по file_id
-    cached = await _twitter_cache_get(url)
-    if cached and await send_cached_or_drop(
-            lambda: _send_cached_tweet(message, cached), url, "tw"):
+    # Кэш: этот твит уже отправляли — мгновенно переотправляем по file_id. Значение —
+    # JSON с токенами и подписью.
+    cache = Cache(url, "x")
+    if await job.try_cached(cache, lambda raw: _send_cached_tweet(message, json.loads(raw))):
         return
 
     try:
@@ -1173,27 +965,20 @@ async def _handle_twitter(message: Message, url: str, lang: str):
         await message.reply(limits.friendly_error(e, lang))
         return
 
-    slot = await limits.acquire_or_tell(limits.LIGHT, message, lang)
-    paths: list[str] = []
-    try:
+    async def work(paths):
         items, caption, parse_mode = await _build_twitter_plan(tweet)
-        paths = [it["path"] for it in items]
-
+        paths.keep([it["path"] for it in items])
         if not items:
             # карточка не нарисовалась — отдаём хотя бы текст
             await message.reply(caption or t("no_media", lang))
-            return
-
+            return None
         tokens = await _send_twitter(message, items, caption, parse_mode)
-        if tokens:
-            await _twitter_cache_save(url, tokens, caption, parse_mode)
-    except Exception as e:
-        logger.exception("Twitter handling failed")
-        await message.reply(limits.friendly_error(e, lang))
-    finally:
-        await limits.release(limits.LIGHT, slot)
-        for p in paths:
-            _cleanup(p)
+        if not tokens:
+            return None
+        return json.dumps({"items": tokens, "caption": caption, "pm": parse_mode})
+
+    await job.produce(cache=cache, work=work, on_error=_reply_error(message, lang),
+                      tell=message, lang=lang, label=f"X {url}")
 
 
 async def _build_twitter_plan(tweet: dict) -> tuple[list[dict], str | None, str | None]:
@@ -1284,25 +1069,6 @@ async def _send_twitter(message: Message, items: list[dict], caption: str | None
         elif m.video:
             tokens.append({"k": "V", "id": m.video.file_id})
     return tokens
-
-
-async def _twitter_cache_get(url: str) -> dict | None:
-    """Достаёт сохранённый твит из кэша (или None). Значение — JSON с токенами и подписью."""
-    async with SessionLocal() as session:
-        raw = await get_cached_file_id(session, url, "x")
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except Exception:
-        return None
-
-
-async def _twitter_cache_save(url: str, tokens: list[dict], caption: str | None,
-                              parse_mode: str | None):
-    payload = json.dumps({"items": tokens, "caption": caption, "pm": parse_mode})
-    async with SessionLocal() as session:
-        await save_cached_file_id(session, url, payload, "x")
 
 
 async def _send_cached_tweet(message: Message, data: dict):
@@ -1400,7 +1166,7 @@ async def _handle_spotify_collection(message: Message, url: str, lang: str):
 
     total_min = coll["total_duration"] // 60
     await _show_collection(
-        message, coll["kind"], coll["title"], tracks, lang,
+        message, url, coll["kind"], coll["title"], tracks, lang,
         cover=coll.get("cover"), extra=t("minutes_suffix", lang, min=total_min),
     )
 
@@ -1430,20 +1196,20 @@ async def _handle_soundcloud_set(message: Message, url: str, lang: str):
 
     total_min = sum(tr["duration"] for tr in data["tracks"]) // 60
     extra = t("minutes_suffix", lang, min=total_min) if total_min else ""
-    await _show_collection(message, "Сет", data["title"], tracks, lang, cover=data.get("cover"), extra=extra)
+    await _show_collection(message, url, "Сет", data["title"], tracks, lang,
+                           cover=data.get("cover"), extra=extra)
 
 
-async def _show_collection(message: Message, kind: str, title: str, tracks: list, lang: str,
-                           cover: str = None, extra: str = ""):
+async def _show_collection(message: Message, url: str, kind: str, title: str, tracks: list,
+                           lang: str, cover: str = None, extra: str = ""):
     """Сохраняет коллекцию и показывает список треков с пагинацией"""
     async with SessionLocal() as session:
         premium = await is_premium(session, message.from_user.id)
 
-    coll_id = uuid.uuid4().hex[:8]
-    _remember(COLLECTION_STORE, coll_id, {
-        "kind": kind, "title": title, "cover": cover, "tracks": tracks,
-        "premium": premium, "chat_id": message.chat.id, "user_msg_id": message.message_id,
-    })
+    # Треки — в базу целиком: раньше список жил только в памяти, и после перезапуска
+    # кнопки альбома отвечали «ссылка устарела».
+    coll_id = await COLLECTIONS.open(message, url, premium=premium,
+                                     saved={"title": title, "tracks": tracks})
 
     caption = t(
         "collection_caption", lang,
@@ -1470,6 +1236,89 @@ async def _handle_audio(
     )
 
 
+async def _resolve_audio(cache_url: str, source: str, meta: dict | None,
+                         fallback_query: str | None) -> dict:
+    """Откуда качать трек и с какими тегами.
+
+    Возвращает {"candidates", "title", "performer", "duration", "cover_url", "thumb"}:
+    кандидаты перебираются по очереди, если первый недоступен.
+    """
+    # cover_url — правильная обложка из оригинала (если есть), заменит обложку с YouTube
+    cover_url = meta.get("cover") if meta else None
+    target_duration = meta.get("duration") if meta else None
+    info = {}
+
+    # Если источник — поиск (Spotify): берём НЕСКОЛЬКО кандидатов, чтобы при
+    # недоступности первого видео попробовать следующее. Иначе — один источник.
+    if source.startswith("ytsearch"):
+        query = source.split(":", 1)[1]
+        # Spotify (есть meta): ищем оригинал по цепочке YT Music → SoundCloud.
+        found = None
+        if meta:
+            found = await asyncio.to_thread(
+                find_track_source, meta["performer"], meta["title"], meta["duration"]
+            )
+        if found:
+            candidates = [found]
+        else:
+            # запасной путь — обычный поиск на YouTube (несколько кандидатов)
+            candidates = await asyncio.to_thread(search_audio_candidates, query, target_duration)
+            if not candidates:
+                raise ValueError("not found")
+        source = candidates[0]
+    else:
+        candidates = [source]
+
+    if meta:
+        title, performer, duration = meta["title"], meta["performer"], meta["duration"]
+    else:
+        drm_meta = None
+        try:
+            info = await asyncio.to_thread(get_video_info, source)
+        except Exception as e:
+            # DRM на SoundCloud — сам файл зашифрован. Берём метаданные защищённого
+            # трека (название, исполнитель, длительность) и ищем его на YouTube.
+            # «Video unavailable» — та же по сути беда, что и DRM: сам источник
+            # отдать файл не может, и единственный путь — искать трек заново.
+            gone = "DRM" in str(e) or "unavailable" in str(e).lower()
+            if not (gone and fallback_query):
+                raise
+            # У снятого ролика метаданных не получить — тогда идём с запросом,
+            # собранным заранее (см. youtube_search_query).
+            try:
+                drm_meta = await asyncio.to_thread(get_video_info, cache_url, True)
+            except Exception:
+                drm_meta = {}
+            query = (
+                f"{drm_meta.get('uploader') or ''} {drm_meta.get('title') or ''}".strip()
+                or fallback_query
+            )
+            target = int(drm_meta.get("duration") or 0) or None
+            source = await asyncio.to_thread(search_audio, query, target)
+            candidates = [source]
+            cover_url = await asyncio.to_thread(
+                get_soundcloud_cover, cache_url
+            ) or drm_meta.get("thumbnail")
+            info = await asyncio.to_thread(get_video_info, source)
+
+        if drm_meta:
+            # точные теги — из самого SoundCloud, а не из найденного YouTube-видео
+            title = drm_meta.get("title") or "Без названия"
+            performer = drm_meta.get("uploader") or drm_meta.get("artist")
+            duration = int(drm_meta.get("duration") or 0)
+        else:
+            title = info.get("track") or info.get("title") or "Без названия"
+            performer = info.get("artist") or info.get("uploader") or info.get("creator")
+            duration = int(info.get("duration", 0) or 0)
+
+    # Маленькую миниатюру передаём ВСЕГДА и правильную: для прямых треков берём
+    # обложку самого трека. Так мгновенно показываемая картинка точно верная,
+    # а не подставленная Telegram'ом старая/чужая.
+    thumb = cover_url or (info.get("thumbnail") if not meta else None)
+    return {"candidates": candidates, "title": title, "performer": performer,
+            "duration": duration, "cover_url": cover_url, "thumb": thumb}
+
+
 async def _do_download_audio(
     bot: Bot, chat_id: int, reply_to: int,
     cache_url: str, source: str, lang: str, meta: dict = None, fallback_query: str = None,
@@ -1477,151 +1326,70 @@ async def _do_download_audio(
     """
     Ядро скачивания одного трека (кэш + глобальный слот). БЕЗ проверки «1 на юзера» —
     её делает вызывающий (одиночная загрузка или «Скачать всё»).
+    Одиночный трек качается МОЛЧА (без прогресс-бара). Общий прогресс показывает
+    только «Скачать всё» (там статус «N / total»).
     """
-    # Кэш: уже качали — отдаём мгновенно
-    async with SessionLocal() as session:
-        cached_id = await get_cached_file_id(session, cache_url, "audio")
-    if cached_id:
-        await bot.send_audio(chat_id, cached_id, reply_to_message_id=reply_to)
-        return
+    async def send(file_id):
+        await bot.send_audio(chat_id, file_id, reply_to_message_id=reply_to)
 
-    # Одиночный трек качается МОЛЧА (без прогресс-бара). Общий прогресс показывает
-    # только «Скачать всё» (там статус «N / total»).
-    slot = await limits.acquire(limits.LIGHT)
-
-    file_path = None
-    try:
+    async def work(paths):
         # «Отправляет файл…» в шапке чата на всё время работы: поиск трека, скачивание
         # и заливка занимают секунды, а никакого статуса у одиночного трека нет вовсе.
         await chat_action.once(bot, chat_id, chat_action.DOCUMENT)
-        # cover_url — правильная обложка из оригинала (если есть), заменит обложку с YouTube
-        cover_url = meta.get("cover") if meta else None
-        target_duration = meta.get("duration") if meta else None
-
-        # Если источник — поиск (Spotify): берём НЕСКОЛЬКО кандидатов, чтобы при
-        # недоступности первого видео попробовать следующее. Иначе — один источник.
-        if source.startswith("ytsearch"):
-            query = source.split(":", 1)[1]
-            # Spotify (есть meta): ищем оригинал по цепочке YT Music → SoundCloud.
-            found = None
-            if meta:
-                found = await asyncio.to_thread(
-                    find_track_source, meta["performer"], meta["title"], meta["duration"]
-                )
-            if found:
-                candidates = [found]
-            else:
-                # запасной путь — обычный поиск на YouTube (несколько кандидатов)
-                candidates = await asyncio.to_thread(search_audio_candidates, query, target_duration)
-                if not candidates:
-                    raise ValueError("not found")
-            source = candidates[0]
-        else:
-            candidates = [source]
-
-        if meta:
-            title = meta["title"]
-            performer = meta["performer"]
-            duration = meta["duration"]
-        else:
-            drm_meta = None
-            try:
-                info = await asyncio.to_thread(get_video_info, source)
-            except Exception as e:
-                # DRM на SoundCloud — сам файл зашифрован. Берём метаданные защищённого
-                # трека (название, исполнитель, длительность) и ищем его на YouTube.
-                # «Video unavailable» — та же по сути беда, что и DRM: сам источник
-                # отдать файл не может, и единственный путь — искать трек заново.
-                gone = "DRM" in str(e) or "unavailable" in str(e).lower()
-                if gone and fallback_query:
-                    # У снятого ролика метаданных не получить — тогда идём с запросом,
-                    # собранным заранее (см. youtube_search_query).
-                    try:
-                        drm_meta = await asyncio.to_thread(get_video_info, cache_url, True)
-                    except Exception:
-                        drm_meta = {}
-                    query = (
-                        f"{drm_meta.get('uploader') or ''} {drm_meta.get('title') or ''}".strip()
-                        or fallback_query
-                    )
-                    target = int(drm_meta.get("duration") or 0) or None
-                    source = await asyncio.to_thread(search_audio, query, target)
-                    cover_url = await asyncio.to_thread(
-                        get_soundcloud_cover, cache_url
-                    ) or drm_meta.get("thumbnail")
-                    info = await asyncio.to_thread(get_video_info, source)
-                else:
-                    raise
-
-            if drm_meta:
-                # точные теги — из самого SoundCloud, а не из найденного YouTube-видео
-                title = drm_meta.get("title") or "Без названия"
-                performer = drm_meta.get("uploader") or drm_meta.get("artist")
-                duration = int(drm_meta.get("duration") or 0)
-            else:
-                title = info.get("track") or info.get("title") or "Без названия"
-                performer = info.get("artist") or info.get("uploader") or info.get("creator")
-                duration = int(info.get("duration", 0) or 0)
+        plan = await _resolve_audio(cache_url, source, meta, fallback_query)
 
         # Качаем, перебирая кандидатов: если видео недоступно — пробуем следующее
         file_path = None
-        for cand in candidates:
+        for cand in plan["candidates"]:
             try:
-                file_path = await asyncio.to_thread(
-                    download_audio, cand, None, None, cover_url is None
-                )
+                file_path = paths.keep(await asyncio.to_thread(
+                    download_audio, cand, None, None, plan["cover_url"] is None))
                 break
             except Exception:
                 logger.warning("Кандидат недоступен, пробую следующий: %s", cand)
         if not file_path:
             raise ValueError("no available source")
         # Если есть точная обложка из оригинала — вшиваем её (заменяя любую чужую)
-        if cover_url:
-            await asyncio.to_thread(set_metadata, file_path, cover_url, title, performer)
+        if plan["cover_url"]:
+            await asyncio.to_thread(set_metadata, file_path, plan["cover_url"],
+                                    plan["title"], plan["performer"])
 
-        # Маленькую миниатюру передаём ВСЕГДА и правильную: для прямых треков берём
-        # обложку самого трека. Так мгновенно показываемая картинка точно верная,
-        # а не подставленная Telegram'ом старая/чужая.
-        thumb_url = cover_url or (info.get("thumbnail") if not meta else None)
         thumbnail = None
-        if thumb_url:
-            thumb_bytes = await asyncio.to_thread(make_thumbnail, thumb_url)
+        if plan["thumb"]:
+            thumb_bytes = await asyncio.to_thread(make_thumbnail, plan["thumb"])
             if thumb_bytes:
                 thumbnail = BufferedInputFile(thumb_bytes, filename="cover.jpg")
         sent = await bot.send_audio(
             chat_id,
             await tg_files.input_file_async(file_path, await _nice_name(file_path, quality="")),
-            title=title,
-            performer=performer,
-            duration=duration,
+            title=plan["title"],
+            performer=plan["performer"],
+            duration=plan["duration"],
             thumbnail=thumbnail,
             reply_to_message_id=reply_to,
         )
-        if sent.audio:
-            async with SessionLocal() as session:
-                await save_cached_file_id(session, cache_url, sent.audio.file_id, "audio")
-    except Exception as e:
-        logger.exception("Audio download failed")
+        return sent.audio.file_id if sent.audio else None
+
+    async def on_error(e):
         await bot.send_message(chat_id, limits.friendly_error(e, lang), reply_to_message_id=reply_to)
-    finally:
-        _cleanup_all(file_path)
-        await limits.release(limits.LIGHT, slot)
+
+    await job.run(cache=Cache(cache_url, "audio"), send=send, work=work, on_error=on_error,
+                  lang=lang, label=f"аудио {cache_url}")
 
 
 @router.callback_query(F.data.startswith("quality:"))
 async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     lang = lang_of(callback.from_user)
     _, quality_str, url_id = callback.data.split(":", 2)
+    if not quality_str.isdigit():
+        await callback.answer(t("link_expired", lang), show_alert=True)
+        return
     quality = int(quality_str)
 
-    entry = URL_STORE.get(url_id)
+    # В памяти нет — бот перезапускался: экран поднимется из базы, но без метаданных,
+    # поэтому качество скачается на полторы секунды дольше, зато кнопка живая.
+    entry = await QUALITY.for_click(callback, url_id, lang)
     if not entry:
-        # В памяти нет — бот перезапускался. Поднимаем ссылку из базы: метаданных там
-        # нет, поэтому качество скачается на полторы секунды дольше, зато кнопка живая.
-        async with SessionLocal() as session:
-            entry = await load_link_stash(session, url_id)
-    if not entry:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     chat_id = entry["chat_id"]
@@ -1637,29 +1405,24 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     # Premium проверяем У ТОГО, КТО НАЖАЛ, а не у того, кто прислал ссылку. Раньше
     # смотрели на отметку в самом меню (entry["premium"]) — то есть в группе любой мог
     # открыть чужое меню Premium-пользователя и скачать 4K бесплатно.
-    if quality > FREE_LIMIT:
+    if quality > FREE_QUALITY_LIMIT:
         async with SessionLocal() as session:
             if not await is_premium(session, user_id):
                 await callback.answer(t("premium_alert", lang), show_alert=True)
                 return
 
     # Кэш: если это качество уже качали — отдаём мгновенно (блокировку не применяем)
-    async with SessionLocal() as session:
-        cached_id = await get_cached_file_id(session, url, str(quality))
-    if cached_id:
-        await callback.answer()
-        await callback.message.delete()
+    cache = Cache(url, str(quality))
 
-        async def _resend():
-            await bot.send_video(
-                chat_id, cached_id,
-                supports_streaming=True,
-                reply_to_message_id=user_msg_id
-            )
+    async def send_cached(file_id):
+        await bot.send_video(chat_id, file_id, supports_streaming=True,
+                             reply_to_message_id=user_msg_id)
 
-        if await send_cached_or_drop(_resend, url, str(quality)):
-            return
-        # Расписка оказалась мёртвой — качаем это качество заново, как в первый раз.
+    got = await _heavy_from_cache(callback, cache, send_cached)
+    if got:
+        return
+    # Расписка оказалась мёртвой — качаем это качество заново, как в первый раз.
+    answered = got is False
 
     # Размер известен заранее — не тратим полчаса и гигабайты домашнего канала на файл,
     # который Telegram всё равно не примет. Оценка приблизительная, поэтому берём запас:
@@ -1667,97 +1430,54 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
     if info:
         approx = estimate_size(info, quality)
         if approx and approx > limits.MAX_FILE_BYTES:
-            await callback.answer(
-                t("too_big_before", lang, size=f"{approx / 1024 / 1024 / 1024:.1f}"),
-                show_alert=True)
+            await _alert(callback, answered, chat_id,
+                         t("too_big_before", lang, size=f"{approx / 1024 / 1024 / 1024:.1f}"))
             return
 
     # Один пользователь — одна активная загрузка. Меню не удаляем, чтобы можно было повторить.
-    if user_id in ACTIVE_DOWNLOADS:
-        await callback.answer(t("wait_current", lang), show_alert=True)
+    if job.busy(user_id):
+        await _alert(callback, answered, chat_id, t("wait_current", lang))
         return
 
-    await callback.answer()
-    await callback.message.delete()
-    ACTIVE_DOWNLOADS.add(user_id)
-    slot = await limits.acquire(limits.HEAVY)
+    if not answered:
+        await callback.answer()
+        await safe_delete(callback.message)
 
-    # Всё, что после занятия слота, — строго внутри try. Отправка полоски прогресса
-    # стояла ВНЕ него, и если она не проходила (сообщение человека удалили, у бота
-    # забрали право писать), слот оставался занятым навсегда, а следующие загрузки
-    # молча вставали за мёртвым держателем — см. 23.09.2026.
-    progress_msg = None
-    file_path = None
-    try:
-        progress_msg = await bot.send_message(
-            chat_id,
-            make_progress_bar(0, lang),
-            reply_to_message_id=user_msg_id
-        )
+    async with job.exclusive(user_id):
+        progress = job.Progress(bot, chat_id, user_msg_id, lang)
 
-        loop = asyncio.get_running_loop()
-        throttle = ProgressThrottle()      # не чаще раза в пару секунд (см. выше)
-
-        def on_progress(percent: int):
-            if throttle.should_send(percent):
-                asyncio.run_coroutine_threadsafe(
-                    _safe_edit(progress_msg, make_progress_bar(percent, lang)),
-                    loop
+        async def work(paths):
+            await progress.start()
+            duration = int(info.get("duration", 0) or 0) if info else 0
+            # Место на диске проверяем ДО загрузки: на забитом диске yt-dlp и ffmpeg падают
+            # с невнятным «errno 28», а человек видит бессмысленное «не удалось скачать».
+            limits.check_disk_space(DOWNLOADS_DIR)
+            # info уже получен, когда показывали кнопки качества — передаём его, чтобы
+            # yt-dlp не ходил к площадке за теми же метаданными второй раз (экономит ~1.5с).
+            # «Отправляет видео…» в шапке: полоска показывает скачивание, а заливка идёт
+            # уже после неё, и без действия в чате выглядит как зависание.
+            async with chat_action.show(bot, chat_id, chat_action.VIDEO):
+                file_path = paths.keep(await asyncio.to_thread(
+                    download_video, url, quality, progress.hook, progress.stage("processing"), info))
+                # Не удаляем статус, а показываем «Отправляю» — заливка тоже занимает время
+                await progress.say("uploading")
+                sent = await bot.send_video(
+                    chat_id,
+                    await tg_files.input_file_async(
+                        file_path,
+                        await _nice_name(file_path,
+                                         quality=f"{quality}p" if quality else None)),
+                    reply_to_message_id=user_msg_id,
+                    **await _video_kwargs(file_path, duration),
                 )
+            await progress.done()
+            return sent.video.file_id if sent.video else None
 
-        def on_postprocess():
-            # ffmpeg начал склейку — показываем отдельный статус
-            asyncio.run_coroutine_threadsafe(
-                _safe_edit(progress_msg, t("processing", lang)),
-                loop
-            )
+        async def on_error(e):
+            await progress.fail(limits.friendly_error(e, lang))
 
-        duration = int(info.get("duration", 0) or 0) if info else 0
-
-        # Место на диске проверяем ДО загрузки: на забитом диске yt-dlp и ffmpeg падают
-        # с невнятным «errno 28», а человек видит бессмысленное «не удалось скачать».
-        limits.check_disk_space(DOWNLOADS_DIR)
-        # info уже получен, когда показывали кнопки качества — передаём его, чтобы
-        # yt-dlp не ходил к площадке за теми же метаданными второй раз (экономит ~1.5с).
-        # «Отправляет видео…» в шапке: полоска показывает скачивание, а заливка идёт
-        # уже после неё, и без действия в чате выглядит как зависание.
-        async with chat_action.show(bot, chat_id, chat_action.VIDEO):
-            file_path = await asyncio.to_thread(
-                download_video, url, quality, on_progress, on_postprocess, info
-            )
-            # Не удаляем статус, а показываем «Отправляю» — заливка тоже занимает время
-            await _safe_edit(progress_msg, t("uploading", lang))
-            sent = await bot.send_video(
-                chat_id,
-                await tg_files.input_file_async(
-                    file_path,
-                    await _nice_name(file_path,
-                                     quality=f"{quality}p" if quality else None)),
-                reply_to_message_id=user_msg_id,
-                **await _video_kwargs(file_path, duration),
-            )
-        await progress_msg.delete()
-        # Сохраняем file_id в кэш (сам файл убирается в finally — в том числе когда
-        # отправка упала на полпути: раньше он оставался на диске до перезапуска).
-        if sent.video:
-            async with SessionLocal() as session:
-                await save_cached_file_id(session, url, sent.video.file_id, str(quality))
-    except Exception as e:
-        logger.exception("Download failed")
-        text = limits.friendly_error(e, lang)
-        try:
-            await progress_msg.edit_text(text)
-        except Exception:
-            # Полоски может не быть вовсе (упало на её отправке) — тогда отдельным
-            # сообщением; не вышло и это — пусть падает в лог, слот уже освободится.
-            try:
-                await bot.send_message(chat_id, text)
-            except Exception:
-                logger.warning("Не смог сообщить о сбое загрузки в чат %s", chat_id)
-    finally:
-        _cleanup_all(file_path)
-        await limits.release(limits.HEAVY, slot)
-        ACTIVE_DOWNLOADS.discard(user_id)
+        await job.produce(cache=cache, work=work, on_error=on_error, lane=limits.HEAVY,
+                          label=f"видео {quality}p {url}")
 
 
 async def _nice_name(path: str, quality: str | None = None, *,
@@ -1824,55 +1544,13 @@ async def _video_kwargs(file_path: str, duration: int = 0) -> dict:
     )
 
 
-async def _safe_edit(msg, text: str):
-    try:
-        await msg.edit_text(text)
-    except Exception:
-        pass
-
-
-async def _safe_delete(msg):
-    try:
-        await msg.delete()
-    except Exception:
-        pass
-
-
-def _cleanup_all(*paths):
-    """Убирает всё, что скачали: принимает пути, списки путей и None.
-
-    Зачем отдельно от _cleanup: уборка должна стоять в finally, а туда переменная
-    попадает в любом состоянии — ещё не заведённая (скачивание упало на первой
-    строке), одиночный путь или список файлов поста.
-    """
-    for item in paths:
-        if item is None:
-            continue
-        if isinstance(item, (list, tuple, set)):
-            _cleanup_all(*item)
-        else:
-            _cleanup(item)
-
-
-def _cleanup(file_path: str):
-    """Удаляет локальный файл после отправки — диск не копит мусор.
-    Заодно учитываем размер в статистике трафика (сколько записано на SSD)."""
-    try:
-        if file_path and os.path.exists(file_path):
-            traffic.record(file_path)
-            os.remove(file_path)
-    except Exception:
-        logger.warning(f"Не смог удалить {file_path}")
-
-
 @router.callback_query(F.data.startswith("sppage:"))
 async def handle_collection_page(callback: CallbackQuery):
     """Переключение страниц списка треков"""
     lang = lang_of(callback.from_user)
     _, coll_id, page_str = callback.data.split(":")
-    coll = COLLECTION_STORE.get(coll_id)
+    coll = await COLLECTIONS.for_click(callback, coll_id, lang)
     if not coll:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
     keyboard = build_tracklist_keyboard(coll_id, coll["tracks"], int(page_str), coll.get("premium", False), lang)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
@@ -1884,9 +1562,8 @@ async def handle_collection_track(callback: CallbackQuery, bot: Bot):
     """Скачивание одного трека из альбома/плейлиста/сета"""
     lang = lang_of(callback.from_user)
     _, coll_id, idx_str = callback.data.split(":")
-    coll = COLLECTION_STORE.get(coll_id)
+    coll = await COLLECTIONS.for_click(callback, coll_id, lang)
     if not coll:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     # Номер трека из кнопки проверяем: «tracks[int(idx)]» на подобранных данных давал
@@ -1901,10 +1578,9 @@ async def handle_collection_track(callback: CallbackQuery, bot: Bot):
     if not _claim(callback.message.chat.id, coll_id, idx_str):
         await callback.answer(t("already_downloading", lang), show_alert=False)
         return
-    alerts.current_request.set(f"трек из коллекции: {track['cache_url']}")  # контекст для тревог
-    await callback.answer()
-
     try:
+        alerts.current_request.set(f"трек из коллекции: {track['cache_url']}")  # контекст для тревог
+        await callback.answer()
         await _do_download_audio(
             bot, callback.message.chat.id, callback.message.message_id,
             track["cache_url"], track["source"], lang,
@@ -1919,9 +1595,8 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
     """Premium: скачивание всех треков альбома/плейлиста по очереди"""
     lang = lang_of(callback.from_user)
     _, coll_id = callback.data.split(":")
-    coll = COLLECTION_STORE.get(coll_id)
+    coll = await COLLECTIONS.for_click(callback, coll_id, lang)
     if not coll:
-        await callback.answer(t("link_expired", lang), show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -1930,7 +1605,7 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
             await callback.answer(t("premium_alert", lang), show_alert=True)
             return
 
-    if user_id in ACTIVE_DOWNLOADS:
+    if job.busy(user_id):
         await callback.answer(t("wait_current", lang), show_alert=True)
         return
 
@@ -1940,18 +1615,16 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
     tracks = coll["tracks"]
     total = len(tracks)
 
-    ACTIVE_DOWNLOADS.add(user_id)
-    # Отправка первого сообщения — внутри try: если она не пройдёт, отметка «этот
-    # человек уже качает» останется навсегда, и он до перезапуска будет получать
-    # «дождись текущей загрузки». Тот же класс ошибки, что и с залипшим слотом.
-    status = None
-    try:
+    # Отметка «этот человек уже качает» снимается в любом случае, даже если не пройдёт
+    # отправка первого же сообщения — иначе он до перезапуска получал бы «дождись
+    # текущей загрузки».
+    async with job.exclusive(user_id):
         status = await bot.send_message(
             chat_id, t("downloading_all", lang, i=0, total=total),
             reply_to_message_id=reply_to
         )
         for i, track in enumerate(tracks, 1):
-            await _safe_edit(status, f"{t('downloading_all', lang, i=i, total=total)}\n{track['title']}")
+            await safe_edit(status, f"{t('downloading_all', lang, i=i, total=total)}\n{track['title']}")
             alerts.current_request.set(f"трек из коллекции [все]: {track['cache_url']}")
             try:
                 await _do_download_audio(
@@ -1961,6 +1634,4 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
                 )
             except Exception:
                 logger.exception("Track in 'download all' failed: %s", track["title"])
-        await _safe_delete(status)
-    finally:
-        ACTIVE_DOWNLOADS.discard(user_id)
+        await safe_delete(status)

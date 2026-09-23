@@ -5,7 +5,8 @@ from aiogram.filters import CommandStart, CommandObject, Command
 from aiogram.types import Message
 
 from bot.config import ADMIN_ID
-from bot.features.download.link import INLINE_LINKS, process_link
+from bot.features.download.link import process_link
+from bot.features.download.screens import INLINE_LINKS
 from bot.features.common.keyboards.menu import main_menu_keyboard
 from bot.utils.i18n import t, lang_of
 

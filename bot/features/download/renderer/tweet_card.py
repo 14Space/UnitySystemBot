@@ -19,7 +19,7 @@ import time
 
 import requests
 
-from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
+from bot.config import DOWNLOADS_DIR
 from bot.utils import pw_thread
 
 logger = logging.getLogger(__name__)

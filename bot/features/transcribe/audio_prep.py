@@ -30,6 +30,8 @@
 import logging
 import os
 import subprocess
+
+from bot.utils import ffmpeg, files
 import uuid
 
 from bot.config import DOWNLOADS_DIR, STT_PREPROCESS, STT_FILTERS
@@ -39,17 +41,6 @@ logger = logging.getLogger(__name__)
 # Сколько ждём ffmpeg. Он работает быстрее реального времени в десятки раз, так что
 # минуты хватает даже на часовую запись; дольше — значит что-то пошло не так.
 _TIMEOUT = 60
-
-
-def ffmpeg_bin() -> str:
-    """Путь к ffmpeg. Ищется тем же способом, что и для скачивания: в контейнере он в
-    системных путях, на Windows может лежать рядом с проектом.
-
-    Наружу — потому что тем же ffmpeg пользуется relay_stt: ему нужно перегнать
-    подготовленную запись обратно в голосовое (см. relay_stt._as_voice).
-    """
-    from bot.features.download.downloaders.ytdlp_wrapper import FFMPEG_DIR
-    return os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
 
 
 def prepare(path: str) -> tuple[str, bool]:
@@ -63,13 +54,13 @@ def prepare(path: str) -> tuple[str, bool]:
         return path, False
 
     out = os.path.join(DOWNLOADS_DIR, f"prep_{uuid.uuid4().hex[:8]}.wav")
-    cmd = [ffmpeg_bin(), "-y", "-i", path, "-ar", "16000", "-ac", "1"]
+    cmd = ["ffmpeg", "-y", "-i", path, "-ar", "16000", "-ac", "1"]
     if STT_FILTERS:
         cmd += ["-af", STT_FILTERS]
     cmd += [out]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, timeout=_TIMEOUT)
+        res = ffmpeg.run(cmd, timeout=_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as e:
         logger.info("Подготовка звука не вышла (%s) — распознаю как есть", type(e).__name__)
         return path, False
@@ -84,10 +75,7 @@ def prepare(path: str) -> tuple[str, bool]:
 
 
 def _drop(path: str) -> None:
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+    files.remove(path)
 
 
 def cleanup(path: str, ours: bool) -> None:

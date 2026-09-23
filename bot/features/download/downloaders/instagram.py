@@ -6,28 +6,26 @@ import uuid
 import requests
 import yt_dlp
 from urllib.parse import urlparse
+from bot.config import DOWNLOADS_DIR, INSTAGRAM_COOKIES, COOKIE_COPIES_DIR
 from bot.features.download.downloaders.ytdlp_wrapper import (
-    BASE_OPTS, DOWNLOADS_DIR, _quality_opts, _unique_outtmpl,
+    BASE_OPTS, _quality_opts, _unique_outtmpl,
 )
-from bot.utils import pw_thread
-from bot.utils import media_names, net
-from bot.utils import cookie_files, net
+from bot.utils import cookie_files, media_names, net, pw_thread
 
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
-try:
-    from bot.config import INSTAGRAM_COOKIES, INSTAGRAM_PROXY, COOKIE_COPIES_DIR
-except Exception:  # worker может запускаться отдельно от бота
-    INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "data/instagram_cookies.txt")
-    COOKIE_COPIES_DIR = os.getenv("COOKIE_COPIES_DIR", "data/cookie-copies")
-    INSTAGRAM_PROXY = os.getenv("INSTAGRAM_PROXY", "")
-
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 VIDEO_EXTS = (".mp4", ".mov", ".webm")
+
+def _home() -> str:
+    """Домашний туннель для Instagram («» – не настроен). Какую переменную брать,
+    решает net.proxy_for – одинаково для загрузки и для проверки кук."""
+    return net.proxy_for("instagram")
+
 
 def _attempts(cookies: str | None) -> list[tuple[str, str | None]]:
     """Пары (прокси, куки) по порядку попыток.
@@ -46,8 +44,9 @@ def _attempts(cookies: str | None) -> list[tuple[str, str | None]]:
     Второй нужен на случай, когда туннель лежит: открытый пост скачается и так, а
     сессию мы при этом не подставим.
     """
-    if cookies and INSTAGRAM_PROXY:
-        return [(INSTAGRAM_PROXY, cookies), ("", None)]
+    home = _home()
+    if cookies and home:
+        return [(home, cookies), ("", None)]
     if cookies:                      # туннель не настроен — работаем как раньше
         return [("", cookies)]
     return [("", None)]
@@ -87,10 +86,11 @@ def _embed_image_src(browser, shortcode: str) -> str | None:
     не достанется, это дешевле потерянного входа.
     """
     cookies = _pw_cookies()
-    with_session = bool(cookies and INSTAGRAM_PROXY)
+    home = _home()
+    with_session = bool(cookies and home)
     options = {"user_agent": _UA}
     if with_session:
-        options["proxy"] = {"server": INSTAGRAM_PROXY}
+        options["proxy"] = {"server": home}
     ctx = browser.new_context(**options)
     try:
         if with_session:
@@ -246,7 +246,7 @@ def download_reel(url: str, max_height: int | None = None) -> str:
         except Exception as e:
             last_err = e
             # Прямой доступ заблокирован анти-ботом, а прокси ещё не пробовали — повторим.
-            if proxy and INSTAGRAM_PROXY:
+            if proxy:
                 logger.info("Instagram: через дом не вышло (%s) — пробую напрямую без кук",
                             str(e)[:60])
                 continue
@@ -324,15 +324,14 @@ def download_post(url: str) -> list[str]:
         if info:
             used_proxy = proxy
             break
-        if proxy and INSTAGRAM_PROXY:
+        if proxy:
             logger.info("Instagram: пост не отдался через дом — пробую напрямую без кук")
 
     if not info:
         # Частый случай — одиночное ФОТО: yt-dlp падает («There is no video in this post»).
         # Сначала пробуем просто прочитать страницу поста с куками, и лишь потом —
         # браузер: он тяжелее и ломается от каждой смены вёрстки.
-        ig_proxies = ({"http": INSTAGRAM_PROXY, "https": INSTAGRAM_PROXY}
-                      if INSTAGRAM_PROXY else None)
+        ig_proxies = net.as_requests(_home())
         for attempt, grab in (("страницей", lambda: _photo_via_page(shortcode, cookies, ig_proxies)),
                               ("браузером", lambda: _photo_via_browser(shortcode, ig_proxies))):
             try:
@@ -346,7 +345,7 @@ def download_post(url: str) -> list[str]:
                               + (f": {last_err}" if last_err else ""))
 
     # Медиа-файлы качаем тем же путём (прямо или через прокси), что и метаданные.
-    proxies = {"http": used_proxy, "https": used_proxy} if used_proxy else None
+    proxies = net.as_requests(used_proxy)
 
     # Карусель приходит плейлистом, одиночный пост — обычным элементом
     entries = list(info.get("entries") or [info])

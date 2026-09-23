@@ -127,8 +127,9 @@ def test_no_cookies_on_a_direct_attempt(tmp_path, monkeypatch):
     src = tmp_path / "youtube_cookies.txt"
     src.write_text(_netscape(("SID", "ключ")), encoding="utf-8")
     monkeypatch.setattr(y, "YOUTUBE_COOKIES", str(src))
-    monkeypatch.setattr(y, "_PROXY", "socks5://10.8.0.2:1080")
+    from bot.utils import net
+    monkeypatch.setattr(net, "PROXY_URL", "socks5://10.8.0.2:1080")
 
     assert y._cookie_opts("https://www.youtube.com/watch?v=x", {}) == {}
     assert y._cookie_opts("https://www.youtube.com/watch?v=x",
-                          {"proxy": y._PROXY}).get("cookiefile")
+                          {"proxy": net.PROXY_URL}).get("cookiefile")

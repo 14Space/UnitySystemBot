@@ -18,6 +18,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from bot.config import AI_DAILY_LIMIT, AI_USER_DAILY_LIMIT
+from bot.utils.tg_messages import safe_edit
 from bot.database import SessionLocal
 from bot.database.repository import (
     get_disabled_features, save_ai_thread, load_ai_thread, ai_usage_today, add_ai_usage)
@@ -157,18 +158,18 @@ async def _answer(message: Message, history: list[dict], lang: str):
         text, st = await asyncio.to_thread(client.ask, history, _reply_lang(history, lang))
 
     if st == "no_provider":
-        await _safe_edit(status, t("ai_not_configured", lang))
+        await safe_edit(status, t("ai_not_configured", lang))
         return
     if st == "quota":
-        await _safe_edit(status, t("ai_quota", lang))
+        await safe_edit(status, t("ai_quota", lang))
         return
     if st != "ok" or not text:
-        await _safe_edit(status, t("ai_error", lang))
+        await safe_edit(status, t("ai_error", lang))
         return
 
     if len(text) > MAX_LEN:
         text = text[:MAX_LEN] + "…"
-    sent = await _safe_edit(status, text)
+    sent = await safe_edit(status, text)
     if not sent:
         # Правка не прошла (сообщение удалили, отобрали права) — ответ всё равно должен
         # дойти, иначе человек остаётся с «Думаю…» и без ответа.
@@ -176,10 +177,3 @@ async def _answer(message: Message, history: list[dict], lang: str):
     if sent:
         await _remember(sent.message_id, message.chat.id,
                         history + [{"role": "assistant", "content": text}])
-
-
-async def _safe_edit(msg: Message, text: str) -> Message | None:
-    try:
-        return await msg.edit_text(text)
-    except Exception:
-        return None

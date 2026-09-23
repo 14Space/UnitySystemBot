@@ -182,11 +182,23 @@ def test_download_paths_are_unique():
 
 def test_instagram_probe_uses_the_instagram_proxy(monkeypatch):
     from bot.features.common import healthcheck as hc
+    from bot.utils import net
 
-    monkeypatch.setenv("PROXY_URL", "socks5://общий:1080")
-    monkeypatch.setenv("INSTAGRAM_PROXY", "socks5://инстаграм:1080")
-    assert hc._home_proxies("INSTAGRAM_PROXY")["https"] == "socks5://инстаграм:1080"
+    monkeypatch.setattr(net, "PROXY_URL", "socks5://общий:1080")
+    monkeypatch.setattr(net, "INSTAGRAM_PROXY", "socks5://инстаграм:1080")
+    assert hc._home_proxies("instagram")["https"] == "socks5://инстаграм:1080"
     assert hc._home_proxies()["https"] == "socks5://общий:1080"
+
+
+def test_instagram_cookies_never_go_direct_when_a_tunnel_exists(monkeypatch):
+    """Своего туннеля у Instagram нет, а общий есть – запрос с куками всё равно идёт
+    через дом. Раньше проверка кук так и делала, а загрузчик шёл напрямую."""
+    from bot.features.download.downloaders import instagram
+    from bot.utils import net
+
+    monkeypatch.setattr(net, "PROXY_URL", "socks5://общий:1080")
+    monkeypatch.setattr(net, "INSTAGRAM_PROXY", "")
+    assert instagram._attempts("куки.txt")[0] == ("socks5://общий:1080", "куки.txt")
 
 
 # --- B1 повторно: премиум по чужой кнопке (S5) ----------------------------

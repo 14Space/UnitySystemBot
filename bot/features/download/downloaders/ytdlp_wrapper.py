@@ -3,33 +3,18 @@ import re
 import copy
 import time
 import uuid
-import shutil
 import glob
 import logging
-import subprocess
-import requests
 import yt_dlp
 
-from bot.utils import media_names, net
+from bot.config import (
+    DOWNLOADS_DIR, POT_PROVIDER_URL, YTDLP_CONCURRENT_FRAGMENTS, YOUTUBE_COOKIES,
+)
+from bot.utils import media_names, net, ffmpeg
 from bot.utils import cookie_files
-from bot.utils.ffmpeg_limits import FFMPEG_TIMEOUT, FFPROBE_TIMEOUT
+from bot.utils.limits import MAX_FILE_BYTES
 
 logger = logging.getLogger(__name__)
-
-
-def _find_ffmpeg() -> str | None:
-    found = shutil.which("ffmpeg")
-    if found:
-        return os.path.dirname(found)
-    pattern = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg*\ffmpeg-*\bin\ffmpeg.exe")
-    matches = glob.glob(pattern)
-    if matches:
-        return os.path.dirname(matches[0])
-    return None
-
-
-FFMPEG_DIR = _find_ffmpeg()
-DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "data/downloads")
 
 
 def _unique_outtmpl(suffix: str = "dl") -> str:
@@ -46,11 +31,6 @@ def _unique_outtmpl(suffix: str = "dl") -> str:
     """
     return os.path.join(DOWNLOADS_DIR, f"%(id)s_{suffix}_{uuid.uuid4().hex[:8]}.%(ext)s")
 
-# Адрес POT-провайдера («выдаватель пропусков»): контейнер bgutil-ytdlp-pot-provider.
-# Без пропусков (PO-токенов) YouTube отдаёт HTTP 403 на скачивание. В docker бот идёт
-# к нему по имени сервиса; на хосте — задать POT_PROVIDER_URL=http://localhost:4416.
-POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://bgutil-provider:4416")
-
 BASE_OPTS = {
     "quiet": True,
     # Видео у YouTube (и почти везде, где есть выбор качества) лежит не одним файлом,
@@ -60,7 +40,7 @@ BASE_OPTS = {
     # обратно) это ожидание особенно дорогое. Четыре куска разом закрывают паузы друг
     # друга. Больше ставить не стоит: на несколько одновременных загрузок это
     # умножается, и площадка начинает отвечать ошибками «слишком часто».
-    "concurrent_fragment_downloads": int(os.getenv("YTDLP_CONCURRENT_FRAGMENTS", "4")),
+    "concurrent_fragment_downloads": YTDLP_CONCURRENT_FRAGMENTS,
     # Кусок иногда не доезжает сам по себе (обрыв, 5xx). Это не повод терять весь
     # ролик: повторяем именно его.
     "fragment_retries": 5,
@@ -71,67 +51,56 @@ BASE_OPTS = {
     "noprogress": True,
     # Клиент НЕ переопределяем: набор по умолчанию у ночной сборки yt-dlp сам выбирает
     # рабочие форматы (в т.ч. через SABR — новый протокол YouTube). Пропуски берём у
-    # POT-провайдера — вместе это снимает 403 на популярных роликах, Shorts и YT Music.
+    # POT-провайдера (без его пропусков YouTube отдаёт 403 на скачивание) — вместе
+    # это снимает 403 на популярных роликах, Shorts и YT Music.
     "extractor_args": {
         "youtubepot-bgutilhttp": {"base_url": [POT_PROVIDER_URL]},
     },
     # Потолок размера. Смысл не в диске, а в бессмысленной работе: файл больше 2 ГБ
     # Telegram всё равно не примет, а без этого предела бот честно качал его целиком
     # (часами, через домашний канал) — и только потом отвечал «слишком большой».
-    "max_filesize": int(os.getenv("MAX_FILE_BYTES_YTDLP", str(1_950_000_000))),
+    "max_filesize": MAX_FILE_BYTES,
 }
-if FFMPEG_DIR:
-    BASE_OPTS["ffmpeg_location"] = FFMPEG_DIR
+if ffmpeg.FFMPEG_DIR:
+    BASE_OPTS["ffmpeg_location"] = ffmpeg.FFMPEG_DIR
 
-# Прокси (из .env → PROXY_URL) — обход блокировок YouTube/YT Music (репутация IP
-# сервера у YouTube — see «Sign in to confirm you're not a bot») и PornHub (блок целой
-# страны, например Франции). Но сам прокси, особенно домашний, часто не такой быстрый,
-# как сервер, поэтому логика «умная» — СНАЧАЛА пробуем напрямую (быстро и надёжно —
-# большинство ссылок доступны и так), и лишь если прямой заход упал — повторяем через
-# прокси. Так падения из-за тупящего прокси не задевают доступные ссылки. По образцу
-# Instagram. Исключение — PornHub: там блок ПО СТРАНЕ целиком, прямой заход обречён
-# заранее, поэтому сразу идём через прокси, не тратя время на заведомо мёртвую попытку.
-_PROXY = os.getenv("PROXY_URL", "")
-_PROXY_FIRST = os.getenv("PROXY_FIRST", "false").lower() in ("1", "true", "yes")
-# Через туннель данные идут медленнее — стандартных 20с yt-dlp не хватает.
-_PROXY_TIMEOUT = int(os.getenv("PROXY_SOCKET_TIMEOUT", "60"))
+# Прокси (PROXY_URL) — обход блокировок YouTube/YT Music (репутация IP сервера у
+# YouTube — «Sign in to confirm you're not a bot») и PornHub (блок целой страны).
+# Сам прокси, особенно домашний, не такой быстрый, как сервер, поэтому сначала идём
+# напрямую и лишь при отказе повторяем через прокси (см. net.with_proxy). Исключение —
+# PornHub: там блок ПО СТРАНЕ целиком, прямой заход обречён заранее.
 
 
 def _needs_proxy(url: str) -> bool:
     """Площадки, где наш серверный IP может быть заблокирован/на подозрении.
 
     «ytsearch» — это не ссылка, а запрос поиска по YouTube (так качаются треки
-    Spotify и запасной путь SoundCloud). Его сюда пришлось добавить отдельно: строки
-    вида «ytsearch8:Ed Sheeran Shape of You» слова youtube.com не содержат, поэтому
-    поиск шёл мимо прокси и упирался в тот же бот-чек, от которого прокси и спасает.
-    Ссылки чинились, а поиск — нет, и ломались ровно Spotify и SoundCloud.
+    Spotify и запасной путь SoundCloud). Его сюда пришлось добавить отдельно: строка
+    вида «ytsearch8:Ed Sheeran Shape of You» не ссылка вовсе, поэтому поиск шёл мимо
+    прокси и упирался в тот же бот-чек, от которого прокси и спасает. Ссылки чинились,
+    а поиск — нет, и ломались ровно Spotify и SoundCloud.
     """
     u = url or ""
-    return u.startswith("ytsearch") or any(
-        d in u for d in ("youtube.com", "youtu.be", "pornhub.com"))
+    return u.startswith("ytsearch") or net.url_on(u, "youtube.com", "youtu.be", "pornhub.com")
 
 
-def _with_music_fallback(url: str, op):
-    """op(proxy_opts: dict) -> результат. Если прокси не задан или площадке он не нужен —
-    один прямой вызов, как и было. Если нужен — для PornHub сразу через прокси (страновой
-    блок прямой заход не переживёт), для YouTube/YT Music — сначала прямой заход, при
-    ошибке повтор через {"proxy": PROXY}."""
-    if not _PROXY or not _needs_proxy(url):
+def _proxy_opts(proxy: str) -> dict:
+    """Опции yt-dlp для захода через прокси. Через туннель данные идут медленнее —
+    стандартных 20с yt-dlp не хватает, поэтому ждём дольше."""
+    return {"proxy": proxy, "socket_timeout": net.PROXY_SOCKET_TIMEOUT} if proxy else {}
+
+
+def via_proxy(url: str, op):
+    """op(proxy_opts: dict) -> результат, с откатом на прокси там, где он нужен.
+
+    Прокси не задан или площадке он не нужен — один прямой вызов. PornHub — сразу
+    через прокси (страновой блок прямой заход не переживёт). YouTube/YT Music —
+    сначала напрямую, при ошибке повтор через прокси (или сразу, при PROXY_FIRST).
+    """
+    if not _needs_proxy(url):
         return op({})
-    # PornHub — всегда сразу через прокси: там блок ПО СТРАНЕ, прямой заход обречён.
-    # Остальные — сразу, если включён PROXY_FIRST (на сервере с забаненным адресом
-    # прямая попытка всё равно провалится, а время съест).
-    if _PROXY_FIRST or "pornhub.com" in (url or ""):
-        return op({"proxy": _PROXY, "socket_timeout": _PROXY_TIMEOUT})
-    attempts: list[dict] = [{}, {"proxy": _PROXY, "socket_timeout": _PROXY_TIMEOUT}]
-    for i, proxy_opts in enumerate(attempts):
-        try:
-            return op(proxy_opts)
-        except Exception:
-            if i < len(attempts) - 1:      # был прямой заход и есть запасной прокси
-                logger.info("Напрямую не вышло — пробую через прокси")
-                continue
-            raise
+    first = True if net.url_on(url, "pornhub.com") else None
+    return net.with_proxy(lambda proxy: op(_proxy_opts(proxy)), net.proxy_for(), first=first)
 
 
 # PornHub спрятан за Cloudflare: обычный запрос ловит 403. Маскируемся под настоящий
@@ -142,11 +111,6 @@ try:
     _CHROME_TARGET = ImpersonateTarget.from_str("chrome")
 except Exception:
     _CHROME_TARGET = None
-
-
-# Куки YouTube (см. bot/config.py). Читаем через окружение, как и остальные настройки
-# этого модуля: он должен уметь работать и в отрыве от бота.
-YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES", "data/youtube_cookies.txt")
 
 
 def youtube_search_query(url: str) -> str:
@@ -163,10 +127,9 @@ def youtube_search_query(url: str) -> str:
     в поисковом запросе она только мешает, поэтому срезаем.
     """
     try:
-        r = requests.get("https://www.youtube.com/oembed",
-                         params={"url": url, "format": "json"},
-                         proxies={"http": _PROXY, "https": _PROXY} if _PROXY else None,
-                         timeout=20)
+        r = net.session().get("https://www.youtube.com/oembed",
+                              params={"url": url, "format": "json"},
+                              proxies=net.as_requests(net.proxy_for()), timeout=20)
         data = r.json()
     except Exception:
         logger.info("Не удалось прочитать данные ролика для поиска: %s", url)
@@ -208,9 +171,9 @@ def _cookie_opts(url: str, proxy_opts: dict | None = None) -> dict:
     u = url or ""
     if not YOUTUBE_COOKIES:
         return {}
-    if not (u.startswith("ytsearch") or "youtube.com" in u or "youtu.be" in u):
+    if not (u.startswith("ytsearch") or net.url_on(u, "youtube.com", "youtu.be")):
         return {}
-    if _PROXY and not (proxy_opts or {}).get("proxy"):
+    if net.proxy_for() and not (proxy_opts or {}).get("proxy"):
         return {}                    # прямая попытка — идём БЕЗ кук
     copy = cookie_files.working(YOUTUBE_COOKIES,
                                 os.path.dirname(YOUTUBE_COOKIES) or ".")
@@ -219,7 +182,7 @@ def _cookie_opts(url: str, proxy_opts: dict | None = None) -> dict:
 
 def _impersonate_opts(url: str) -> dict:
     """Маскировку под браузер включаем ТОЛЬКО для PornHub (обход Cloudflare 403)."""
-    if _CHROME_TARGET is not None and "pornhub.com" in (url or ""):
+    if _CHROME_TARGET is not None and net.url_on(url, "pornhub.com"):
         return {"impersonate": _CHROME_TARGET}
     return {}
 
@@ -251,7 +214,7 @@ def download_probe(url: str, audio_only: bool = False) -> str:
         files = glob.glob(os.path.join(DOWNLOADS_DIR, f"probe_{tag}_*"))
         return files[0] if files else ""
 
-    return _with_music_fallback(url, _op)
+    return via_proxy(url, _op)
 
 
 def get_video_info(url: str, allow_drm: bool = False) -> dict:
@@ -268,7 +231,7 @@ def get_video_info(url: str, allow_drm: bool = False) -> dict:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
-    return _with_music_fallback(url, _op)
+    return via_proxy(url, _op)
 
 
 STANDARD_QUALITIES = [144, 240, 360, 480, 720, 1080, 1440, 2160]
@@ -407,7 +370,7 @@ def download_video(
                     return recovered
             raise
 
-    return _with_music_fallback(url, _op)
+    return via_proxy(url, _op)
 
 
 def _extract_for_download(ydl, url: str, info: dict | None):
@@ -430,12 +393,11 @@ _IOS_OK_CODECS = ("h264", "avc1", "hevc", "h265")
 
 def _video_codec(path: str) -> str:
     """Имя видеокодека файла через ffprobe (пустая строка, если не удалось)."""
-    ffprobe = os.path.join(FFMPEG_DIR, "ffprobe") if FFMPEG_DIR else "ffprobe"
     try:
-        out = subprocess.run(
-            [ffprobe, "-v", "error", "-select_streams", "v:0",
+        out = ffmpeg.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", path],
-            capture_output=True, text=True, timeout=FFPROBE_TIMEOUT,
+            text=True,
         )
         return (out.stdout or "").strip().lower()
     except Exception:
@@ -454,17 +416,15 @@ def _ensure_h264(path: str, postprocess_callback=None) -> str:
     if postprocess_callback:
         postprocess_callback()  # покажем пользователю «обработка» — перекодирование не мгновенно
 
-    ffmpeg = os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
     out_path = path.rsplit(".", 1)[0] + "_h264.mp4"
     cmd = [
-        ffmpeg, "-y", "-i", path,
+        "ffmpeg", "-y", "-i", path,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-preset", "veryfast",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
         out_path,
     ]
-    res = subprocess.run(cmd, capture_output=True,
-                         timeout=FFMPEG_TIMEOUT)
+    res = ffmpeg.run(cmd)
     if res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
         try:
             os.remove(path)
@@ -504,7 +464,7 @@ def search_audio(query: str, target_duration: int = None, count: int = 5) -> str
         with yt_dlp.YoutubeDL({**BASE_OPTS, "noplaylist": True, **proxy_opts}) as ydl:
             return ydl.extract_info(term, download=False)
 
-    res = _with_music_fallback(term, _op)
+    res = via_proxy(term, _op)
 
     entries = [e for e in (res.get("entries") or []) if e]
     if not entries:
@@ -526,7 +486,7 @@ def search_audio_candidates(query: str, target_duration: int = None, count: int 
         with yt_dlp.YoutubeDL({**BASE_OPTS, "noplaylist": True, **proxy_opts}) as ydl:
             return ydl.extract_info(term, download=False)
 
-    res = _with_music_fallback(term, _op)
+    res = via_proxy(term, _op)
     entries = [e for e in (res.get("entries") or []) if e]
     if target_duration:
         entries.sort(key=lambda e: abs((e.get("duration") or 0) - target_duration))
@@ -634,7 +594,7 @@ def download_audio(
             media_names.remember(filename, nice, extracted.get("id"))
             return filename
 
-    return _with_music_fallback(url, _op)
+    return via_proxy(url, _op)
 
 
 def download_media(url: str) -> str:
@@ -689,15 +649,13 @@ def convert_gif_to_mp4(gif_path: str) -> str:
     """Конвертирует GIF в чистый mp4 (H.264) — чтобы Telegram не пере-сжимал грубо.
     Если не вышло — возвращает исходный gif."""
     mp4 = gif_path.rsplit(".", 1)[0] + "_anim.mp4"
-    ffmpeg = os.path.join(FFMPEG_DIR, "ffmpeg") if FFMPEG_DIR else "ffmpeg"
     cmd = [
-        ffmpeg, "-y", "-i", gif_path,
+        "ffmpeg", "-y", "-i", gif_path,
         "-movflags", "faststart", "-pix_fmt", "yuv420p",
         "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-crf", "18",
         mp4,
     ]
-    subprocess.run(cmd, capture_output=True,
-                         timeout=FFMPEG_TIMEOUT)
+    ffmpeg.run(cmd)
     if os.path.exists(mp4) and os.path.getsize(mp4) > 0:
         return mp4
     return gif_path
@@ -773,7 +731,7 @@ def download_shorts(url: str, max_height: int | None = None) -> str:
             # пониже, чем ждать. Но через прокси даже здоровая загрузка идёт медленнее,
             # и прежние 10с приводили к откату на ровном месте — поэтому порог зависит
             # от того, работаем мы напрямую или через туннель.
-            quick = 10 if not proxy_opts.get("proxy") else max(10, _PROXY_TIMEOUT // 2)
+            quick = 10 if not proxy_opts.get("proxy") else max(10, net.PROXY_SOCKET_TIMEOUT // 2)
             impatient = {"socket_timeout": quick, "retries": 1} if i < len(attempts) - 1 else {}
             ydl_opts = {
                 **BASE_OPTS,
@@ -783,7 +741,7 @@ def download_shorts(url: str, max_height: int | None = None) -> str:
                 **impatient,
                 **proxy_opts,  # для YouTube/PornHub: пусто напрямую, затем прокси при неудаче
                 **_impersonate_opts(url),
-            **_cookie_opts(url, proxy_opts),   # куки YouTube — ради возрастных роликов
+                **_cookie_opts(url, proxy_opts),   # куки YouTube — ради возрастных роликов
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -802,4 +760,4 @@ def download_shorts(url: str, max_height: int | None = None) -> str:
                                 str(e)[:120], attempts[i + 1])
         raise last_err
 
-    return _with_music_fallback(url, _op)
+    return via_proxy(url, _op)

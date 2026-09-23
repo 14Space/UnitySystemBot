@@ -12,7 +12,7 @@ import uuid
 
 import requests
 
-from bot.features.download.downloaders.ytdlp_wrapper import DOWNLOADS_DIR
+from bot.config import DOWNLOADS_DIR
 from bot.utils import net
 
 # i/status/<id> — самый стабильный путь: не зависит от имени автора в ссылке.

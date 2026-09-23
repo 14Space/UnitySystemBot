@@ -109,11 +109,14 @@ FILES = sorted(p for p in ROOT.rglob("*.py") if p.name != "limits.py")
 
 
 def test_there_are_places_to_check():
-    """Страховка от «тест зелёный, потому что ничего не нашёл»."""
+    """Страховка от «тест зелёный, потому что ничего не нашёл».
+
+    Мест немного, и это нарочно: загрузки занимают слот через скелет job.py (слот
+    очереди и отметка «уже качает»), а не каждая по-своему. Плюс расшифровка."""
     found = sum(1 for f in FILES
                 for n in ast.walk(ast.parse(f.read_text(encoding="utf-8")))
                 if _is_acquire(n))
-    assert found >= 8
+    assert found >= 3
 
 
 @pytest.mark.parametrize("path", FILES, ids=lambda p: p.name)

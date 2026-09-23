@@ -1,5 +1,6 @@
-import os
 import time
+
+from bot.config import PROGRESS_MIN_INTERVAL
 
 
 def make_progress_bar(percent: float, lang: str = "ru") -> str:
@@ -17,7 +18,7 @@ def make_progress_bar(percent: float, lang: str = "ru") -> str:
 
 
 # Как часто разрешаем ПРАВИТЬ сообщение с полоской, секунд.
-MIN_INTERVAL = float(os.getenv("PROGRESS_MIN_INTERVAL", "3"))
+MIN_INTERVAL = PROGRESS_MIN_INTERVAL
 
 
 class ProgressThrottle:
