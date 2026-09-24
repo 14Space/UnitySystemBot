@@ -47,6 +47,29 @@ def _safe_id(value, default: str = "media") -> str:
     text = str(value or "")
     return text if _SAFE_ID_RE.match(text) else default
 
+
+# Короткие ссылки, у которых в yt-dlp нет своего извлекателя: раньше по ним шёл
+# «generic», а он выключен (см. ALLOWED_EXTRACTORS). Короткий хост -> куда он вправе вести.
+_SHORT_HOSTS = {
+    "pin.it": PINTEREST_DOMAINS,
+    "on.soundcloud.com": ("soundcloud.com",),
+}
+
+
+def resolve_short(url: str) -> str:
+    """Разворачивает короткую ссылку площадки в полную (остальные – как есть).
+
+    Зовётся в КАЖДОЙ точке входа этого модуля, а не у вызывающих: ссылка приходит и от
+    человека, и из проверки функционала, и из inline-режима. 24.09.2026 разворот стоял
+    только в обработчике сообщений – и проверка «SoundCloud трек» на короткой ссылке
+    покраснела: yt-dlp её не узнал, а запасной поиск на YouTube искал хвост ссылки.
+    Каждый переход проверяется ДО того, как по нему идти (net.follow_redirects).
+    """
+    for host, targets in _SHORT_HOSTS.items():
+        if net.url_on(url, host):
+            return net.follow_redirects(url, host, *targets)
+    return url
+
 BASE_OPTS = {
     "quiet": True,
     # Видео у YouTube (и почти везде, где есть выбор качества) лежит не одним файлом,
@@ -214,6 +237,7 @@ def download_probe(url: str, audio_only: bool = False) -> str:
     трафика на полное качество. Проходит тот же реальный путь, что и боевое скачивание
     (POT-токены, маскировка под браузер, прокси), поэтому ловит те же поломки. Никакой
     пост-обработки (перекодирование/теги) — только байты. Возвращает путь к файлу."""
+    url = resolve_short(url)
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     tag = uuid.uuid4().hex[:8]
     # Видео: «worstvideo*+worstaudio/worst» — самое лёгкое видео+звук, иначе самый лёгкий
@@ -243,6 +267,7 @@ def get_video_info(url: str, allow_drm: bool = False) -> dict:
     """Получает информацию о видео без скачивания.
     allow_drm=True — не падать на DRM-треках, а вернуть метаданные (название, длительность)
     без самих форматов. Нужно, чтобы по названию найти трек на YouTube."""
+    url = resolve_short(url)
     def _op(proxy_opts: dict) -> dict:
         opts = dict(BASE_OPTS)
         if allow_drm:
@@ -321,6 +346,7 @@ def download_video(
     progress_callback(percent) — вызывается во время скачивания.
     postprocess_callback() — вызывается когда ffmpeg начинает склейку.
     """
+    url = resolve_short(url)
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     # Имя УНИКАЛЬНОЕ на каждое скачивание: два человека, качающие одно видео в одном
     # качестве, писали в один файл — первый удалял его за собой, второй падал на
@@ -519,6 +545,7 @@ def get_soundcloud_set(url: str) -> dict:
     """Читает альбом/плейлист (set) SoundCloud: название и список треков с реальными именами.
     Полное чтение (не flat) — иначе у части треков вместо названия числовой id.
     ignore_no_formats_error — чтобы DRM-треки тоже отдавали название."""
+    url = resolve_short(url)
     opts = {**BASE_OPTS, "ignore_no_formats_error": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -556,6 +583,7 @@ def download_audio(
     embed_thumbnail=False — НЕ вшивать обложку с источника (мы поставим свою отдельно).
         Иначе в mp3 окажутся две обложки и Telegram покажет в кружке не ту.
     """
+    url = resolve_short(url)
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     # По названию трека имя не строим: у двух запросов одного трека он совпадал, а
     # длинные кириллические названия давали «File name too long». Настоящее имя для
@@ -627,10 +655,7 @@ def download_media(url: str) -> str:
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     output_path = _unique_outtmpl()
 
-    # Короткую ссылку pin.it разворачиваем сами: своего извлекателя у неё нет, а
-    # «generic», который раньше шёл по ней, выключен (см. ALLOWED_EXTRACTORS).
-    if net.url_on(url, "pin.it"):
-        url = net.follow_redirects(url, "pin.it", *PINTEREST_DOMAINS)
+    url = resolve_short(url)
 
     ydl_opts = {
         **BASE_OPTS,
@@ -739,6 +764,7 @@ def download_shorts(url: str, max_height: int | None = None) -> str:
     чего рвётся соединение) автоматически повторяем в качестве пониже: лучше отдать
     ролик чуть менее чётким, чем не отдать совсем.
     """
+    url = resolve_short(url)
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     output_path = _unique_outtmpl()
 

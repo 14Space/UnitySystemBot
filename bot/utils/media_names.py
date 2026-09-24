@@ -49,10 +49,3 @@ def peek(path: str) -> tuple[str | None, str | None]:
     with _lock:
         return _titles.get(path, (None, None))
 
-
-def title_of(path: str) -> str | None:
-    return peek(path)[0]
-
-
-def ident_of(path: str) -> str | None:
-    return peek(path)[1]

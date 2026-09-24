@@ -119,3 +119,25 @@ def test_health_alert_does_not_carry_the_bot_token():
     alert = format_alert([{"name": "send_path", "state": "fail", "detail": detail,
                            "platform": None}], "ru")
     assert "AAEabcdefghij" not in alert
+
+
+def test_every_ytdlp_entry_point_unrolls_short_links():
+    """24.09.2026, сразу после раскатки: разворот on.soundcloud.com стоял только в
+    обработчике сообщений, и проверка «SoundCloud трек» с короткой ссылкой покраснела –
+    yt-dlp без «generic» её не узнаёт. Разворачивать обязана КАЖДАЯ точка входа."""
+    import inspect
+    from bot.features.download.downloaders import ytdlp_wrapper as w
+
+    for name in ("download_probe", "get_video_info", "download_video", "get_soundcloud_set",
+                 "download_audio", "download_media", "download_shorts"):
+        assert "resolve_short(url)" in inspect.getsource(getattr(w, name)), name
+
+
+def test_resolve_short_leaves_full_links_alone(monkeypatch):
+    from bot.features.download.downloaders import ytdlp_wrapper as w
+
+    monkeypatch.setattr(w.net, "follow_redirects",
+                        lambda url, *d: "https://soundcloud.com/a/b")
+    assert w.resolve_short("https://on.soundcloud.com/XyZ") == "https://soundcloud.com/a/b"
+    assert w.resolve_short("https://soundcloud.com/a/b") == "https://soundcloud.com/a/b"
+    assert w.resolve_short("ytsearch1:x") == "ytsearch1:x"

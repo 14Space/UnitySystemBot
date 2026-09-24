@@ -32,7 +32,7 @@ from bot.features.download.downloaders.ytdlp_wrapper import (
     get_video_info, get_available_qualities, download_video, download_shorts,
     estimate_size,
     download_audio, search_audio, search_audio_candidates, get_soundcloud_set,
-    download_media, convert_gif_to_mp4,
+    download_media, convert_gif_to_mp4, resolve_short,
 )
 from bot.features.download.downloaders.spotify import get_track_info, get_collection_info
 from bot.features.download.downloaders.music_search import find_track_source
@@ -169,12 +169,11 @@ async def process_link(message: Message, url: str):
     if platform == Platform.UNKNOWN:
         return
 
-    # Короткая ссылка SoundCloud (on.soundcloud.com): своего извлекателя у неё в yt-dlp
-    # нет, а «generic», который раньше шёл по ней, выключен. Разворачиваем сами, с
-    # проверкой каждого перехода, и заново смотрим, что там: трек или целый сет.
+    # Короткая ссылка SoundCloud (on.soundcloud.com) может вести и на трек, и на целый
+    # сет – что это, видно только после разворота (см. resolve_short).
     if net.url_on(url, "on.soundcloud.com"):
         try:
-            url = await asyncio.to_thread(net.follow_redirects, url, "soundcloud.com")
+            url = await asyncio.to_thread(resolve_short, url)
         except Exception:
             logger.info("Короткая ссылка SoundCloud не развернулась: %s", url)
         platform = detect_platform(url)

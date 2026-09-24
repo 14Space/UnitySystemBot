@@ -456,16 +456,20 @@ async def _check_soundcloud_track(url: str):
     человек, иначе она не проверка. Заодно этот запасной ход наконец проверяется: до сих
     пор он не был покрыт вовсе и мог сгнить незаметно.
     """
-    from bot.features.download.downloaders.ytdlp_wrapper import download_probe, search_audio
+    from bot.features.download.downloaders.ytdlp_wrapper import (
+        download_probe, search_audio, resolve_short)
     from bot.features.download.link import _soundcloud_query
 
     def work():
+        # Запасной поиск строится из пути ссылки – у короткой on.soundcloud.com это
+        # случайный код, а не «исполнитель/трек». Разворачиваем, как и в боевом пути.
+        full = resolve_short(url)
         try:
             path = download_probe(url, audio_only=True)
         except Exception as e:
             # Прямой путь закрыт — идём тем же обходным, что и бот у пользователя.
             direct = f"{type(e).__name__}"
-            found = search_audio(_soundcloud_query(url))
+            found = search_audio(_soundcloud_query(full))
             path = download_probe(found, audio_only=True)
             try:
                 size = _size_of(path)

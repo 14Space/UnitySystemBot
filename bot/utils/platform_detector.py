@@ -235,6 +235,3 @@ def normalize_cache_url(url: str) -> str:
         pass
     return url
 
-
-def is_supported(url: str) -> bool:
-    return detect_platform(url) != Platform.UNKNOWN

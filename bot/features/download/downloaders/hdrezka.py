@@ -65,13 +65,6 @@ _cp.__set_name__(_hdrezka_api.HdRezkaApi, "translators")
 _hdrezka_api.HdRezkaApi.translators = _cp
 
 
-def parse_season_episode(url: str) -> tuple[int | None, int | None]:
-    """Достаёт сезон/серию из хвоста ссылки сериала: #t:355-s:1-e:1"""
-    s = re.search(r"s:(\d+)", url)
-    e = re.search(r"e:(\d+)", url)
-    return (int(s.group(1)) if s else None, int(e.group(1)) if e else None)
-
-
 def open_media(url: str) -> HdRezkaApi:
     """Создаёт объект HDRezka (одна загрузка страницы). Переиспользуем на всех шагах.
 
