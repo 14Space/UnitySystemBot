@@ -241,6 +241,11 @@ WHISPER_PREWARM = os.getenv("WHISPER_PREWARM", "false").lower() in ("1", "true",
 MAX_VOICE_SECONDS = int(os.getenv("MAX_VOICE_SECONDS", str(20 * 60)))
 
 STT_PREPROCESS = os.getenv("STT_PREPROCESS", "true").lower() in ("1", "true", "yes")
+# Проверка «есть ли вообще речь» перед распознаванием (детектор Silero VAD, см.
+# features/transcribe/vad.py). Речи меньше STT_MIN_SPEECH_SECONDS – бот молчит и запись
+# никуда не отправляет: на тишине распознавание выдумывает «Субтитры сделал…».
+STT_VAD = os.getenv("STT_VAD", "true").lower() in ("1", "true", "yes")
+STT_MIN_SPEECH_SECONDS = float(os.getenv("STT_MIN_SPEECH_SECONDS", "0.3"))
 # Цепочка фильтров ffmpeg. Срез гула ниже голоса (ветер, стук), шумоподавление,
 # выравнивание громкости, удаление пауз длиннее 0.6с. Пустое значение = только
 # приведение к 16 кГц моно.

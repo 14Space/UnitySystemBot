@@ -1,4 +1,5 @@
 import http.cookiejar
+import json
 import logging
 import os
 import re
@@ -182,6 +183,77 @@ def _photo_via_browser(shortcode: str, proxies=None) -> list[str]:
     return [path]
 
 
+# --- Запасной путь для REELS с куками: видео прямо со страницы ---------------
+#
+# 24.09.2026: Reel «только для вошедших» не качался, хотя куки живые (страница
+# настроек аккаунта отдаётся). Разбор показал: yt-dlp с куками идёт в закрытый API
+# Instagram (/api/v1/media/<id>/info/), а тот нашей сессии отвечает переходом на
+# главную, как гостю, – на ЛЮБОЙ Reel, не только закрытый. yt-dlp видит пустой ответ
+# («Failed to parse JSON»), бот уходил на запасной заход без кук и честно говорил
+# «только для вошедших». То есть куки для Reels не работали вовсе: открытые ролики
+# качались запасным заходом, а закрытые – никак.
+#
+# А страница самого Reel, открытая с теми же куками, видео содержит: в её данных есть
+# массив video_versions с прямыми ссылками на mp4. Отдаёт она их только запросу,
+# похожему на браузер (обычный запрос получает страницу без данных), поэтому здесь
+# curl_cffi с маскировкой под Chrome – он уже стоит ради PornHub.
+
+# Сколько символов вокруг массива смотрим, чтобы понять, чьё это видео: на странице
+# есть и соседние ролики из ленты, у каждого свой код рядом с его video_versions.
+_CODE_WINDOW = 3000
+_CODE_RE = re.compile(r'"code":"([A-Za-z0-9_-]+)"')
+
+
+def _video_from_html(html: str, shortcode: str) -> str | None:
+    """Ссылка на лучшее видео ИМЕННО этого Reel из HTML страницы (None – не нашли)."""
+    dec = json.JSONDecoder()
+    for m in re.finditer(r'"video_versions":', html or ""):
+        near = html[max(0, m.start() - _CODE_WINDOW):m.start() + _CODE_WINDOW]
+        if shortcode not in set(_CODE_RE.findall(near)):
+            continue                              # соседний ролик из ленты
+        try:
+            versions, _ = dec.raw_decode(html, m.end())
+        except ValueError:
+            continue
+        versions = [v for v in versions if isinstance(v, dict) and v.get("url")]
+        if versions:
+            best = max(versions, key=lambda v: (v.get("width") or 0) * (v.get("height") or 0))
+            return best["url"]
+    return None
+
+
+def _video_via_page(shortcode: str, cookies: str, proxy: str) -> str | None:
+    """Reel со страницы, С КУКАМИ и тем же путём, что и остальные запросы с куками
+    (через дом, если туннель настроен). Путь к скачанному файлу или None."""
+    from curl_cffi import requests as curl
+
+    jar = http.cookiejar.MozillaCookieJar(cookies)
+    jar.load(ignore_discard=True, ignore_expires=True)
+    # socks5h, а не socks5: адрес Instagram тогда разрешается ДОМА. При socks5 его
+    # разрешает сервер, получает IPv6, а у домашнего канала нормального IPv6 нет –
+    # соединение не устанавливается вовсе.
+    home = proxy.replace("socks5://", "socks5h://", 1) if proxy else ""
+    src = None
+    for url in (f"https://www.instagram.com/reels/{shortcode}/",
+                f"https://www.instagram.com/reel/{shortcode}/"):
+        try:
+            r = curl.get(url, cookies={c.name: c.value for c in jar},
+                         proxies={"http": home, "https": home} if home else None,
+                         impersonate="chrome", timeout=30)
+            src = _video_from_html(r.text, shortcode)
+        except Exception:
+            logger.info("Instagram: страница %s не отдала видео", url, exc_info=True)
+        if src:
+            break
+    if not src:
+        return None
+    path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{uuid.uuid4().hex[:8]}_dl.mp4")
+    net.fetch_to_file(src, path, proxies=net.as_requests(proxy),
+                      headers={"User-Agent": _UA}, timeout=120)
+    media_names.remember(path, None, shortcode)
+    return path
+
+
 def _cookies_path() -> str | None:
     """Путь к ОДНОРАЗОВОЙ КОПИИ файла кук, если он задан и существует.
 
@@ -255,6 +327,18 @@ def download_reel(url: str, max_height: int | None = None) -> str:
                 return filename
         except Exception as e:
             last_err = e
+            # С куками yt-dlp упирается в закрытый API, который нашей сессии не отвечает
+            # (см. _video_via_page), – берём видео со страницы тем же путём.
+            if use_cookies:
+                code = _shortcode(url)
+                try:
+                    path = _video_via_page(code, use_cookies, proxy) if code else None
+                except Exception:
+                    logger.info("Instagram: со страницы Reel не вышло", exc_info=True)
+                    path = None
+                if path:
+                    logger.info("Instagram: Reel %s взят со страницы (с куками)", code)
+                    return path
             # Прямой доступ заблокирован анти-ботом, а прокси ещё не пробовали — повторим.
             if proxy:
                 logger.info("Instagram: через дом не вышло (%s) — пробую напрямую без кук",
@@ -266,8 +350,9 @@ def download_reel(url: str, max_height: int | None = None) -> str:
                     logger.warning("Instagram: контент только для вошедших, а cookies.txt нет — "
                                    "добавь файл кук (INSTAGRAM_COOKIES), см. data/instagram_cookies.txt")
                 else:
-                    logger.warning("Instagram: контент только для вошедших, но даже с куками отказ — "
-                                   "скорее всего сессия протухла, перевыгрузи cookies.txt")
+                    logger.warning("Instagram: контент только для вошедших, и даже с куками "
+                                   "не вышло — проверь пункт «Куки Instagram» (/test); "
+                                   "если он зелёный, сессия жива, а сломался способ добычи")
             raise
     raise last_err
 

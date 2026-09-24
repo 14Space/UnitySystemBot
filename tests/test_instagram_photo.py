@@ -53,3 +53,18 @@ def test_file_type_comes_from_content_not_from_extension(tmp_path):
         p = tmp_path / name
         p.write_bytes(head)
         assert sniff(str(p)) == expected, name
+
+
+def test_reel_video_is_taken_from_its_own_block_on_the_page():
+    """24.09.2026: yt-dlp с куками упирается в закрытый API, который нашей сессии не
+    отвечает; видео берём со страницы Reel. На странице есть и соседние ролики ленты –
+    брать надо именно тот, рядом с которым стоит наш код."""
+    from bot.features.download.downloaders.instagram import _video_from_html
+
+    html = ('{"code":"OTHER1","video_versions":[{"width":360,"height":360,'
+            '"url":"https://cdn/other.mp4"}]}' + " " * 4000 +
+            '{"code":"DdkV5NRPZdU","video_versions":[{"width":480,"height":854,'
+            '"url":"https://cdn/small.mp4"},{"width":720,"height":1280,'
+            r'"url":"https:\/\/cdn\/best.mp4?a=1\u0026b=2"}]}')   # как в JSON страницы
+    assert _video_from_html(html, "DdkV5NRPZdU") == "https://cdn/best.mp4?a=1&b=2"
+    assert _video_from_html(html, "NOPE") is None

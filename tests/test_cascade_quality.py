@@ -147,3 +147,54 @@ def test_group_voice_never_goes_to_the_relay(monkeypatch):
     calls.clear()
     assert asyncio.run(cascade.transcribe_audio("x.ogg", private=True)) == "текст"
     assert calls == ["groq", "relay"]
+
+
+def test_silence_never_reaches_the_engines(monkeypatch):
+    """23.09.2026 на молчаливом кружке бот ответил «Субтитры добавил»: Whisper на тишине
+    выдумывает подписи к видео, а облако при этом уверяет, что речь есть. Теперь тишину
+    распознаванию не отдаём вовсе."""
+    calls = []
+
+    async def cloud(path):
+        calls.append("groq")
+        return "Субтитры добавил", -0.1
+
+    monkeypatch.setattr(cascade, "_METHODS", {"groq": cloud})
+    monkeypatch.setattr(cascade, "STT_ORDER", ("groq",))
+    monkeypatch.setattr(cascade, "STT_VAD", True)
+    monkeypatch.setattr(cascade.vad, "speech_seconds", lambda path: 0.0)
+    assert asyncio.run(cascade.transcribe_audio("x.ogg")) == ""
+    assert calls == []
+
+
+def test_broken_speech_detector_does_not_block_transcription(monkeypatch):
+    async def cloud(path):
+        return "привет, как дела", -0.1
+
+    monkeypatch.setattr(cascade, "_METHODS", {"groq": cloud})
+    monkeypatch.setattr(cascade, "STT_ORDER", ("groq",))
+    monkeypatch.setattr(cascade, "STT_VAD", True)
+    monkeypatch.setattr(cascade.vad, "speech_seconds", lambda path: None)
+    assert asyncio.run(cascade.transcribe_audio("x.ogg")) == "привет, как дела"
+
+
+def test_real_voice_sample_has_speech_and_silence_has_none(tmp_path):
+    """Сам детектор – на настоящем образце голоса и на тишине."""
+    import subprocess
+    from bot.features.transcribe import vad
+    from bot.utils import ffmpeg
+
+    speech = vad.speech_seconds("data/samples/whisper_probe.ogg")
+    if speech is None:
+        pytest.skip("faster-whisper не установлен в этом окружении")
+    assert speech > 3
+    silent = tmp_path / "silent.ogg"
+    ffmpeg.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "5",
+                "-c:a", "libopus", str(silent)])
+    assert vad.speech_seconds(str(silent)) == 0
+
+
+def test_subtitle_credit_variants_are_cut():
+    from bot.features.transcribe.transcriber.whisper_transcriber import _clean
+    assert _clean("Субтитры добавил") == ""
+    assert _clean("Я добавил субтитры к видео") == "Я добавил субтитры к видео"

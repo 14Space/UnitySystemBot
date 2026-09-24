@@ -20,8 +20,10 @@
 import asyncio
 import logging
 
-from bot.config import STT_ORDER, STT_ESCALATE_BELOW, RELAY_IN_GROUPS
-from bot.features.transcribe import audio_prep
+from bot.config import (
+    STT_ORDER, STT_ESCALATE_BELOW, RELAY_IN_GROUPS, STT_VAD, STT_MIN_SPEECH_SECONDS,
+)
+from bot.features.transcribe import audio_prep, vad
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,14 @@ async def transcribe_audio(file_path: str, *, private: bool = True) -> str:
     Пустой ответ («речи нет») причиной для перехода не считается: это законный
     результат, и остальные способы честно вернут ту же пустоту.
     """
+    # Сначала – есть ли речь вообще. Тишину и шум распознаванию не отдаём: на них оно
+    # выдумывает подписи к видео, а собственному сигналу облака о тишине верить нельзя
+    # (см. vad.py). Заодно не тратим лимит облака и не шлём пустое посреднику.
+    if STT_VAD:
+        speech = await asyncio.to_thread(vad.speech_seconds, file_path)
+        if speech is not None and speech < STT_MIN_SPEECH_SECONDS:
+            logger.info("Речи в записи нет (%.2fс по детектору) — молчу", speech)
+            return ""
     # Подготовка — это запуск ffmpeg, до минуты работы. В цикле событий ей делать
     # нечего: пока она считала, бот не отвечал НИКОМУ — ни на ссылки, ни на кнопки,
     # и так на каждое голосовое. Уносим в поток, как и сами способы распознавания.
