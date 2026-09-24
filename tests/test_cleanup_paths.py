@@ -36,7 +36,9 @@ def test_cleanup_always_lives_in_finally():
 def test_link_does_not_clean_up_by_hand():
     """Загрузки в link.py идут через скелет: своя уборка там – верный признак того,
     что скелет снова начали переписывать руками."""
-    src = (ROOT / "bot/features/download/link.py").read_text(encoding="utf-8")
+    src = "\n".join(p.read_text(encoding="utf-8") for p in
+                    [ROOT / "bot/features/download/link.py",
+                     *(ROOT / "bot/features/download/flows").glob("*.py")])
     for name in ("_cleanup", "limits.acquire", "limits.release", "ACTIVE_DOWNLOADS"):
         assert name not in src, f"{name} снова в link.py – загрузка мимо job.py"
 

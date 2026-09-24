@@ -10,7 +10,6 @@ import os
 import re
 import uuid
 
-import requests
 
 from bot.config import DOWNLOADS_DIR
 from bot.utils import net
@@ -61,7 +60,7 @@ def get_tweet(url: str) -> dict:
       }
     """
     tweet_id = _status_id(url)
-    r = requests.get(API.format(id=tweet_id), headers=HEADERS, timeout=30)
+    r = net.session().get(API.format(id=tweet_id), headers=HEADERS, timeout=30)
     r.raise_for_status()
     payload = r.json()
     tweet = payload.get("tweet")

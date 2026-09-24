@@ -4,7 +4,6 @@ import os
 import re
 import uuid
 import time
-import requests
 import HdRezkaApi.api as _hdrezka_api
 from HdRezkaApi import HdRezkaApi
 from bot.config import DOWNLOADS_DIR
@@ -198,7 +197,7 @@ def download_stream(stream, quality: str, name="video", season=None, episode=Non
     # Предел проверяет сам загрузчик (net.fetch_to_file), здесь – только размер для
     # полоски, если сервер назовёт его на HEAD и промолчит на GET.
     try:
-        head = requests.head(video_url, timeout=30, allow_redirects=True)
+        head = net.session().head(video_url, timeout=30, allow_redirects=True)
         size = int(head.headers.get("Content-Length", 0))
     except Exception:
         size = 0

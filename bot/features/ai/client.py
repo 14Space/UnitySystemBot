@@ -25,6 +25,7 @@ from bot.config import (
     GEMINI_API_KEY, GROQ_API_KEY, GEMINI_MODEL, GROQ_MODEL,
     AI_TIMEOUT, AI_COOLDOWN, AI_ORDER,
 )
+from bot.utils import net
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def _gemini(history: list[dict], lang: str) -> tuple[str | None, str]:
     # ошибки, а её печатает logger.exception: ключ утекал через обычную диагностику.
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{GEMINI_MODEL}:generateContent")
-    r = requests.post(url, json=body, timeout=AI_TIMEOUT,
+    r = net.session().post(url, json=body, timeout=AI_TIMEOUT,
                       headers={"x-goog-api-key": GEMINI_API_KEY})
     if r.status_code == 429:
         return None, "quota"
@@ -99,7 +100,7 @@ def _groq(history: list[dict], lang: str) -> tuple[str | None, str]:
     msgs = [{"role": "system", "content": _system(lang)}]
     msgs += [{"role": "assistant" if m["role"] == "assistant" else "user",
               "content": m["content"]} for m in history]
-    r = requests.post(
+    r = net.session().post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
         json={"model": GROQ_MODEL, "messages": msgs, "max_tokens": 800,

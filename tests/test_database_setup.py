@@ -92,3 +92,44 @@ def test_old_database_gets_new_columns(tmp_path, monkeypatch):
     con.close()
     assert {"slideshow_mode", "currency_targets", "audio_track", "compress_shorts"} <= cols
     assert row == ("video", 0, None)
+
+
+def test_chat_settings_are_cached_and_dropped_on_change(tmp_path, monkeypatch):
+    """Настройки чата читаются из базы раз в минуту, а не на каждую ссылку, – но любое
+    изменение через /setconfig видно сразу."""
+    import importlib
+    import bot.config as config
+    import bot.database as db
+
+    monkeypatch.setattr(config, "DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'cs.db'}")
+    db = importlib.reload(db)
+    from bot.database import repository as r
+
+    async def scenario():
+        await db.init_db()
+        async with db.SessionLocal() as s:
+            assert await r.get_slideshow_mode(s, 7, default="ask") == "ask"
+            await r.set_slideshow_mode(s, 7, "photos")
+            assert await r.get_slideshow_mode(s, 7) == "photos"     # сразу, без минуты
+            await r.set_compress_shorts(s, 7, True)
+            assert await r.get_compress_shorts(s, 7, default=False) is True
+            await r.toggle_currency_target(s, 7, "UAH")
+            assert "UAH" in await r.get_currency_targets(s, 7)
+            await r.set_feature(s, 7, "ai", enable=False)
+            assert await r.get_disabled_features(s, 7) == {"ai"}
+
+        # Второй раз в течение минуты – из памяти: базу даже не спрашиваем.
+        calls = []
+        async with db.SessionLocal() as s:
+            real = s.execute
+
+            async def counting(*a, **kw):
+                calls.append(1)
+                return await real(*a, **kw)
+            s.execute = counting
+            assert await r.get_slideshow_mode(s, 7) == "photos"
+            assert await r.get_audio_track(s, 7) is True
+        await db.engine.dispose()
+        return calls
+
+    assert asyncio.run(scenario()) == []

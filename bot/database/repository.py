@@ -274,39 +274,50 @@ async def get_stats(session: AsyncSession) -> dict:
     }
 
 
-# Выключенные функции читаются НА КАЖДОЕ сообщение (см. RoutingMiddleware), а меняются
-# раз в месяц через /setconfig. Поэтому держим их в памяти: это снимает один запрос к
-# базе с каждого сообщения в каждом чате. Кэш живёт минуту и сбрасывается сразу при
-# изменении настройки, так что «выключил функцию — она сразу выключилась» сохраняется.
-_DISABLED_CACHE: dict[int, tuple[float, set[str]]] = {}
-_DISABLED_TTL = 60.0
+# Настройки чата читаются НА КАЖДОЕ сообщение (выключенные функции – в RoutingMiddleware)
+# и на каждую ссылку (режим слайдшоу, сжатие, аудио к слайдшоу, валюты), а меняются раз
+# в месяц через /setconfig. Поэтому держим в памяти снимок всей строки настроек чата:
+# это снимает запросы к базе с каждого сообщения. Раньше в памяти жили только
+# выключенные функции, а остальное бот читал из базы каждый раз. Снимок живёт минуту и
+# сбрасывается сразу при изменении любой настройки (каждый set_* зовёт
+# forget_chat_settings), так что «переключил – сразу сработало» сохраняется.
+_CHAT_CACHE: dict[int, tuple[float, dict | None]] = {}
+_CHAT_TTL = 60.0
+_CHAT_FIELDS = ("disabled_features", "slideshow_mode", "currency_targets", "audio_track",
+                "compress_shorts")
 
 
 def forget_chat_settings(chat_id: int | None = None) -> None:
     """Сбрасывает кэш настроек чата (или весь, если чат не указан)."""
     if chat_id is None:
-        _DISABLED_CACHE.clear()
+        _CHAT_CACHE.clear()
     else:
-        _DISABLED_CACHE.pop(chat_id, None)
+        _CHAT_CACHE.pop(chat_id, None)
+
+
+async def _chat_settings(session: AsyncSession, chat_id: int) -> dict | None:
+    """Снимок настроек чата ({поле: значение}) или None, если чат ничего не настраивал."""
+    hit = _CHAT_CACHE.get(chat_id)
+    if hit and (time.monotonic() - hit[0]) < _CHAT_TTL:
+        return hit[1]
+    row = (await session.execute(
+        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
+    )).scalar_one_or_none()
+    snap = None if row is None else {f: getattr(row, f) for f in _CHAT_FIELDS}
+    _CHAT_CACHE[chat_id] = (time.monotonic(), snap)
+    # Чатов у бота немного, но память не бесконечна: держим самые свежие.
+    if len(_CHAT_CACHE) > 512:
+        oldest = sorted(_CHAT_CACHE.items(), key=lambda kv: kv[1][0])[:128]
+        for key, _ in oldest:
+            _CHAT_CACHE.pop(key, None)
+    return snap
 
 
 async def get_disabled_features(session: AsyncSession, chat_id: int) -> set[str]:
     """Множество выключенных в этом чате функций (пусто = всё включено)."""
-    hit = _DISABLED_CACHE.get(chat_id)
-    if hit and (time.monotonic() - hit[0]) < _DISABLED_TTL:
-        return set(hit[1])
-    row = (await session.execute(
-        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
-    )).scalar_one_or_none()
-    disabled = ({f for f in row.disabled_features.split(",") if f}
-                if row and row.disabled_features else set())
-    _DISABLED_CACHE[chat_id] = (time.monotonic(), set(disabled))
-    # Чатов у бота немного, но память не бесконечна: держим самые свежие.
-    if len(_DISABLED_CACHE) > 512:
-        oldest = sorted(_DISABLED_CACHE.items(), key=lambda kv: kv[1][0])[:128]
-        for key, _ in oldest:
-            _DISABLED_CACHE.pop(key, None)
-    return disabled
+    row = await _chat_settings(session, chat_id)
+    raw = row["disabled_features"] if row else None
+    return {f for f in raw.split(",") if f} if raw else set()
 
 
 async def set_feature(session: AsyncSession, chat_id: int, feature: str, enable: bool) -> None:
@@ -330,10 +341,8 @@ async def set_feature(session: AsyncSession, chat_id: int, feature: str, enable:
 async def get_slideshow_mode(session: AsyncSession, chat_id: int, default: str = "video") -> str:
     """Режим слайдшоу TikTok в этом чате: video | photos | ask. Дефолт зависит от типа
     чата: в группах — video, в личке — ask (передаётся вызывающим кодом)."""
-    row = (await session.execute(
-        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
-    )).scalar_one_or_none()
-    return row.slideshow_mode if row and row.slideshow_mode else default
+    row = await _chat_settings(session, chat_id)
+    return row["slideshow_mode"] if row and row["slideshow_mode"] else default
 
 
 async def set_slideshow_mode(session: AsyncSession, chat_id: int, mode: str) -> None:
@@ -347,6 +356,7 @@ async def set_slideshow_mode(session: AsyncSession, chat_id: int, mode: str) -> 
     else:
         row.slideshow_mode = mode
     await session.commit()
+    forget_chat_settings(chat_id)
 
 
 DEFAULT_CURRENCY_TARGETS = ["USD", "EUR"]
@@ -354,12 +364,10 @@ DEFAULT_CURRENCY_TARGETS = ["USD", "EUR"]
 
 async def get_currency_targets(session: AsyncSession, chat_id: int) -> list[str]:
     """Валюты для конвертации в этой группе. Нет строки — набор по умолчанию."""
-    row = (await session.execute(
-        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
-    )).scalar_one_or_none()
-    if row is None or row.currency_targets is None:
+    row = await _chat_settings(session, chat_id)
+    if row is None or row["currency_targets"] is None:
         return list(DEFAULT_CURRENCY_TARGETS)
-    return [c for c in row.currency_targets.split(",") if c]
+    return [c for c in row["currency_targets"].split(",") if c]
 
 
 async def toggle_currency_target(session: AsyncSession, chat_id: int, code: str) -> None:
@@ -382,15 +390,14 @@ async def toggle_currency_target(session: AsyncSession, chat_id: int, code: str)
         current.append(code)
     row.currency_targets = ",".join(current)
     await session.commit()
+    forget_chat_settings(chat_id)
 
 
 async def get_audio_track(session: AsyncSession, chat_id: int) -> bool:
     """Слать ли музыку к фото-слайдшоу. По умолчанию ДА: если у чата ещё нет записи
     настроек — считаем включённым (безопасно, срабатывает только для фото-слайдшоу)."""
-    row = (await session.execute(
-        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
-    )).scalar_one_or_none()
-    return True if row is None else bool(row.audio_track)
+    row = await _chat_settings(session, chat_id)
+    return True if row is None else bool(row["audio_track"])
 
 
 async def set_audio_track(session: AsyncSession, chat_id: int, on: bool) -> None:
@@ -403,18 +410,17 @@ async def set_audio_track(session: AsyncSession, chat_id: int, on: bool) -> None
         session.add(row)
     row.audio_track = on
     await session.commit()
+    forget_chat_settings(chat_id)
 
 
 async def get_compress_shorts(session: AsyncSession, chat_id: int, default: bool) -> bool:
     """Брать ли короткие видео в качестве пониже (быстрее). Если чат ничего не менял
     (NULL) — возвращаем default: его задаёт вызывающий код по типу чата (в группах ВКЛ,
     в личке ВЫКЛ)."""
-    row = (await session.execute(
-        select(ChatSettings).where(ChatSettings.chat_id == chat_id)
-    )).scalar_one_or_none()
-    if row is None or row.compress_shorts is None:
+    row = await _chat_settings(session, chat_id)
+    if row is None or row["compress_shorts"] is None:
         return default
-    return bool(row.compress_shorts)
+    return bool(row["compress_shorts"])
 
 
 async def set_compress_shorts(session: AsyncSession, chat_id: int, on: bool) -> None:
@@ -427,6 +433,7 @@ async def set_compress_shorts(session: AsyncSession, chat_id: int, on: bool) -> 
         session.add(row)
     row.compress_shorts = on
     await session.commit()
+    forget_chat_settings(chat_id)
 
 
 async def get_cached_file_id(session: AsyncSession, url: str, quality: str = None) -> str | None:

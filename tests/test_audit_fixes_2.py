@@ -243,7 +243,8 @@ def test_instagram_cookies_never_go_direct_when_a_tunnel_exists(monkeypatch):
 
 def test_premium_is_checked_for_the_clicker():
     """В группе любой мог открыть чужое меню Premium-пользователя и скачать 4K."""
-    source = (pathlib.Path(__file__).resolve().parent.parent
-              / "bot/features/download/link.py").read_text(encoding="utf-8")
+    root = pathlib.Path(__file__).resolve().parent.parent / "bot/features/download"
+    source = "\n".join(p.read_text(encoding="utf-8")
+                       for p in [root / "link.py", *sorted((root / "flows").glob("*.py"))])
     assert 'not entry.get("premium")' not in source, \
         "премиум снова проверяется по владельцу меню, а не по нажавшему"

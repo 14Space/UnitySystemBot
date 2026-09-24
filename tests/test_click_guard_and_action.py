@@ -11,9 +11,11 @@ import pathlib
 
 import pytest
 
-from bot.features.download import link
+from bot.features.download.flows import common as link
 
-SOURCE = pathlib.Path(link.__file__).read_text(encoding="utf-8")
+# Обработчики разнесены по модулям площадок – ищем по всем сразу.
+SOURCE = "\n".join(p.read_text(encoding="utf-8") for p in
+                   pathlib.Path(link.__file__).parent.glob("*.py"))
 
 
 @pytest.fixture(autouse=True)

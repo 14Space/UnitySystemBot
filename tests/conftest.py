@@ -12,3 +12,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BOT_TOKEN", "0:test")
 os.environ.setdefault("ADMIN_ID", "0")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _fresh_chat_settings_cache():
+    """Настройки чата бот держит в памяти минуту (repository._CHAT_CACHE), а тесты
+    заводят каждый свою временную базу – без сброса чат 5 из одного теста подсмотрел
+    бы настройки чата 5 из другого."""
+    from bot.database.repository import forget_chat_settings
+    forget_chat_settings()
+    yield
+    forget_chat_settings()

@@ -4,7 +4,6 @@ import re
 import threading
 import time
 import uuid
-import requests
 from bot.config import DOWNLOADS_DIR, SLIDE_SEC, SLIDE_AUDIO_FADE_SEC
 from bot.utils import ffmpeg, files, media_names, net
 
@@ -270,47 +269,29 @@ def _build_slideshow_mixed(items: list[tuple[str, bool]], audio: str, out_path: 
 
 def _is_short(url: str) -> bool:
     """Короткая ссылка-редирект TikTok (из кнопки «Поделиться»)."""
-    return bool(url) and ("vt.tiktok.com" in url or "vm.tiktok.com" in url)
+    return net.url_on(url, "vt.tiktok.com", "vm.tiktok.com")
 
 
 def _resolve_short(url: str) -> str:
     """Разворачивает короткую ссылку (vt./vm.tiktok.com) в полную.
 
-    Читаем только заголовок Location, не скачивая страницу: обычный GET с переходами
-    тянет весь HTML ради одного адреса и стоит ~0.8с против ~0.3с. Если по заголовкам
-    не вышло — возвращаемся к обычному GET, а совсем не вышло — отдаём ссылку как есть.
+    Общим net.follow_redirects: он читает только заголовок Location, не скачивая
+    страницу (обычный GET с переходами тянет весь HTML ради одного адреса – ~0.8с
+    против ~0.3с), и проверяет каждый переход ДО того, как по нему идти: короткая
+    ссылка не должна становиться указателем на чужой сайт. Раньше здесь была своя
+    копия этого цикла плюс запасной GET, который шёл по переходам вслепую.
+    Не вышло – отдаём ссылку как есть: API tikwm понимает и короткие.
     """
     if not _is_short(url):
         return url
-    # По переходам идём САМИ и на каждом шаге проверяем, что следующий адрес — всё
-    # ещё TikTok. Иначе короткая ссылка становится указателем куда угодно: раньше
-    # достаточно было, чтобы «tiktok.com» встретилось в строке (хоть в параметре
-    # запроса), и бот честно шёл по цепочке на любой чужой сайт.
     try:
-        target = url
-        for _ in range(5):                  # цепочка переходов бывает не одношаговой
-            nxt = net.session().get(target, headers=HEADERS, timeout=15,
-                               allow_redirects=False).headers.get("Location")
-            if not nxt:
-                break
-            nxt = requests.compat.urljoin(target, nxt)
-            if not _is_tiktok_url(nxt):
-                logger.warning("Короткая ссылка ведёт не на TikTok — не иду: %s",
-                               nxt[:80])
-                return url
-            target = nxt
-        if target != url and _is_tiktok_url(target):
-            return target
-    except Exception:
-        pass
-    try:
-        # Запасной путь: здесь по переходам идёт requests, поэтому проверяем, КУДА
-        # в итоге пришли, и чужой адрес не возвращаем.
-        final = net.session().get(url, headers=HEADERS, timeout=15,
-                                  allow_redirects=True).url
-        return final if _is_tiktok_url(final) else url
+        target = net.follow_redirects(url, "tiktok.com")
+    except ValueError:
+        logger.warning("Короткая ссылка ведёт не на TikTok — не иду: %s", url[:80])
+        return url
     except Exception:
         return url
+    return target if _is_tiktok_url(target) else url
 
 
 def _is_tiktok_url(url: str) -> bool:

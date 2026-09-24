@@ -31,7 +31,7 @@ def _func(rel: str, name: str):
 def test_series_info_is_read_in_a_thread():
     """У сериала разбор страницы делает ещё один запрос к сайту и умеет ждать между
     повторами. В главном потоке это значило, что бот замирал для ВСЕХ."""
-    body = ast.unparse(_func("bot/features/download/link.py", "_handle_hdrezka"))
+    body = ast.unparse(_func("bot/features/download/flows/hdrezka.py", "_handle_hdrezka"))
     assert "to_thread(hdrezka.get_info" in body.replace(", ", ", ").replace(
         "to_thread(hdrezka.get_info, api, url)", "to_thread(hdrezka.get_info"), \
         "get_info снова зовётся в главном потоке"
@@ -43,7 +43,9 @@ def test_big_file_copy_never_blocks_the_loop():
     from bot.utils import tg_files
 
     assert hasattr(tg_files, "input_file_async")
-    link_src = _src("bot/features/download/link.py")
+    link_src = "\n".join(_src(str(p.relative_to(ROOT))) for p in
+                         [ROOT / "bot/features/download/link.py",
+                          *(ROOT / "bot/features/download/flows").glob("*.py")])
     assert "tg_files.input_file(" not in link_src, \
         "в асинхронном коде снова синхронная версия"
 
@@ -57,7 +59,7 @@ def test_unknown_values_from_buttons_are_refused():
 
 
 def test_track_number_from_a_button_is_checked():
-    body = ast.unparse(_func("bot/features/download/link.py", "handle_collection_track"))
+    body = ast.unparse(_func("bot/features/download/flows/music.py", "handle_collection_track"))
     assert "isdigit" in body, "номер трека снова берётся без проверки"
 
 

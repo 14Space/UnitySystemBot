@@ -21,7 +21,7 @@ def _fresh_db(tmp_path, monkeypatch, name):
 
 def test_hdrezka_screen_is_restored_from_the_database(tmp_path, monkeypatch):
     db = _fresh_db(tmp_path, monkeypatch, "hr.db")
-    from bot.features.download import link
+    from bot.features.download.flows import hdrezka as hr_flow, tiktok as tt_flow, music
     from bot.features.download.downloaders import hdrezka
 
     # Заново открывать страницу по-настоящему не нужно — подменяем поход в интернет.
@@ -36,9 +36,9 @@ def test_hdrezka_screen_is_restored_from_the_database(tmp_path, monkeypatch):
         async with db.SessionLocal() as s:
             await save_link_stash(s, "sid1", "https://rezka.ag/films/x.html", -100, 7,
                                   premium=True, kind="hdrezka")
-        link.HDREZKA.clear()                # «перезапуск»: память пуста
-        entry = await link.HDREZKA.get("sid1")
-        missing = await link.HDREZKA.get("нет-такого")
+        hr_flow.HDREZKA.clear()                # «перезапуск»: память пуста
+        entry = await hr_flow.HDREZKA.get("sid1")
+        missing = await hr_flow.HDREZKA.get("нет-такого")
         await db.engine.dispose()
         return entry, missing
 
@@ -54,7 +54,7 @@ def test_hdrezka_screen_is_restored_from_the_database(tmp_path, monkeypatch):
 
 def test_tiktok_screen_is_restored_with_owner(tmp_path, monkeypatch):
     db = _fresh_db(tmp_path, monkeypatch, "tt.db")
-    from bot.features.download import link
+    from bot.features.download.flows import hdrezka as hr_flow, tiktok as tt_flow, music
     from bot.features.download.downloaders import tiktok
 
     monkeypatch.setattr(tiktok, "fetch_tiktok", lambda url: {"id": "777", "kind": "slideshow"})
@@ -66,8 +66,8 @@ def test_tiktok_screen_is_restored_with_owner(tmp_path, monkeypatch):
             await save_link_stash(s, "sid2", "https://vt.tiktok.com/x/", -100, 9,
                                   kind="tiktok",
                                   payload={"cache_url": "tt:777", "owner": 42})
-        link.TIKTOK.clear()
-        entry = await link.TIKTOK.get("sid2")
+        tt_flow.TIKTOK.clear()
+        entry = await tt_flow.TIKTOK.get("sid2")
         await db.engine.dispose()
         return entry
 
@@ -80,15 +80,15 @@ def test_tiktok_screen_is_restored_with_owner(tmp_path, monkeypatch):
 def test_kind_is_checked(tmp_path, monkeypatch):
     """Экран выбора качества не должен подсунуться под кнопку HDRezka."""
     db = _fresh_db(tmp_path, monkeypatch, "kind.db")
-    from bot.features.download import link
+    from bot.features.download.flows import hdrezka as hr_flow, tiktok as tt_flow, music
 
     async def scenario():
         await db.init_db()
         from bot.database.repository import save_link_stash
         async with db.SessionLocal() as s:
             await save_link_stash(s, "sid3", "https://youtu.be/x", 1, 2)   # kind=quality
-        link.HDREZKA.clear()
-        found = await link.HDREZKA.get("sid3")
+        hr_flow.HDREZKA.clear()
+        found = await hr_flow.HDREZKA.get("sid3")
         await db.engine.dispose()
         return found
 
@@ -144,17 +144,17 @@ def test_only_the_owner_can_press(tmp_path, monkeypatch):
 def test_collection_survives_a_restart(tmp_path, monkeypatch):
     """Список треков жил только в памяти: после деплоя кнопки альбома молчали."""
     db = _fresh_db(tmp_path, monkeypatch, "coll.db")
-    from bot.features.download import link
+    from bot.features.download.flows import hdrezka as hr_flow, tiktok as tt_flow, music
 
     tracks = [{"title": "Трек", "cache_url": "https://open.spotify.com/track/1",
                "source": "ytsearch1:трек", "meta": None, "fallback_query": None}]
 
     async def scenario():
         await db.init_db()
-        sid = await link.COLLECTIONS.open(_message(42), "https://open.spotify.com/album/1",
+        sid = await music.COLLECTIONS.open(_message(42), "https://open.spotify.com/album/1",
                                           saved={"title": "Альбом", "tracks": tracks})
-        link.COLLECTIONS.clear()
-        entry = await link.COLLECTIONS.get(sid)
+        music.COLLECTIONS.clear()
+        entry = await music.COLLECTIONS.get(sid)
         await db.engine.dispose()
         return entry
 

@@ -20,8 +20,6 @@ USDT, TON и так далее. Иначе цена в крипте плясал
 """
 import logging
 
-import requests
-
 from bot.utils import net
 
 from bot.config import (

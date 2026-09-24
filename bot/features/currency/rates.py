@@ -7,7 +7,7 @@ import asyncio
 import logging
 import time
 
-import requests
+from bot.utils import net
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ async def _ensure_fresh() -> None:
         if _rates and (time.time() - _fetched_at) < _TTL:
             return
         try:
-            data = await asyncio.to_thread(lambda: requests.get(_URL, timeout=15).json())
+            data = await asyncio.to_thread(lambda: net.session().get(_URL, timeout=15).json())
             if data.get("result") == "success" and data.get("rates"):
                 globals()["_rates"] = data["rates"]
                 globals()["_fetched_at"] = time.time()

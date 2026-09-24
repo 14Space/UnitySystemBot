@@ -12,13 +12,13 @@
 import logging
 import os
 
-import requests
 
 from bot.config import (
     GROQ_API_KEY, GROQ_STT_MODEL, GROQ_STT_TIMEOUT, WHISPER_LANGUAGES,
     WHISPER_MIN_SPEECH_PROB, GROQ_STT_PROMPT, GROQ_STT_TEMPERATURE, GROQ_STT_LANGUAGE,
     GROQ_STT_RETRY_BELOW,
 )
+from bot.utils import net
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def _ask(file_path: str, language: str = "") -> dict:
         payload["language"] = language
 
     with open(file_path, "rb") as f:
-        resp = requests.post(
+        resp = net.session().post(
             _API,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             files={"file": (os.path.basename(file_path), f, "audio/ogg")},

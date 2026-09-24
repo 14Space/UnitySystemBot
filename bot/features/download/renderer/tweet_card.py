@@ -18,10 +18,10 @@ import os
 import time
 import uuid
 
-import requests
 
 from bot.config import DOWNLOADS_DIR
 from bot.utils import pw_thread
+from bot.utils import net
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def _render_card(browser, tweet: dict) -> str:
 # --- Основной путь: настоящий виджет X (oEmbed) ------------------------------
 
 def _render_embed(browser, tweet: dict, out_path: str) -> str:
-    o = requests.get(
+    o = net.session().get(
         OEMBED,
         params={"url": tweet["url"], "theme": "dark", "dnt": "true",
                 "maxwidth": 550, "hide_thread": "true"},

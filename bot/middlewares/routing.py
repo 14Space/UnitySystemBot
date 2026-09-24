@@ -6,7 +6,7 @@ id текущего бота: кэш file_id ведётся по боту (id ч
 """
 from typing import Callable, Any
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery, InlineQuery
+from aiogram.types import Message
 
 from bot.database import SessionLocal
 from bot.database.repository import get_disabled_features, current_bot_id

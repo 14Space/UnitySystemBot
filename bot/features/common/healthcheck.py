@@ -147,7 +147,7 @@ async def _check_ytdlp():
         return False, t("hc_ytdlp_none", _admin_lang())
 
     def _latest() -> str:
-        return requests.get(_YTDLP_NIGHTLY_API, timeout=20).json().get("tag_name") or ""
+        return net.session().get(_YTDLP_NIGHTLY_API, timeout=20).json().get("tag_name") or ""
 
     try:
         latest = await asyncio.to_thread(_latest)
@@ -452,13 +452,13 @@ async def _check_soundcloud_track(url: str):
     Раньше проверка качала только с SoundCloud и потому врала. Официальные треки там
     закрыты защитой от копирования («This video is DRM protected»), пункт краснел — а
     человеку трек при этом приходил, потому что в боевом пути есть запасной ход через
-    YouTube (см. _soundcloud_query в link.py). Проверка должна показывать то, что видит
+    YouTube (см. _soundcloud_query в flows/music.py). Проверка должна показывать то, что видит
     человек, иначе она не проверка. Заодно этот запасной ход наконец проверяется: до сих
     пор он не был покрыт вовсе и мог сгнить незаметно.
     """
     from bot.features.download.downloaders.ytdlp_wrapper import (
         download_probe, search_audio, resolve_short)
-    from bot.features.download.link import _soundcloud_query
+    from bot.features.download.flows.music import _soundcloud_query
 
     def work():
         # Запасной поиск строится из пути ссылки – у короткой on.soundcloud.com это
@@ -666,7 +666,7 @@ async def _check_send_path():
 
     def work():
         base = TELEGRAM_LOCAL_API_URL.rstrip("/")
-        r = requests.post(f"{base}/bot{BOT_TOKEN}/uploadStickerFile",
+        r = net.session().post(f"{base}/bot{BOT_TOKEN}/uploadStickerFile",
                           data={"user_id": ADMIN_ID, "sticker": handle,
                                 "sticker_format": "static"}, timeout=30)
         j = r.json()

@@ -23,8 +23,6 @@ from bot.utils.i18n import t, lang_of
 # Что вообще может прийти в кнопке слайдшоу. Список короткий и живёт рядом с обработчиком.
 _SLIDESHOW_MODES = ("video", "photos", "ask")
 
-from bot.features.currency.parser import CURRENCIES
-
 logger = logging.getLogger(__name__)
 
 router = Router()
