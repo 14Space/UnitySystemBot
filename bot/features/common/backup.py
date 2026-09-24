@@ -15,8 +15,10 @@
 import logging
 import os
 import tempfile
+import zipfile
 from datetime import datetime
 
+from bot import config
 from bot.database import engine
 
 logger = logging.getLogger(__name__)
@@ -47,3 +49,45 @@ async def dump_database() -> str | None:
     except Exception:
         logger.exception("Не удалось снять резервную копию базы")
         return None
+
+
+def _secret_files() -> list[tuple[str, str]]:
+    """(путь на диске, имя в архиве) – всё, без чего бота не поднять заново.
+
+    База восстанавливает то, что бот накопил, а это – то, с чем он вообще запускается:
+    токены и ключи (.env), живые входы на площадки (куки), сессия аккаунта-посредника
+    и ключи туннеля до дома. Одноразовые копии кук (cookie-copies) не берём: это те же
+    куки, только устаревшие.
+    """
+    out = [(config.SECRETS_ENV_FILE, ".env")]
+    for path in (config.INSTAGRAM_COOKIES, config.X_COOKIES, config.YOUTUBE_COOKIES,
+                 config.YOUTUBE_COOKIES + ".work", config.RELAY_STT_SESSION):
+        out.append((path, os.path.basename(path)))
+    try:
+        for name in sorted(os.listdir(config.WIREGUARD_DIR)):
+            out.append((os.path.join(config.WIREGUARD_DIR, name), f"wireguard/{name}"))
+    except OSError:
+        pass                                   # туннель не настроен или не примонтирован
+    return [(p, a) for p, a in out if p and os.path.isfile(p)]
+
+
+def dump_secrets() -> tuple[str | None, list[str]]:
+    """Архив секретов во временный файл: (путь или None, что в него попало).
+    Удалять файл – задача вызывающего, он же его и отправляет."""
+    found = _secret_files()
+    if not found:
+        return None, []
+    path = os.path.join(tempfile.gettempdir(), f"unitysystem-secrets-{_stamp()}.zip")
+    try:
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for src, arcname in found:
+                zf.write(src, arcname=arcname)
+        return path, [a for _, a in found]
+    except Exception:
+        logger.exception("Не удалось собрать архив секретов")
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None, []
+

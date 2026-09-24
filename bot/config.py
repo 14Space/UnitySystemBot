@@ -91,6 +91,12 @@ REPORT_HOUR = int(os.getenv("REPORT_HOUR", "12"))     # час (0..23) лока�
 # приходит раз в сутки в REPORT_HOUR. 0 = раннее оповещение выкл. Должно делить 24 нацело.
 HEALTHCHECK_EVERY_HOURS = int(os.getenv("HEALTHCHECK_EVERY_HOURS", "2"))
 
+# Сверка библиотек с PyPI (устаревшие версии и известные уязвимости): раз в месяц, в
+# этот день месяца и час по времени админа. По умолчанию – 1-го числа в 00:00, как только
+# начинается новый месяц. DEPS_CHECK_DAY=0 – выключить (см. features/common/deps_check.py).
+DEPS_CHECK_DAY = int(os.getenv("DEPS_CHECK_DAY", "1"))
+DEPS_CHECK_HOUR = int(os.getenv("DEPS_CHECK_HOUR", "0"))
+
 # Сколько загрузок может идти одновременно на всех (тюнить под мощность сервера)
 
 # Сколько запросов от ОДНОГО человека бот обрабатывает одновременно. Лишние не
@@ -287,6 +293,12 @@ GROQ_STT_RETRY_BELOW = float(os.getenv("GROQ_STT_RETRY_BELOW", "-0.7"))
 # полный доступ к аккаунту, поэтому лежит в data/ и закрыта в .gitignore.
 RELAY_STT_BOT = os.getenv("RELAY_STT_BOT", "@smartspeech_sber_bot")
 RELAY_STT_SESSION = os.getenv("RELAY_STT_SESSION", "data/relay.session")
+
+# Копия секретов раз в сутки вместе с копией базы (см. backup.dump_secrets): файл .env и
+# ключи WireGuard в контейнер бота монтируются только на чтение, по этим путям
+# (docker-compose.yml). Файла нет – его просто не будет в архиве.
+SECRETS_ENV_FILE = os.getenv("SECRETS_ENV_FILE", "/app/secrets/env")
+WIREGUARD_DIR = os.getenv("WIREGUARD_DIR", "/app/secrets/wireguard")
 # Те же API_ID/HASH, что и у локального Bot API-сервера: они от аккаунта, а не от бота.
 TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")

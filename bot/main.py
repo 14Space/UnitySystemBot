@@ -16,7 +16,7 @@ from aiogram.types import (
 from bot.config import (
     BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ,
     REPORT_HOUR, HEALTHCHECK_EVERY_HOURS, ADMIN_LANG, CRYPTOPAY_POLL_SECONDS,
-    THREAD_POOL_SIZE,
+    THREAD_POOL_SIZE, DEPS_CHECK_DAY, DEPS_CHECK_HOUR,
 )
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
@@ -35,7 +35,7 @@ from bot.features.ai import chat as ai_chat
 from bot.features.config import setconfig
 from bot.features.common.admin import format_stats, platform_ranking
 from bot.features.common.healthcheck import run_and_cache, format_health, format_alert
-from bot.features.common.backup import dump_database
+from bot.features.common.backup import dump_database, dump_secrets
 from bot.features.download.maintenance import clean_downloads, update_ytdlp
 
 logging.basicConfig(level=logging.INFO)
@@ -212,6 +212,7 @@ async def _daily_tasks(bot: Bot):
             report = (f"{format_stats(stats, ADMIN_LANG)}\n\n"
                       f"{format_health(health, platform_ranking(stats), lang=ADMIN_LANG)}")
             await _send_report(bot, report)
+            await _send_secrets(bot)
         except Exception:
             logger.exception("Не удалось отправить дневной отчёт")
         if old != new:
@@ -263,6 +264,30 @@ async def _send_report(bot: Bot, report: str):
             logger.exception("Копия базы не отправилась")
     except Exception:
         logger.exception("Не удалось отправить дневной отчёт")
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+async def _send_secrets(bot: Bot):
+    """Копия секретов админу – отдельным файлом сразу после копии базы.
+
+    С одной базой бота заново не поднять: нужны ещё .env (токены и ключи), куки
+    площадок, сессия посредника и ключи WireGuard, а лежали они только на сервере и на
+    домашнем компьютере. Архив открытый, как и копия базы, – так решил владелец; кто
+    получит доступ к этому чату, получит и всё, что в архиве.
+    """
+    path, names = await asyncio.to_thread(dump_secrets)
+    if not path:
+        return
+    try:
+        await bot.send_document(
+            ADMIN_ID, FSInputFile(path),
+            caption=t("secrets_caption", ADMIN_LANG, files=", ".join(names))[:1024])
+    except Exception:
+        logger.exception("Копия секретов не отправилась")
     finally:
         try:
             os.remove(path)
@@ -393,6 +418,49 @@ async def _watch_crypto_invoices(bot: Bot):
                                      inv.get("invoice_id"))
         except Exception:
             logger.exception("Опрос крипто-счетов сорвался")
+
+
+def _seconds_until_month_day(day: int, hour: int) -> float:
+    """Сколько секунд до ближайшего day-го числа месяца, hour:00 по времени админа.
+    Число больше длины месяца (31 в феврале) – последний день месяца."""
+    import calendar
+    now = datetime.now(_ADMIN_ZONE)
+    year, month = now.year, now.month
+    while True:
+        last = calendar.monthrange(year, month)[1]
+        target = now.replace(year=year, month=month, day=min(day, last), hour=hour,
+                             minute=0, second=0, microsecond=0)
+        if target > now:
+            return (target - now).total_seconds()
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+
+async def _monthly_deps_check(bot: Bot):
+    """Раз в месяц сверяет библиотеки бота с PyPI и шлёт админу итог (см. deps_check).
+    Ничего не обновляет: новая версия библиотеки может поменять поведение бота."""
+    from bot.features.common import deps_check
+
+    if not ADMIN_ID or DEPS_CHECK_DAY <= 0:
+        return
+    while True:
+        await asyncio.sleep(_seconds_until_month_day(DEPS_CHECK_DAY, DEPS_CHECK_HOUR))
+        try:
+            res = await asyncio.to_thread(deps_check.check)
+            text = deps_check.format_report(res, ADMIN_LANG)
+            # Длинный список (много уязвимостей) режем по строкам: у Telegram 4096
+            # символов на сообщение.
+            chunk = ""
+            for line in text.split("\n"):
+                if len(chunk) + len(line) + 1 > 4000:
+                    await bot.send_message(ADMIN_ID, chunk)
+                    chunk = ""
+                chunk += line + "\n"
+            if chunk.strip():
+                await bot.send_message(ADMIN_ID, chunk)
+        except Exception:
+            logger.exception("Ежемесячная сверка библиотек не удалась")
+        # Страховка от двойного срабатывания в ту же секунду: до следующего раза – месяц.
+        await asyncio.sleep(60)
 
 
 async def _warm_hdrezka():
@@ -526,6 +594,7 @@ async def main():
     _background(_periodic_healthcheck(bot))
     _background(_flush_traffic())
     _background(_warm_hdrezka())
+    _background(_monthly_deps_check(bot))
     _background(_watch_crypto_invoices(bot))
     if WHISPER_PREWARM:
         from bot.features.transcribe.transcriber import warmup

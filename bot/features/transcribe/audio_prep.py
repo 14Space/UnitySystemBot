@@ -53,6 +53,10 @@ def prepare(path: str) -> tuple[str, bool]:
     if not STT_PREPROCESS or not path or not os.path.exists(path):
         return path, False
 
+    # Папку создаём сами, как и все загрузчики: на свежей установке её ещё нет, и ffmpeg
+    # молча не смог бы записать результат – голосовые шли бы без очистки звука.
+    # Нашлось 24.09.2026, когда тесты впервые прогнали внутри рабочего образа.
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     out = os.path.join(DOWNLOADS_DIR, f"prep_{uuid.uuid4().hex[:8]}.wav")
     cmd = ["ffmpeg", "-y", "-i", path, "-ar", "16000", "-ac", "1"]
     if STT_FILTERS:

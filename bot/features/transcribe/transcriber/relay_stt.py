@@ -150,6 +150,7 @@ def _as_voice(path: str) -> tuple[str, bool]:
     """
     if path.lower().endswith((".ogg", ".oga", ".opus")):
         return path, False
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)    # на свежей установке папки ещё нет
     out = os.path.join(DOWNLOADS_DIR, f"relay_{uuid.uuid4().hex[:8]}.ogg")
     cmd = ["ffmpeg", "-y", "-i", path, "-ac", "1", "-ar", "48000",
            "-c:a", "libopus", "-b:a", "32k", out]

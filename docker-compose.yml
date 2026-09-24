@@ -98,6 +98,10 @@ services:
       - tg-api-data:/var/lib/telegram-bot-api
       # Кэш модели Whisper (~3 ГБ): скачивается один раз, переживает пересборку.
       - whisper-cache:/cache
+      # Только на чтение – для суточной копии секретов админу (backup.dump_secrets):
+      # сам .env и ключи WireGuard (они на хосте сервера, не в папке проекта).
+      - ./.env:/app/secrets/env:ro
+      - /etc/wireguard:/app/secrets/wireguard:ro
     # Отдельной строки для downloads здесь не нужно: она уже часть ./data:/app/data
     # выше. Раньше это был отдельный RAM-диск (tmpfs) — общий с telegram-bot-api,
     # чтобы сервер читал файл по пути и не заливал его в себя второй раз по сети.
