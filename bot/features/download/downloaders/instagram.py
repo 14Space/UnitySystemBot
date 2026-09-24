@@ -183,48 +183,80 @@ def _photo_via_browser(shortcode: str, proxies=None) -> list[str]:
     return [path]
 
 
-# --- Запасной путь для REELS с куками: видео прямо со страницы ---------------
+# --- Медиа прямо со страницы поста, С КУКАМИ ---------------------------------
 #
 # 24.09.2026: Reel «только для вошедших» не качался, хотя куки живые (страница
 # настроек аккаунта отдаётся). Разбор показал: yt-dlp с куками идёт в закрытый API
 # Instagram (/api/v1/media/<id>/info/), а тот нашей сессии отвечает переходом на
-# главную, как гостю, – на ЛЮБОЙ Reel, не только закрытый. yt-dlp видит пустой ответ
-# («Failed to parse JSON»), бот уходил на запасной заход без кук и честно говорил
-# «только для вошедших». То есть куки для Reels не работали вовсе: открытые ролики
-# качались запасным заходом, а закрытые – никак.
+# главную, как гостю, – на ЛЮБОЙ пост, не только закрытый. yt-dlp видит пустой ответ,
+# бот уходил на запасной заход без кук и честно говорил «только для вошедших». То есть
+# куки не работали вовсе: открытое качалось запасным заходом, закрытое – никак. А у
+# каруселей гостю достаются только миниатюры: фото приходили по 6–7 КБ вместо
+# 2717x3233, и проверка функционала этого не видела – «скачалось» для неё и есть
+# «работает».
 #
-# А страница самого Reel, открытая с теми же куками, видео содержит: в её данных есть
-# массив video_versions с прямыми ссылками на mp4. Отдаёт она их только запросу,
-# похожему на браузер (обычный запрос получает страницу без данных), поэтому здесь
-# curl_cffi с маскировкой под Chrome – он уже стоит ради PornHub.
+# Страница самого поста, открытая с теми же куками, всё это содержит: в её данных
+# (JSON внутри <script type="application/json">) лежит объект поста с кодом, а в нём
+# carousel_media, video_versions и image_versions2 с прямыми ссылками в полном
+# размере. Отдаёт она их только запросу, похожему на браузер (обычный запрос получает
+# страницу без данных), поэтому здесь curl_cffi с маскировкой под Chrome – он уже
+# стоит ради PornHub.
 
-# Сколько символов вокруг массива смотрим, чтобы понять, чьё это видео: на странице
-# есть и соседние ролики из ленты, у каждого свой код рядом с его video_versions.
-_CODE_WINDOW = 3000
-_CODE_RE = re.compile(r'"code":"([A-Za-z0-9_-]+)"')
+_JSON_SCRIPT_RE = re.compile(r'<script type="application/json"[^>]*>(.*?)</script>', re.S)
 
 
-def _video_from_html(html: str, shortcode: str) -> str | None:
-    """Ссылка на лучшее видео ИМЕННО этого Reel из HTML страницы (None – не нашли)."""
-    dec = json.JSONDecoder()
-    for m in re.finditer(r'"video_versions":', html or ""):
-        near = html[max(0, m.start() - _CODE_WINDOW):m.start() + _CODE_WINDOW]
-        if shortcode not in set(_CODE_RE.findall(near)):
-            continue                              # соседний ролик из ленты
-        try:
-            versions, _ = dec.raw_decode(html, m.end())
-        except ValueError:
-            continue
-        versions = [v for v in versions if isinstance(v, dict) and v.get("url")]
-        if versions:
-            best = max(versions, key=lambda v: (v.get("width") or 0) * (v.get("height") or 0))
-            return best["url"]
+def _find_media(obj, shortcode: str) -> dict | None:
+    """Объект поста с этим кодом где-то в глубине данных страницы. На странице есть и
+    соседние посты (лента, «ещё от автора»), поэтому сверяем именно код."""
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            if cur.get("code") == shortcode and (cur.get("carousel_media")
+                                                  or cur.get("video_versions")
+                                                  or cur.get("image_versions2")):
+                return cur
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
     return None
 
 
-def _video_via_page(shortcode: str, cookies: str, proxy: str) -> str | None:
-    """Reel со страницы, С КУКАМИ и тем же путём, что и остальные запросы с куками
-    (через дом, если туннель настроен). Путь к скачанному файлу или None."""
+def _area(v: dict) -> int:
+    return (v.get("width") or 0) * (v.get("height") or 0)
+
+
+def _best_version(item: dict) -> tuple[str, bool] | None:
+    """(ссылка, это_видео) – лучшее видео элемента, а если его нет – самое большое фото."""
+    videos = [v for v in item.get("video_versions") or [] if isinstance(v, dict) and v.get("url")]
+    if videos:
+        return max(videos, key=_area)["url"], True
+    cands = [c for c in (item.get("image_versions2") or {}).get("candidates") or []
+             if isinstance(c, dict) and c.get("url")]
+    if cands:
+        return max(cands, key=_area)["url"], False
+    return None
+
+
+def _page_items(html: str, shortcode: str) -> list[tuple[str, bool]]:
+    """Все элементы поста по порядку: [(ссылка, это_видео)]. Пусто – не нашли."""
+    for m in _JSON_SCRIPT_RE.finditer(html or ""):
+        try:
+            data = json.loads(m.group(1))
+        except ValueError:
+            continue
+        media = _find_media(data, shortcode)
+        if media:
+            items = [_best_version(it) for it in (media.get("carousel_media") or [media])]
+            items = [it for it in items if it]
+            if items:
+                return items
+    return []
+
+
+def _page_media(shortcode: str, cookies: str, proxy: str) -> list[tuple[str, bool]]:
+    """Элементы поста со страницы, С КУКАМИ и тем же путём, что и остальные запросы с
+    куками (через дом, если туннель настроен)."""
     from curl_cffi import requests as curl
 
     jar = http.cookiejar.MozillaCookieJar(cookies)
@@ -233,24 +265,53 @@ def _video_via_page(shortcode: str, cookies: str, proxy: str) -> str | None:
     # разрешает сервер, получает IPv6, а у домашнего канала нормального IPv6 нет –
     # соединение не устанавливается вовсе.
     home = proxy.replace("socks5://", "socks5h://", 1) if proxy else ""
-    src = None
-    for url in (f"https://www.instagram.com/reels/{shortcode}/",
-                f"https://www.instagram.com/reel/{shortcode}/"):
+    for url in (f"https://www.instagram.com/p/{shortcode}/",
+                f"https://www.instagram.com/reels/{shortcode}/"):
         try:
             r = curl.get(url, cookies={c.name: c.value for c in jar},
                          proxies={"http": home, "https": home} if home else None,
                          impersonate="chrome", timeout=30)
-            src = _video_from_html(r.text, shortcode)
+            items = _page_items(r.text, shortcode)
         except Exception:
-            logger.info("Instagram: страница %s не отдала видео", url, exc_info=True)
-        if src:
-            break
-    if not src:
+            logger.info("Instagram: страница %s не отдала медиа", url, exc_info=True)
+            continue
+        if items:
+            return items
+    return []
+
+
+def _download_items(items: list[tuple[str, bool]], shortcode: str, proxy: str) -> list[str]:
+    """Качает элементы поста по порядку. Упал любой – убираем уже скачанное и бросаем:
+    полкарусели хуже, чем честный запасной путь."""
+    paths: list[str] = []
+    try:
+        for i, (src, is_vid) in enumerate(items, 1):
+            ext = ".mp4" if is_vid else ".jpg"
+            path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{i}_{uuid.uuid4().hex[:8]}_dl{ext}")
+            net.fetch_to_file(src, path, proxies=net.as_requests(proxy),
+                              headers={"User-Agent": _UA}, timeout=120)
+            path = _fix_type(path)
+            if path:
+                paths.append(path)
+    except Exception:
+        file_utils.remove(paths)
+        raise
+    return paths
+
+
+def _fix_type(path: str) -> str | None:
+    """Фото это или видео, решает дальше расширение (is_image), а его мы взяли из
+    данных поста. Сверяем с содержимым: не то, за что себя выдаёт, – переименовываем,
+    а не пойми что (страница-заглушка) не отправляем вовсе."""
+    kind = file_utils.sniff(path)
+    if kind is None:
+        logger.warning("Instagram: по ссылке пришло не фото и не видео — пропускаю")
+        file_utils.remove(path)
         return None
-    path = os.path.join(DOWNLOADS_DIR, f"{shortcode}_{uuid.uuid4().hex[:8]}_dl.mp4")
-    net.fetch_to_file(src, path, proxies=net.as_requests(proxy),
-                      headers={"User-Agent": _UA}, timeout=120)
-    media_names.remember(path, None, shortcode)
+    if (kind[0] == "image") != is_image(path):
+        real = os.path.splitext(path)[0] + kind[1]
+        os.replace(path, real)
+        return real
     return path
 
 
@@ -328,17 +389,20 @@ def download_reel(url: str, max_height: int | None = None) -> str:
         except Exception as e:
             last_err = e
             # С куками yt-dlp упирается в закрытый API, который нашей сессии не отвечает
-            # (см. _video_via_page), – берём видео со страницы тем же путём.
+            # (см. «Медиа прямо со страницы поста»), – берём видео со страницы.
             if use_cookies:
                 code = _shortcode(url)
                 try:
-                    path = _video_via_page(code, use_cookies, proxy) if code else None
+                    videos = [it for it in (_page_media(code, use_cookies, proxy) if code else [])
+                              if it[1]]
+                    paths = _download_items(videos[:1], code, proxy) if videos else []
                 except Exception:
                     logger.info("Instagram: со страницы Reel не вышло", exc_info=True)
-                    path = None
-                if path:
+                    paths = []
+                if paths:
+                    media_names.remember(paths[0], None, code)
                     logger.info("Instagram: Reel %s взят со страницы (с куками)", code)
-                    return path
+                    return paths[0]
             # Прямой доступ заблокирован анти-ботом, а прокси ещё не пробовали — повторим.
             if proxy:
                 logger.info("Instagram: через дом не вышло (%s) — пробую напрямую без кук",
@@ -399,6 +463,22 @@ def download_post(url: str) -> list[str]:
     cookies = _cookies_path()
     if cookies:
         base_opts["cookiefile"] = cookies
+
+    # Первым делом – страница поста с куками: там полные размеры и закрытые посты,
+    # которых yt-dlp с нашей сессией не получает вовсе (см. «Медиа прямо со страницы»).
+    for proxy, use_cookies in _attempts(cookies):
+        if not use_cookies:
+            continue
+        try:
+            items = _page_media(shortcode, use_cookies, proxy)
+            files = _download_items(items, shortcode, proxy) if items else []
+        except Exception:
+            logger.info("Instagram: со страницы поста не вышло", exc_info=True)
+            files = []
+        if files:
+            logger.info("Instagram: пост %s взят со страницы (с куками), файлов: %d",
+                        shortcode, len(files))
+            return files
 
     # С куками — через дом, запасной заход — напрямую без кук (см. _attempts).
     info, used_proxy, last_err = None, "", None
@@ -461,19 +541,9 @@ def download_post(url: str) -> list[str]:
         # Потоком на диск, с пределом размера: карусель бывает из видео, и держать
         # их в памяти целиком незачем (см. bot/utils/net.py).
         net.fetch_to_file(media_url, path, proxies=proxies, timeout=60)
-        # Фото это или видео, решает дальше расширение файла (is_image) – а его мы
-        # взяли из метаданных. Сверяем с содержимым: не то, за что себя выдаёт, –
-        # переименовываем, а не пойми что (страница-заглушка) не отправляем вовсе.
-        kind = file_utils.sniff(path)
-        if kind is None:
-            logger.warning("Instagram: по ссылке пришло не фото и не видео — пропускаю")
-            file_utils.remove(path)
-            continue
-        if (kind[0] == "image") != is_image(path):
-            real = os.path.splitext(path)[0] + kind[1]
-            os.replace(path, real)
-            path = real
-        files.append(path)
+        path = _fix_type(path)
+        if path:
+            files.append(path)
 
     return files
 

@@ -486,6 +486,21 @@ async def _check_soundcloud_track(url: str):
     return await asyncio.to_thread(work)
 
 
+# Меньше этого по короткой стороне – это миниатюра, а не фото из поста. Оригиналы у
+# Instagram – от 1080 пикселей, миниатюры – 150–320.
+_MIN_PHOTO_SIDE = 600
+
+
+def _photo_short_side(path: str) -> int:
+    """Короткая сторона картинки в пикселях (0 – не прочиталась)."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return min(im.size)
+    except Exception:
+        return 0
+
+
 def _short_side(path: str) -> int:
     """Короткая сторона кадра. Именно она задаёт «качество»: у вертикального ролика
     720x1280 это 720, а высота равна 1280 – на этом мы уже один раз обожглись, когда
@@ -901,6 +916,12 @@ async def _dl_ig_post(url, expect_carousel=False):
             photos = sum(1 for p in paths if is_image(p))
             if expect_carousel and len(paths) < 2:
                 return False, f"ожидалась карусель, пришёл 1 файл ({_kb(size)})"
+            # Скачалось – ещё не значит, что работает: до 24.09.2026 карусель приходила
+            # миниатюрами по 6–7 КБ вместо фото 2717x3233, а пункт при этом был зелёным.
+            sides = [_photo_short_side(p) for p in paths if is_image(p)]
+            if sides and min(sides) < _MIN_PHOTO_SIDE:
+                return False, (f"фото пришли миниатюрами ({min(sides)}px по короткой "
+                               f"стороне), а не оригиналом")
             return True, f"{len(paths)} файл(ов), из них фото: {photos}, {_kb(size)}"
         finally:
             _cleanup(paths)

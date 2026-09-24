@@ -55,16 +55,28 @@ def test_file_type_comes_from_content_not_from_extension(tmp_path):
         assert sniff(str(p)) == expected, name
 
 
-def test_reel_video_is_taken_from_its_own_block_on_the_page():
+def test_post_media_is_taken_from_its_own_object_on_the_page():
     """24.09.2026: yt-dlp с куками упирается в закрытый API, который нашей сессии не
-    отвечает; видео берём со страницы Reel. На странице есть и соседние ролики ленты –
-    брать надо именно тот, рядом с которым стоит наш код."""
-    from bot.features.download.downloaders.instagram import _video_from_html
+    отвечает, а гостю у карусели достаются только миниатюры. Медиа берём со страницы
+    поста: из её JSON – объект именно этого поста (рядом лежат соседние), лучшее
+    видео или самое большое фото каждого элемента, по порядку."""
+    import json
+    from bot.features.download.downloaders.instagram import _page_items
 
-    html = ('{"code":"OTHER1","video_versions":[{"width":360,"height":360,'
-            '"url":"https://cdn/other.mp4"}]}' + " " * 4000 +
-            '{"code":"DdkV5NRPZdU","video_versions":[{"width":480,"height":854,'
-            '"url":"https://cdn/small.mp4"},{"width":720,"height":1280,'
-            r'"url":"https:\/\/cdn\/best.mp4?a=1\u0026b=2"}]}')   # как в JSON страницы
-    assert _video_from_html(html, "DdkV5NRPZdU") == "https://cdn/best.mp4?a=1&b=2"
-    assert _video_from_html(html, "NOPE") is None
+    neighbour = {"code": "OTHER1", "video_versions": [{"url": "https://cdn/other.mp4",
+                                                        "width": 360, "height": 360}]}
+    carousel = {"code": "DdBKv0pDNGI", "carousel_media": [
+        {"image_versions2": {"candidates": [
+            {"url": "https://cdn/thumb.jpg", "width": 150, "height": 150},
+            {"url": "https://cdn/full.jpg", "width": 2717, "height": 3233}]}},
+        {"video_versions": [{"url": "https://cdn/v480.mp4", "width": 480, "height": 854},
+                            {"url": "https://cdn/v720.mp4", "width": 720, "height": 1280}],
+         "image_versions2": {"candidates": [{"url": "https://cdn/cover.jpg"}]}},
+    ]}
+    html = ("<html>" + '<script type="application/json">' + json.dumps({"a": [neighbour]})
+            + "</script>" + '<script type="application/json" data-x="1">'
+            + json.dumps({"deep": {"x": [carousel]}}) + "</script></html>")
+    assert _page_items(html, "DdBKv0pDNGI") == [("https://cdn/full.jpg", False),
+                                                  ("https://cdn/v720.mp4", True)]
+    assert _page_items(html, "OTHER1") == [("https://cdn/other.mp4", True)]
+    assert _page_items(html, "NOPE") == []
