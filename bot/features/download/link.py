@@ -14,7 +14,7 @@ from bot.utils.platform_detector import detect_platform, Platform, extract_url
 from bot.features.download.keyboards.quality import build_quality_keyboard
 from bot.features.download.keyboards.tracklist import build_tracklist_keyboard
 from bot.config import GROUP_TYPES, SHORTS_CAP_HEIGHT, DOWNLOADS_DIR, FREE_QUALITY_LIMIT
-from bot.utils import limits, tg_files, chat_action, media_names
+from bot.utils import limits, tg_files, chat_action, media_names, net
 from bot.utils.tg_messages import safe_edit, safe_delete
 from bot.features.common import alerts
 from bot.utils.i18n import t, lang_of, t_kind
@@ -168,6 +168,16 @@ async def process_link(message: Message, url: str):
     # на чужие/сторонние ссылки, чтобы не спамить и не отвечать невпопад).
     if platform == Platform.UNKNOWN:
         return
+
+    # Короткая ссылка SoundCloud (on.soundcloud.com): своего извлекателя у неё в yt-dlp
+    # нет, а «generic», который раньше шёл по ней, выключен. Разворачиваем сами, с
+    # проверкой каждого перехода, и заново смотрим, что там: трек или целый сет.
+    if net.url_on(url, "on.soundcloud.com"):
+        try:
+            url = await asyncio.to_thread(net.follow_redirects, url, "soundcloud.com")
+        except Exception:
+            logger.info("Короткая ссылка SoundCloud не развернулась: %s", url)
+        platform = detect_platform(url)
 
     # Контекст для уведомления админу о сбое (какая площадка и ссылка). Выставляем ДО
     # запуска обработки, чтобы дочерние задачи скачивания его унаследовали.
@@ -632,15 +642,16 @@ async def handle_hdrezka_quality(callback: CallbackQuery, bot: Bot):
         return
     answered = got is False
 
-    if job.busy(user_id):
-        await _alert(callback, answered, chat_id, t("wait_current", lang))
-        return
-
-    if not answered:
-        await callback.answer()
-        await safe_delete(callback.message)
-
-    async with job.exclusive(user_id):
+    # Проверка «уже качает» и отметка – один шаг внутри exclusive: раньше между ними
+    # стояли ответ на нажатие и удаление меню, и два быстрых нажатия на разные
+    # качества успевали пройти проверку оба.
+    async with job.exclusive(user_id) as mine:
+        if not mine:
+            await _alert(callback, answered, chat_id, t("wait_current", lang))
+            return
+        if not answered:
+            await callback.answer()
+            await safe_delete(callback.message)
         progress = job.Progress(bot, chat_id, entry["user_msg_id"], lang)
 
         async def work(paths):
@@ -1435,15 +1446,14 @@ async def handle_quality_choice(callback: CallbackQuery, bot: Bot):
             return
 
     # Один пользователь — одна активная загрузка. Меню не удаляем, чтобы можно было повторить.
-    if job.busy(user_id):
-        await _alert(callback, answered, chat_id, t("wait_current", lang))
-        return
-
-    if not answered:
-        await callback.answer()
-        await safe_delete(callback.message)
-
-    async with job.exclusive(user_id):
+    # Проверка и отметка – один шаг (см. handle_hdrezka_quality).
+    async with job.exclusive(user_id) as mine:
+        if not mine:
+            await _alert(callback, answered, chat_id, t("wait_current", lang))
+            return
+        if not answered:
+            await callback.answer()
+            await safe_delete(callback.message)
         progress = job.Progress(bot, chat_id, user_msg_id, lang)
 
         async def work(paths):
@@ -1605,11 +1615,6 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
             await callback.answer(t("premium_alert", lang), show_alert=True)
             return
 
-    if job.busy(user_id):
-        await callback.answer(t("wait_current", lang), show_alert=True)
-        return
-
-    await callback.answer()
     chat_id = callback.message.chat.id
     reply_to = coll.get("user_msg_id")
     tracks = coll["tracks"]
@@ -1617,8 +1622,12 @@ async def handle_download_all(callback: CallbackQuery, bot: Bot):
 
     # Отметка «этот человек уже качает» снимается в любом случае, даже если не пройдёт
     # отправка первого же сообщения — иначе он до перезапуска получал бы «дождись
-    # текущей загрузки».
-    async with job.exclusive(user_id):
+    # текущей загрузки». Проверка и отметка – один шаг (см. handle_hdrezka_quality).
+    async with job.exclusive(user_id) as mine:
+        if not mine:
+            await callback.answer(t("wait_current", lang), show_alert=True)
+            return
+        await callback.answer()
         status = await bot.send_message(
             chat_id, t("downloading_all", lang, i=0, total=total),
             reply_to_message_id=reply_to

@@ -41,6 +41,28 @@ _lock = threading.Lock()
 _MAX = 20
 
 
+def sweep(tmp_dir: str) -> int:
+    """Убирает одноразовые копии, оставшиеся от прошлых запусков. Возвращает их число.
+
+    Список _copies живёт в памяти и после перезапуска пуст – копии прошлого процесса
+    никто бы уже не удалил, и с каждым деплоем на диске прибавлялось бы до двадцати
+    файлов с живой сессией. Звать при старте, пока yt-dlp ничего не качает.
+    """
+    removed = 0
+    try:
+        names = os.listdir(tmp_dir)
+    except OSError:
+        return 0
+    for name in names:
+        if name.startswith("ck_") and name.endswith(".txt"):
+            try:
+                os.remove(os.path.join(tmp_dir, name))
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def disposable(path: str, tmp_dir: str) -> str | None:
     """Копия файла кук, которую не жалко отдать yt-dlp. None, если файла нет."""
     if not path or not os.path.exists(path):

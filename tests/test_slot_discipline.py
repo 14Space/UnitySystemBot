@@ -220,3 +220,26 @@ async def download(message):
 def test_rule_sees_the_token_form():
     """Слот, занятый «с номером», проверяется так же строго."""
     assert _violations_in(_BAD_TOKEN_FORM, "образец")
+
+
+def test_second_heavy_download_is_refused_even_when_clicks_race():
+    """Повторный аудит: проверка «уже качает» и отметка стояли разными шагами, а между
+    ними – ожидания (ответ на нажатие, удаление меню). Два быстрых нажатия на разные
+    качества проходили проверку оба. Теперь это один шаг внутри exclusive()."""
+    import asyncio
+    from bot.features.download import job
+
+    seen = []
+
+    async def click():
+        async with job.exclusive(777) as mine:
+            seen.append(mine)
+            if mine:
+                await asyncio.sleep(0.01)      # «загрузка» идёт, второе нажатие приходит
+
+    async def run():
+        await asyncio.gather(click(), click())
+
+    asyncio.run(run())
+    assert sorted(seen) == [False, True]
+    assert 777 not in job.ACTIVE_DOWNLOADS     # отметка снята после загрузки

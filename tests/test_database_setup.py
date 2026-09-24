@@ -57,3 +57,38 @@ def test_payments_table_is_created(tmp_path, monkeypatch):
     assert owner == 2
     assert after == {"count": 1, "stars": 250, "usd": 0.0, "refunded": 1}
     assert missing is None
+
+
+def test_old_database_gets_new_columns(tmp_path, monkeypatch):
+    """Базу старой версии дописываем колонками при старте. Раньше список колонок
+    читался через PRAGMA – это есть только у SQLite; теперь через SQLAlchemy, и
+    проверяем, что для SQLite от этого ничего не сломалось."""
+    import importlib
+    import sqlite3
+    import bot.config as config
+    import bot.database as db
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE chat_settings (id INTEGER PRIMARY KEY, chat_id INTEGER, "
+                "disabled_features VARCHAR)")
+    con.execute("INSERT INTO chat_settings (chat_id, disabled_features) VALUES (5, '')")
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(config, "DATABASE_URL", f"sqlite+aiosqlite:///{path}")
+    db = importlib.reload(db)
+
+    async def scenario():
+        await db.init_db()
+        await db.init_db()          # повторный старт ничего не ломает
+        await db.engine.dispose()
+
+    asyncio.run(scenario())
+    con = sqlite3.connect(path)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(chat_settings)")}
+    row = con.execute("SELECT slideshow_mode, audio_track, compress_shorts "
+                      "FROM chat_settings WHERE chat_id = 5").fetchone()
+    con.close()
+    assert {"slideshow_mode", "currency_targets", "audio_track", "compress_shorts"} <= cols
+    assert row == ("video", 0, None)

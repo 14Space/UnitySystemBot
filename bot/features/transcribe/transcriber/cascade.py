@@ -20,7 +20,7 @@
 import asyncio
 import logging
 
-from bot.config import STT_ORDER, STT_ESCALATE_BELOW
+from bot.config import STT_ORDER, STT_ESCALATE_BELOW, RELAY_IN_GROUPS
 from bot.features.transcribe import audio_prep
 
 logger = logging.getLogger(__name__)
@@ -67,8 +67,11 @@ async def _run_relay(path: str) -> tuple[str, float | None]:
 _METHODS = {"groq": _run_groq, "local": _run_local, "relay": _run_relay}
 
 
-async def transcribe_audio(file_path: str) -> str:
+async def transcribe_audio(file_path: str, *, private: bool = True) -> str:
     """Расшифровка каскадом. Пустая строка = речи нет.
+
+    private=False – запись из группы: посредника (чужой бот через личный аккаунт)
+    зовём, только если RELAY_IN_GROUPS включён (по умолчанию включён).
 
     К следующему способу переходим по ДВУМ причинам:
       • сбой (сеть, лимит, мёртвая сессия) — как было всегда;
@@ -85,15 +88,18 @@ async def transcribe_audio(file_path: str) -> str:
     # и так на каждое голосовое. Уносим в поток, как и сами способы распознавания.
     prepared, ours = await asyncio.to_thread(audio_prep.prepare, file_path)
     try:
-        return await _cascade(prepared)
+        skip = () if private or RELAY_IN_GROUPS else ("relay",)
+        return await _cascade(prepared, skip)
     finally:
         await asyncio.to_thread(audio_prep.cleanup, prepared, ours)
 
 
-async def _cascade(file_path: str) -> str:
+async def _cascade(file_path: str, skip: tuple[str, ...] = ()) -> str:
     errors = []
     fallback = None          # лучший из «мутных» ответов, на случай если лучше не будет
     for name in STT_ORDER:
+        if name in skip:
+            continue
         run = _METHODS.get(name)
         if run is None:
             logger.warning("Неизвестный способ расшифровки в STT_ORDER: %s", name)

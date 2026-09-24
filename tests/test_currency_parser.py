@@ -34,3 +34,23 @@ def test_ignored(text):
 
 def test_fmt_amount_trims_zeros():
     assert fmt_amount(100.0) == "100"
+
+
+def test_long_post_up_to_telegram_limit_is_parsed_and_fast():
+    """Сумму ищем и в длинном посте – до предела сообщения Telegram (4096). Разбор при
+    этом обязан оставаться быстрым и на подобранной строке: одной регулярке по всему
+    тексту на «111.111.111…» нужны были секунды, и бот стоял для всех."""
+    import time
+    from bot.features.currency import parser
+
+    post = "Итоги месяца. " * 250 + "Продал за 1 200$ в итоге."
+    assert len(post) <= parser.MAX_TEXT
+    assert parser.parse(post)[:2] == (1200.0, "USD")
+
+    worst = 0.0
+    for evil in ("111." * 1024, "1 " * 2048, "$1" * 2048, "$ " * 1000 + "1" * 2000):
+        parser._parse.cache_clear()
+        t0 = time.perf_counter()
+        parser.parse(evil[:parser.MAX_TEXT])
+        worst = max(worst, time.perf_counter() - t0)
+    assert worst < 0.2, f"разбор снова медленный: {worst:.2f}с"

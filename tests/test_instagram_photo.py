@@ -37,3 +37,19 @@ def test_plain_src_is_the_last_resort():
 ])
 def test_nothing_found(html):
     assert _image_from_html(html) is None
+
+
+def test_file_type_comes_from_content_not_from_extension(tmp_path):
+    """Повторный аудит: фото это или видео, решало расширение из метаданных."""
+    from bot.utils.files import sniff
+
+    cases = {
+        "a.jpg": (b"\xff\xd8\xff\xe0" + b"\0" * 12, ("image", ".jpg")),
+        "b.jpg": (b"\0\0\0\x18ftypmp42" + b"\0" * 4, ("video", ".mp4")),
+        "c.mp4": (b"RIFF\0\0\0\0WEBPVP8 ", ("image", ".webp")),
+        "d.jpg": (b"<!doctype html><h", None),
+    }
+    for name, (head, expected) in cases.items():
+        p = tmp_path / name
+        p.write_bytes(head)
+        assert sniff(str(p)) == expected, name

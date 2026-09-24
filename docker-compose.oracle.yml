@@ -16,7 +16,11 @@ services:
 
   # Локальный Telegram Bot API сервер — снимает лимит файлов с 50MB до 2GB
   telegram-bot-api:
-    image: aiogram/telegram-bot-api:latest
+    # Образ закреплён по контрольной сумме, а не плавающей меткой latest: иначе
+    # любая пересборка тянула бы то, что опубликовано сегодня, – непроверенное.
+    # Это та версия, что работала на сервере 24.09.2026. Обновить = взять новую
+    # сумму (docker buildx imagetools inspect <образ>:latest) и проверить бота.
+    image: aiogram/telegram-bot-api@sha256:69c7ccb917654d7725677431567b3ff7026a68340f2d44f34806fbeb9b093419
     restart: unless-stopped
     environment:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}

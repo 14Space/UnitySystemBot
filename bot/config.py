@@ -248,6 +248,11 @@ STT_FILTERS = os.getenv(
 STT_ESCALATE_BELOW = float(os.getenv("STT_ESCALATE_BELOW", "-0.55"))
 
 STT_ORDER = tuple(x.strip() for x in os.getenv("STT_ORDER", "groq,local,relay").split(",") if x.strip())
+# Звать ли посредника (relay: чужой бот через личный аккаунт) для голосовых из ГРУПП.
+# По умолчанию да – так бот работал всегда, это решение владельца. Выключатель есть
+# на случай, если голосовые участников групп не должны уходить постороннему сервису
+# (на это указал повторный аудит): RELAY_IN_GROUPS=false.
+RELAY_IN_GROUPS = os.getenv("RELAY_IN_GROUPS", "true").lower() in ("1", "true", "yes")
 GROQ_STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3")
 GROQ_STT_TIMEOUT = int(os.getenv("GROQ_STT_TIMEOUT", "60"))
 # Подсказка модели: задаёт СТИЛЬ ожидаемой речи. Whisper выбирает между похоже

@@ -16,6 +16,7 @@ import html
 import logging
 import os
 import time
+import uuid
 
 import requests
 
@@ -42,7 +43,9 @@ def _render_card(browser, tweet: dict) -> str:
     """Сначала пробуем настоящий виджет X, при неудаче — свою карточку.
     Бросает исключение, только если не вышло вообще ничего."""
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    out_path = os.path.join(DOWNLOADS_DIR, f"x_card_{tweet['id']}.png")
+    # Хвост уникален на каждый рендер: два человека, приславшие один твит, иначе
+    # писали бы в один файл, и уборка первого удаляла бы карточку второго до отправки.
+    out_path = os.path.join(DOWNLOADS_DIR, f"x_card_{tweet['id']}_{uuid.uuid4().hex[:8]}.png")
     try:
         return _render_embed(browser, tweet, out_path)
     except Exception:

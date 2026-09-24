@@ -95,7 +95,8 @@ async def _handle(message: Message, file_id: str, suffix: str):
         # что бот занят его записью, а не задумался (см. bot/utils/chat_action.py).
         async with chat_action.show(message.bot, message.chat.id, chat_action.TYPING):
             await _fetch_file(message, file_id, file_path)
-            text = await transcribe_audio(file_path)
+            text = await transcribe_audio(file_path,
+                                          private=message.chat.type == "private")
 
         # Пусто = тишина/музыка без слов (или остались одни титры-галлюцинации, которые
         # мы вырезали). В этом случае бот просто молчит — убираем «Расшифровываю…».

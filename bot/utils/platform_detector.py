@@ -65,9 +65,17 @@ def extract_url(text: str) -> str:
 # где эти буквы просто встречаются. Список можно дополнить через .env, не пересобирая
 # образ: площадка меняет зеркала чаще, чем мы выпускаем версии.
 _HDREZKA_DOMAINS = HDREZKA_DOMAINS
-# Pinterest живёт на десятке национальных доменов (.com/.ru/.ca/.co.uk…), поэтому здесь
-# проверяем форму хозяина, а не список: «pinterest.<что-то>» и короткий pin.it.
-_PINTEREST_RE = re.compile(r"^(?:.+\.)?pinterest\.[a-z][a-z.]{1,7}$")
+# Pinterest живёт на десятке национальных доменов (.com/.ru/.ca/.co.uk…). Раньше здесь
+# проверялась только ФОРМА хозяина («pinterest.<что-то>»), и под неё подходил любой
+# чужой адрес вида pinterest.evil.ru: ссылка уходила в yt-dlp, а тот открывал страницу
+# и качал по ней что угодно, в том числе адреса внутренней сети сервера. Теперь –
+# закрытый список: те же национальные домены, что понимает сам yt-dlp.
+PINTEREST_DOMAINS = tuple("pinterest." + tld for tld in (
+    "com", "fr", "de", "ch", "jp", "cl", "ca", "it", "co.uk", "nz", "ru", "com.au",
+    "at", "pt", "co.kr", "es", "com.mx", "dk", "ph", "th", "com.uy", "co", "nl",
+    "info", "kr", "ie", "vn", "com.vn", "ec", "mx", "in", "pe", "co.at", "hu",
+    "co.in", "co.nz", "id", "com.ec", "com.py", "tw", "be", "uk", "com.bo", "com.pe",
+)) + ("pin.it",)
 
 
 def detect_platform(url: str) -> Platform:
@@ -110,7 +118,7 @@ def detect_platform(url: str) -> Platform:
             return Platform.TIKTOK
 
         # Pinterest (много доменов: .com/.ca/.co.uk + короткие pin.it)
-        if _PINTEREST_RE.match(host) or on_domain(domain, "pin.it"):
+        if on_domain(host, *PINTEREST_DOMAINS):
             return Platform.PINTEREST
 
         # Instagram

@@ -95,6 +95,29 @@ def proxy_for(platform: str | None = None) -> str:
     return PROXY_URL
 
 
+def follow_redirects(url: str, *domains: str, hops: int = 5, timeout: int = 15) -> str:
+    """Разворачивает короткую ссылку (pin.it и т.п.), идя по переходам САМИ.
+
+    На каждом шаге проверяем, что следующий адрес всё ещё на одном из доменов, и
+    только тогда идём дальше. Если бы по переходам шёл requests, запрос на чужой
+    адрес (в том числе внутренний) ушёл бы раньше, чем мы успели бы его проверить.
+    Бросает ValueError, если цепочка уводит с разрешённых доменов.
+    """
+    target = url
+    for _ in range(hops):
+        r = session().get(target, timeout=timeout, allow_redirects=False,
+                          headers={"User-Agent": "Mozilla/5.0"})
+        nxt = r.headers.get("Location")
+        r.close()
+        if not nxt:
+            return target
+        nxt = requests.compat.urljoin(target, nxt)
+        if not url_on(nxt, *domains):
+            raise ValueError(f"переход уводит на чужой адрес: {nxt[:80]}")
+        target = nxt
+    return target
+
+
 def as_requests(proxy: str) -> dict | None:
     """Прокси в виде, который понимает requests (None – без прокси)."""
     return {"http": proxy, "https": proxy} if proxy else None

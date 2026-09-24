@@ -13,6 +13,7 @@ from bot.config import (
 from bot.utils import media_names, net, ffmpeg
 from bot.utils import cookie_files
 from bot.utils.limits import MAX_FILE_BYTES
+from bot.utils.platform_detector import PINTEREST_DOMAINS
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,21 @@ def _unique_outtmpl(suffix: str = "dl") -> str:
     что столкнуться можно и на промежуточных кусках.
     """
     return os.path.join(DOWNLOADS_DIR, f"%(id)s_{suffix}_{uuid.uuid4().hex[:8]}.%(ext)s")
+
+
+# Площадки, которые бот качает через yt-dlp (регулярки по имени извлекателя, регистр
+# не важен). TikTok – ради аудиодорожки, если tikwm промолчит.
+ALLOWED_EXTRACTORS = ["youtube.*", "soundcloud.*", "pornhub.*", "pinterest.*",
+                      "instagram.*", "tiktok.*"]
+
+# Номер ролика от площадки идёт прямо в имя файла. У настоящих номеров только буквы,
+# цифры, дефис и подчёркивание; «../» в номере означал бы запись в чужую папку.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _safe_id(value, default: str = "media") -> str:
+    text = str(value or "")
+    return text if _SAFE_ID_RE.match(text) else default
 
 BASE_OPTS = {
     "quiet": True,
@@ -60,6 +76,12 @@ BASE_OPTS = {
     # Telegram всё равно не примет, а без этого предела бот честно качал его целиком
     # (часами, через домашний канал) — и только потом отвечал «слишком большой».
     "max_filesize": MAX_FILE_BYTES,
+    # Только извлекатели НАШИХ площадок. По умолчанию yt-dlp включает и «generic» –
+    # он открывает любую страницу и качает то, на что она укажет. Вместе с поддельным
+    # доменом это давало боту команду «скачай такой-то адрес внутренней сети» (проверено
+    # на деле при повторном аудите 24.09.2026). Поиск (ytsearch/scsearch) сюда тоже
+    # входит: это извлекатели YoutubeSearch и SoundcloudSearch.
+    "allowed_extractors": ALLOWED_EXTRACTORS,
 }
 if ffmpeg.FFMPEG_DIR:
     BASE_OPTS["ffmpeg_location"] = ffmpeg.FFMPEG_DIR
@@ -605,6 +627,11 @@ def download_media(url: str) -> str:
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     output_path = _unique_outtmpl()
 
+    # Короткую ссылку pin.it разворачиваем сами: своего извлекателя у неё нет, а
+    # «generic», который раньше шёл по ней, выключен (см. ALLOWED_EXTRACTORS).
+    if net.url_on(url, "pin.it"):
+        url = net.follow_redirects(url, "pin.it", *PINTEREST_DOMAINS)
+
     ydl_opts = {
         **BASE_OPTS,
         "outtmpl": output_path,
@@ -638,7 +665,9 @@ def download_media(url: str) -> str:
             ext = os.path.splitext(image_url.split("?")[0])[1].lower()
             if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
                 ext = ".jpg"
-            path = os.path.join(DOWNLOADS_DIR, f"{info.get('id', 'media')}_dl{ext}")
+            # Имя уникальное (два запроса одного пина не делят файл), номер проверен.
+            path = os.path.join(DOWNLOADS_DIR, f"{_safe_id(info.get('id'))}_dl_"
+                                               f"{uuid.uuid4().hex[:8]}{ext}")
             net.fetch_to_file(image_url, path, timeout=60)
             return path
 

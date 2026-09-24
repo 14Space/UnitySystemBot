@@ -1122,14 +1122,17 @@ async def _run(name: str, platform: str | None, coro_fn, url: str, idx: int,
             except asyncio.TimeoutError:
                 state, detail = "fail", f"таймаут > {_PROBE_TIMEOUT}с"
             except Exception as e:                   # noqa: BLE001 — отчёт важнее типа
-                state, detail = "fail", f"{type(e).__name__}: {e}"[:140]
+                # Маскируем ДО обрезки: обрезанный на середине токен маска уже не
+                # узнала бы, а текст сетевой ошибки к локальному Bot API содержит
+                # адрес вида /bot<токен>/… (проверено при повторном аудите).
+                state, detail = "fail", mask(f"{type(e).__name__}: {e}")[:140]
                 if attempt == 2:
                     logger.warning("Проверка «%s» упала (после повтора)", name, exc_info=True)
             if state == "ok" or attempt == 2:
                 break
             logger.info("Проверка «%s» упала (%s) — повтор через %dс", name, detail, _RETRY_DELAY)
             await asyncio.sleep(_RETRY_DELAY)
-    return {**base, "state": state, "detail": detail,
+    return {**base, "state": state, "detail": mask(str(detail)),
             "sec": round(time.monotonic() - start, 1)}
 
 
@@ -1336,7 +1339,8 @@ def format_alert(results: list[dict], lang: str = "ru") -> str:
         return ""
     ok_n = sum(1 for r in results if r["state"] == "ok")
     tested = sum(1 for r in results if r["state"] != "skip")
-    lines = [f"❌ {t_check(r['name'], lang)} - {_short_reason(r['detail'])}"
+    # Тревога уходит в Telegram – текст ошибки маскируем и здесь (см. _run).
+    lines = [f"❌ {t_check(r['name'], lang)} - {_short_reason(mask(str(r['detail'])))}"
              for r in failed]
     for r in slow:
         lines.append(f"🐢 {t_check(r['name'], lang)} - "

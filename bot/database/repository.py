@@ -583,18 +583,23 @@ async def ai_usage_today(session: AsyncSession, user_id: int) -> tuple[int, int]
 async def add_ai_usage(session: AsyncSession, user_id: int) -> None:
     """+1 к сегодняшнему счётчику. Вчерашние записи убираем — они больше не нужны."""
     day = _ai_day()
-    row = (await session.execute(
-        select(AiUsage).where(AiUsage.day == day,
-                              AiUsage.user_id == user_id))).scalar_one_or_none()
-    if row is None:
+    # Прибавляем ОДНИМ запросом (UPDATE … count + 1), как у счётчика площадок: «прочитал,
+    # прибавил, записал» терял параллельные попытки, а на первой попытке дня вставка
+    # от двух сразу падала с IntegrityError – и попытка не засчитывалась вовсе.
+    updated = (await session.execute(
+        update(AiUsage).where(AiUsage.day == day, AiUsage.user_id == user_id)
+        .values(count=func.coalesce(AiUsage.count, 0) + 1))).rowcount
+    if not updated:
         session.add(AiUsage(day=day, user_id=user_id, count=1))
-    else:
-        row.count = (row.count or 0) + 1
     await session.execute(delete(AiUsage).where(AiUsage.day != day))
     try:
         await session.commit()
-    except IntegrityError:
+    except IntegrityError:          # запись дня успел создать параллельный запрос
         await session.rollback()
+        await session.execute(
+            update(AiUsage).where(AiUsage.day == day, AiUsage.user_id == user_id)
+            .values(count=func.coalesce(AiUsage.count, 0) + 1))
+        await session.commit()
 
 
 async def save_check_timings(session: AsyncSession, pairs: list[tuple[str, float]]) -> None:

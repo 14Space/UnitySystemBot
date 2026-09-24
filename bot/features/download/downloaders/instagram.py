@@ -11,6 +11,8 @@ from bot.features.download.downloaders.ytdlp_wrapper import (
     BASE_OPTS, _quality_opts, _unique_outtmpl,
 )
 from bot.utils import cookie_files, media_names, net, pw_thread
+from bot.utils import files as file_utils
+from bot.utils.platform_detector import normalize_cache_url
 
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -209,9 +211,17 @@ def _shortcode(url: str) -> str | None:
     return code
 
 
+def _canonical(url: str) -> str:
+    """Ссылка вида www.instagram.com/reel/КОД. Зеркала (ddinstagram) и хвосты отбрасываем:
+    извлекатель yt-dlp понимает только сам instagram.com, а «generic», который раньше
+    подбирал зеркала, выключен (см. ALLOWED_EXTRACTORS в ytdlp_wrapper)."""
+    return normalize_cache_url(url)
+
+
 def download_reel(url: str, max_height: int | None = None) -> str:
     """Скачивает Instagram Reel (видео) — как Shorts. max_height ограничивает качество
     («Сжатие шортс»); без него берём максимум."""
+    url = _canonical(url)
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
     output_path = _unique_outtmpl()
 
@@ -290,6 +300,7 @@ def download_post(url: str) -> list[str]:
     и посты перестали качаться совсем. Возвращает список файлов по порядку.
     """
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    url = _canonical(url)
     shortcode = _shortcode(url) or "ig"
 
     base_opts = {
@@ -365,6 +376,18 @@ def download_post(url: str) -> list[str]:
         # Потоком на диск, с пределом размера: карусель бывает из видео, и держать
         # их в памяти целиком незачем (см. bot/utils/net.py).
         net.fetch_to_file(media_url, path, proxies=proxies, timeout=60)
+        # Фото это или видео, решает дальше расширение файла (is_image) – а его мы
+        # взяли из метаданных. Сверяем с содержимым: не то, за что себя выдаёт, –
+        # переименовываем, а не пойми что (страница-заглушка) не отправляем вовсе.
+        kind = file_utils.sniff(path)
+        if kind is None:
+            logger.warning("Instagram: по ссылке пришло не фото и не видео — пропускаю")
+            file_utils.remove(path)
+            continue
+        if (kind[0] == "image") != is_image(path):
+            real = os.path.splitext(path)[0] + kind[1]
+            os.replace(path, real)
+            path = real
         files.append(path)
 
     return files

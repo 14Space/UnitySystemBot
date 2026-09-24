@@ -66,7 +66,9 @@ def format_stats(stats: dict, lang: str = "ru") -> str:
         total = sum(stats["languages"].values()) or 1
         lines.append(t("rep_langs", lang))
         for code, cnt in sorted(stats["languages"].items(), key=lambda x: -x[1]):
-            lines.append(f"• {code}: {cnt} ({cnt * 100 // total}%)")
+            # Код языка приходит от Telegram-клиента человека, а отчёт идёт разметкой
+            # HTML: «<» в таком коде сломал бы разбор всего отчёта.
+            lines.append(f"• {html.escape(str(code))}: {cnt} ({cnt * 100 // total}%)")
 
     # Покупки показываем, только когда они есть: у бота без единой продажи строка
     # «Покупок: 0» каждый день — лишний шум в отчёте.

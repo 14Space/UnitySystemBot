@@ -133,3 +133,15 @@ def test_no_cookies_on_a_direct_attempt(tmp_path, monkeypatch):
     assert y._cookie_opts("https://www.youtube.com/watch?v=x", {}) == {}
     assert y._cookie_opts("https://www.youtube.com/watch?v=x",
                           {"proxy": net.PROXY_URL}).get("cookiefile")
+
+
+def test_copies_from_a_previous_run_are_swept(tmp_path):
+    """Повторный аудит: копии кук с живой сессией копились после каждого перезапуска –
+    список для уборки живёт в памяти и после старта пуст."""
+    from bot.utils import cookie_files
+
+    (tmp_path / "ck_1234abcd.txt").write_text("session")
+    (tmp_path / "ck_ffff0000.txt").write_text("session")
+    (tmp_path / "youtube_cookies.txt").write_text("original")   # чужое не трогаем
+    assert cookie_files.sweep(str(tmp_path)) == 2
+    assert [p.name for p in tmp_path.iterdir()] == ["youtube_cookies.txt"]

@@ -41,15 +41,22 @@ _MAX_TURNS = 12           # сколько последних реплик де�
 #     перезапуск обнулял его: лимит обходился ожиданием ближайшего деплоя.
 
 
-async def _within_limits(user_id: int) -> bool:
-    async with SessionLocal() as session:
-        mine, total = await ai_usage_today(session, user_id)
-    return total < AI_DAILY_LIMIT and mine < AI_USER_DAILY_LIMIT
+# Проверка лимита и его учёт – ОДНА операция под замком. По отдельности между ними
+# было окно: пять параллельных вопросов (столько пропускает очередь на человека) все
+# видели «ещё можно» и все проходили – лимит перебирался на величину этой пачки.
+# Процесс у бота один, поэтому обычного замка asyncio достаточно.
+_LIMIT_LOCK = asyncio.Lock()
 
 
-async def _count(user_id: int):
-    async with SessionLocal() as session:
-        await add_ai_usage(session, user_id)
+async def _take_turn(user_id: int) -> bool:
+    """Занимает одну попытку из суточного лимита. False – лимит исчерпан."""
+    async with _LIMIT_LOCK:
+        async with SessionLocal() as session:
+            mine, total = await ai_usage_today(session, user_id)
+            if total >= AI_DAILY_LIMIT or mine >= AI_USER_DAILY_LIMIT:
+                return False
+            await add_ai_usage(session, user_id)
+    return True
 
 
 async def _remember(msg_id: int, chat_id: int, history: list[dict]):
@@ -141,15 +148,13 @@ async def _answer(message: Message, history: list[dict], lang: str):
     lang — язык ИНТЕРФЕЙСА (служебные надписи вроде «Думаю…»). Язык самого ответа
     определяется отдельно, по тексту вопроса.
     """
-    if not await _within_limits(message.from_user.id):
+    # Засчитываем СРАЗУ, вместе с проверкой, а не после ответа. Раньше между проверкой
+    # и учётом проходил весь запрос к провайдеру, и параллельными вопросами суточный
+    # лимит обходился как угодно. Цена решения: неудачный ответ тоже съедает попытку —
+    # это дешевле, чем дырка в лимите бесплатного тира.
+    if not await _take_turn(message.from_user.id):
         await message.reply(t("ai_limit", lang))
         return
-
-    # Засчитываем СРАЗУ, а не после ответа. Раньше между проверкой и учётом проходил
-    # весь запрос к провайдеру, и параллельными вопросами суточный лимит обходился
-    # как угодно. Цена решения: неудачный ответ тоже съедает попытку — это дешевле,
-    # чем дырка в лимите бесплатного тира.
-    await _count(message.from_user.id)
 
     status = await message.reply(t("ai_thinking", lang))
     # «Печатает…»: ответ ИИ приходит за секунду-две, но провайдер бывает медленным,

@@ -91,10 +91,48 @@ def test_ai_quota_is_taken_before_the_request():
     параллельными вопросами суточный лимит обходился как угодно."""
     source = (pathlib.Path(__file__).resolve().parent.parent
               / "bot/features/ai/chat.py").read_text(encoding="utf-8")
-    body = source[source.index("_within_limits(message.from_user.id)"):]
-    count_at = body.index("_count(message.from_user.id)")
+    body = source[source.index("async def _answer"):]
+    take_at = body.index("_take_turn(message.from_user.id)")
     ask_at = body.index("client.ask")
-    assert count_at < ask_at, "лимит ИИ снова засчитывается после ответа"
+    assert take_at < ask_at, "лимит ИИ снова засчитывается после ответа"
+
+
+def test_ai_quota_check_and_count_are_one_step(monkeypatch):
+    """Повторный аудит: проверка и учёт стояли отдельными шагами, и пачка параллельных
+    вопросов проходила вся – каждый видел «ещё можно»."""
+    import asyncio
+    from bot.features.ai import chat
+
+    calls = {"n": 0}
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def fake_usage(session, uid):
+        await asyncio.sleep(0)            # точка переключения – здесь и была гонка
+        return calls["n"], calls["n"]
+
+    async def fake_add(session, uid):
+        await asyncio.sleep(0)
+        calls["n"] += 1
+
+    monkeypatch.setattr(chat, "ai_usage_today", fake_usage)
+    monkeypatch.setattr(chat, "add_ai_usage", fake_add)
+    monkeypatch.setattr(chat, "SessionLocal", _Session)
+    monkeypatch.setattr(chat, "AI_USER_DAILY_LIMIT", 2)
+    monkeypatch.setattr(chat, "AI_DAILY_LIMIT", 100)
+
+    async def run():
+        # Замок привязан к циклу событий – на каждый прогон свой.
+        monkeypatch.setattr(chat, "_LIMIT_LOCK", asyncio.Lock())
+        return await asyncio.gather(*(chat._take_turn(1) for _ in range(5)))
+
+    results = asyncio.run(run())
+    assert results.count(True) == 2 and calls["n"] == 2
 
 
 def test_clicks_are_rate_limited():

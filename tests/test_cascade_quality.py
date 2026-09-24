@@ -121,3 +121,29 @@ def test_empty_second_opinion_does_not_erase_the_first():
         return "", None
 
     assert _run(["a", "b"], {"a": first, "b": second}) == "слова всё-таки были"
+
+
+def test_group_voice_never_goes_to_the_relay(monkeypatch):
+    """Повторный аудит: голосовые из групп уходили чужому боту через личный аккаунт,
+    хотя их авторы ничего постороннему сервису не отправляли."""
+    calls = []
+
+    async def cloud(path):
+        calls.append("groq")
+        raise RuntimeError("облако лежит")
+
+    async def relay(path):
+        calls.append("relay")
+        return "текст", None
+
+    monkeypatch.setattr(cascade, "_METHODS", {"groq": cloud, "relay": relay})
+    monkeypatch.setattr(cascade, "STT_ORDER", ("groq", "relay"))
+    monkeypatch.setattr(cascade, "RELAY_IN_GROUPS", False)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(cascade.transcribe_audio("x.ogg", private=False))
+    assert calls == ["groq"]
+
+    calls.clear()
+    assert asyncio.run(cascade.transcribe_audio("x.ogg", private=True)) == "текст"
+    assert calls == ["groq", "relay"]

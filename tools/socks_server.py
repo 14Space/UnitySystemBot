@@ -80,6 +80,29 @@ async def _read_target(reader: asyncio.StreamReader) -> tuple[str, int]:
     return host, port
 
 
+# Куда НЕЛЬЗЯ ходить через туннель: домашняя сеть, сам компьютер, служебные диапазоны.
+# Прокси нужен боту ради сайтов в интернете, а всё прочее – это роутер, NAS, принтеры
+# и порты самого ПК. Без запрета любой, кто получил бы контроль над ботом на сервере,
+# оказывался бы прямо внутри домашней сети. Проверяем ПОСЛЕ разрешения имени и
+# подключаемся к проверенному адресу, а не к имени: иначе имя могло бы при втором
+# разрешении указать уже на локальный адрес (так называемая DNS-перепривязка).
+def _allowed_ip(ip: str) -> bool:
+    addr = ipaddress.ip_address(ip)
+    if addr.version == 6 and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return addr.is_global and not addr.is_multicast
+
+
+async def _resolve_public(host: str, port: int) -> str:
+    """Первый адрес хоста, который разрешено открывать. ValueError – таких нет."""
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    for *_, sockaddr in infos:
+        if _allowed_ip(sockaddr[0]):
+            return sockaddr[0]
+    raise PermissionError(f"адрес {host} ведёт в локальную или служебную сеть")
+
+
 def _reply(code: int, host: str = "0.0.0.0", port: int = 0) -> bytes:
     """Ответ клиенту: 0 — успех, остальное — отказ."""
     try:
@@ -100,8 +123,21 @@ async def handle(client_reader: asyncio.StreamReader, client_writer: asyncio.Str
         host, port = await _read_target(client_reader)
 
         try:
+            ip = await asyncio.wait_for(_resolve_public(host, port), CONNECT_TIMEOUT)
+        except PermissionError as e:
+            logger.warning("отказ: %s:%s — %s", host, port, e)
+            client_writer.write(_reply(2))      # «запрещено правилами»
+            await client_writer.drain()
+            return
+        except Exception as e:
+            logger.info("не разрешил имя %s — %s", host, type(e).__name__)
+            client_writer.write(_reply(4))      # «хост недоступен»
+            await client_writer.drain()
+            return
+
+        try:
             remote_reader, remote_writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port), CONNECT_TIMEOUT)
+                asyncio.open_connection(ip, port), CONNECT_TIMEOUT)
         except Exception as e:
             logger.info("не подключился к %s:%s — %s", host, port, type(e).__name__)
             client_writer.write(_reply(5))      # «отказано»

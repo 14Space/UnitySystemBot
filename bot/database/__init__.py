@@ -1,4 +1,4 @@
-from sqlalchemy import event
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, event, inspect
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from bot.config import DATABASE_URL
 from bot.database.models import Base
@@ -36,65 +36,55 @@ def _sqlite_pragmas(dbapi_connection, _record):
     cur.close()
 
 
+# Мягкие миграции: create_all не добавляет новые колонки в уже существующую таблицу,
+# поэтому колонки, появившиеся позже, дописываем сами. (таблица, колонка, тип, значение
+# по умолчанию как SQL-выражение или None).
+#
+# Раньше список колонок читался через «PRAGMA table_info» – это есть только у SQLite,
+# и на любой другой базе бот падал бы на старте. Теперь спрашиваем SQLAlchemy
+# (inspect), а тип колонки переводит в SQL сам диалект базы.
+_ADDED_COLUMNS = [
+    ("chat_settings", "slideshow_mode", String(), "'video'"),
+    ("chat_settings", "currency_targets", String(), "'USD,EUR,UAH'"),
+    ("chat_settings", "audio_track", Boolean(), "FALSE"),
+    # NULL = не задано: дефолт решается по типу чата (группа/личка) в коде.
+    ("chat_settings", "compress_shorts", Boolean(), None),
+    # Отметка последней активности. У старых записей пустая – и это честно: мы правда
+    # не знаем, когда эти люди последний раз пользовались ботом.
+    ("users", "last_seen", DateTime(), None),
+    # Кнопки, пережившие перезапуск, бывают трёх видов (качество, HDRezka, TikTok).
+    ("stashed_links", "kind", String(), "'quality'"),
+    ("stashed_links", "payload", String(), None),
+    # Покупка бывает не только за звёзды: способ оплаты и сумма в долларах для крипты.
+    ("payments", "method", String(), "'stars'"),
+    ("payments", "usd", Float(), None),
+    # Кэш file_id по каждому боту (id привязан к отправившему боту).
+    ("cached_files", "bot_id", Integer(), None),
+]
+
+
+def _missing_columns(sync_conn) -> list[tuple[str, str, object, str | None]]:
+    insp = inspect(sync_conn)
+    tables = set(insp.get_table_names())
+    have: dict[str, set[str]] = {}
+    missing = []
+    for table, column, col_type, default in _ADDED_COLUMNS:
+        if table not in tables:
+            continue
+        if table not in have:
+            have[table] = {c["name"] for c in insp.get_columns(table)}
+        if column not in have[table]:
+            missing.append((table, column, col_type, default))
+    return missing
+
+
 async def init_db():
-    """Создаёт таблицы в БД если их ещё нет"""
+    """Создаёт таблицы в БД, если их ещё нет, и дописывает новые колонки."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Мягкая миграция: create_all не добавляет новые колонки в уже существующую
-        # таблицу. Дописываем slideshow_mode вручную, если её ещё нет.
-        res = await conn.exec_driver_sql("PRAGMA table_info(chat_settings)")
-        cols = [r[1] for r in res.fetchall()]
-        if "slideshow_mode" not in cols:
-            await conn.exec_driver_sql(
-                "ALTER TABLE chat_settings ADD COLUMN slideshow_mode VARCHAR DEFAULT 'video'"
-            )
-        if "currency_targets" not in cols:
-            await conn.exec_driver_sql(
-                "ALTER TABLE chat_settings ADD COLUMN currency_targets VARCHAR DEFAULT 'USD,EUR,UAH'"
-            )
-        if "audio_track" not in cols:
-            await conn.exec_driver_sql(
-                "ALTER TABLE chat_settings ADD COLUMN audio_track BOOLEAN DEFAULT 0"
-            )
-        if "compress_shorts" not in cols:
-            # NULL = не задано: дефолт решается по типу чата (группа/личка) в коде.
-            await conn.exec_driver_sql(
-                "ALTER TABLE chat_settings ADD COLUMN compress_shorts BOOLEAN DEFAULT NULL"
-            )
-
-        # Отметка последней активности: раньше её не было, и «активных за месяц»
-        # посчитать было не из чего. У старых записей остаётся пустой — это честно:
-        # мы правда не знаем, когда эти люди последний раз пользовались ботом.
-        res = await conn.exec_driver_sql("PRAGMA table_info(users)")
-        user_cols = [r[1] for r in res.fetchall()]
-        if user_cols and "last_seen" not in user_cols:
-            await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN last_seen DATETIME")
-
-        # Кнопки, пережившие перезапуск, теперь бывают трёх видов (выбор качества,
-        # HDRezka, слайдшоу TikTok) — таблице нужны две новые колонки.
-        res = await conn.exec_driver_sql("PRAGMA table_info(stashed_links)")
-        sl_cols = [r[1] for r in res.fetchall()]
-        if sl_cols and "kind" not in sl_cols:
-            await conn.exec_driver_sql(
-                "ALTER TABLE stashed_links ADD COLUMN kind VARCHAR DEFAULT 'quality'")
-        if sl_cols and "payload" not in sl_cols:
-            await conn.exec_driver_sql(
-                "ALTER TABLE stashed_links ADD COLUMN payload VARCHAR")
-
-        # Покупка теперь бывает не только за звёзды: добавился способ оплаты и
-        # сумма в долларах для крипты. У старых записей способ — звёзды.
-        res = await conn.exec_driver_sql("PRAGMA table_info(payments)")
-        pay_cols = [r[1] for r in res.fetchall()]
-        if pay_cols and "method" not in pay_cols:
-            await conn.exec_driver_sql(
-                "ALTER TABLE payments ADD COLUMN method VARCHAR DEFAULT 'stars'")
-        if pay_cols and "usd" not in pay_cols:
-            await conn.exec_driver_sql("ALTER TABLE payments ADD COLUMN usd FLOAT")
-
-        # Кэш file_id теперь по каждому боту (id привязан к отправившему боту).
-        res = await conn.exec_driver_sql("PRAGMA table_info(cached_files)")
-        cf_cols = [r[1] for r in res.fetchall()]
-        if "bot_id" not in cf_cols:
-            await conn.exec_driver_sql(
-                "ALTER TABLE cached_files ADD COLUMN bot_id INTEGER"
-            )
+        for table, column, col_type, default in await conn.run_sync(_missing_columns):
+            ddl = (f"ALTER TABLE {table} ADD COLUMN {column} "
+                   f"{col_type.compile(dialect=conn.dialect)}")
+            if default is not None:
+                ddl += f" DEFAULT {default}"
+            await conn.exec_driver_sql(ddl)

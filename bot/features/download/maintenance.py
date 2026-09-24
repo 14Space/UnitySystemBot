@@ -6,7 +6,8 @@ import logging
 import subprocess
 import importlib.metadata as meta
 
-from bot.config import DOWNLOADS_DIR
+from bot.config import DOWNLOADS_DIR, COOKIE_COPIES_DIR
+from bot.utils import cookie_files
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,10 @@ logger = logging.getLogger(__name__)
 def clean_downloads():
     """Удаляет «хвосты» прошлых сессий из папки загрузок (вызывать ТОЛЬКО при старте,
     когда ничего не качается — иначе можно снести файл активной загрузки)."""
+    # Одноразовые копии кук прошлого запуска – в своей папке, её уборка отдельно.
+    copies = cookie_files.sweep(COOKIE_COPIES_DIR)
+    if copies:
+        logger.info("Убрано старых копий кук: %d", copies)
     if not os.path.isdir(DOWNLOADS_DIR):
         return
     removed = 0
@@ -46,10 +51,11 @@ def update_ytdlp() -> tuple[str, str]:
         old = meta.version("yt-dlp")
     except Exception:
         old = "?"
+    # Ночные сборки лежат на обычном PyPI как пре-релизы – сторонний индекс не нужен
+    # (раньше был --extra-index-url: лишний индекс = лишний путь подсунуть пакет).
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-U", "--quiet", "--pre", "yt-dlp[default]",
-             "--extra-index-url", "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases"],
+            [sys.executable, "-m", "pip", "install", "-U", "--quiet", "--pre", "yt-dlp[default]"],
             check=True, timeout=300,
         )
         new = meta.version("yt-dlp")
@@ -61,3 +67,4 @@ def update_ytdlp() -> tuple[str, str]:
     except Exception as e:
         logger.warning("Не удалось обновить yt-dlp: %s", e)
     return old, old
+
