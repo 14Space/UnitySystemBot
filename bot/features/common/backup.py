@@ -77,7 +77,9 @@ def dump_secrets() -> tuple[str | None, list[str]]:
     found = _secret_files()
     if not found:
         return None, []
-    path = os.path.join(tempfile.gettempdir(), f"unitysystem-secrets-{_stamp()}.zip")
+    # Имя без даты – так решил владелец: дата и так видна у сообщения, а копия базы
+    # рядом называется по дню.
+    path = os.path.join(tempfile.gettempdir(), "unitysystem-secrets.zip")
     try:
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for src, arcname in found:

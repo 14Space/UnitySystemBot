@@ -178,7 +178,6 @@ TEXTS = {
     "deps_all_fresh":  {"ru": "✅ Всё свежее, известных уязвимостей нет.", "uk": "✅ Усе свіже, відомих вразливостей немає.", "en": "✅ Everything is up to date, no known vulnerabilities."},
     "deps_failed":     {"ru": "Не смог проверить: {names}", "uk": "Не зміг перевірити: {names}", "en": "Could not check: {names}"},
     "deps_how":        {"ru": "Сам бот ничего не обновляет. Обновить – поменять версию в requirements.txt, прогнать тесты и раскатить через deploy.sh.", "uk": "Сам бот нічого не оновлює. Оновити – змінити версію в requirements.txt, прогнати тести й розгорнути через deploy.sh.", "en": "The bot updates nothing by itself. To update: change the version in requirements.txt, run the tests and deploy with deploy.sh."},
-    "secrets_caption": {"ru": "🔐 Секреты бота: {files}. Нужны, чтобы поднять бота заново. Никому не пересылай.", "uk": "🔐 Секрети бота: {files}. Потрібні, щоб підняти бота заново. Нікому не пересилай.", "en": "🔐 Bot secrets: {files}. Needed to bring the bot back up. Do not forward."},
     "hc_rest_ok":     {"ru": "Остальное работает ({ok}/{total})", "uk": "Решта працює ({ok}/{total})", "en": "Everything else works ({ok}/{total})"},
     "hc_slow":        {"ru": "{sec}с вместо обычных {base}с", "uk": "{sec}с замість звичних {base}с", "en": "{sec}s instead of the usual {base}s"},
     # Причины, которые пишем МЫ сами (остальные приходят от площадок как есть)

@@ -2,16 +2,15 @@ import asyncio
 import concurrent.futures
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import (
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat,
     BotCommandScopeAllChatAdministrators, BotCommandScopeAllPrivateChats,
-    ErrorEvent, FSInputFile,
+    ErrorEvent, FSInputFile, InputMediaDocument,
 )
 from bot.config import (
     BOT_TOKEN, TELEGRAM_LOCAL_API_URL, ADMIN_ID, WHISPER_PREWARM, ADMIN_TZ,
@@ -66,6 +65,18 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 _ADMIN_ZONE = ZoneInfo(ADMIN_TZ)
 
 
+def _until(target: datetime, now: datetime) -> float:
+    """Секунд от now до target – с учётом перевода часов.
+
+    Оба времени в поясе админа, и Python при вычитании таких времён пояс ИГНОРИРУЕТ:
+    считает по циферблату. В Молдове часы переводят дважды в год, и если перевод
+    попадал между «сейчас» и целью, ожидание выходило на час короче или длиннее –
+    отчёт, проверки и сверка библиотек срабатывали в 11:00 или 13:00. Поэтому считаем
+    через UTC, где переводов нет.
+    """
+    return (target.astimezone(timezone.utc) - now.astimezone(timezone.utc)).total_seconds()
+
+
 def _seconds_until_report() -> float:
     """Сколько секунд до ближайшего REPORT_HOUR:00 по часовому поясу админа.
     Считаем от локального времени зоны на каждом витке, поэтому переход Молдовы
@@ -74,7 +85,7 @@ def _seconds_until_report() -> float:
     target = now.replace(hour=REPORT_HOUR, minute=0, second=0, microsecond=0)
     if target <= now:
         target += timedelta(days=1)
-    return (target - now).total_seconds()
+    return _until(target, now)
 
 
 def _seconds_until_slot(every_hours: int, skip_hour: int | None = None) -> float:
@@ -88,7 +99,7 @@ def _seconds_until_slot(every_hours: int, skip_hour: int | None = None) -> float
     slot = now.replace(minute=0, second=0, microsecond=0)
     while slot <= now or slot.hour % every_hours != 0 or slot.hour == skip_hour:
         slot += timedelta(hours=1)
-    return (slot - now).total_seconds()
+    return _until(slot, now)
 
 
 def _make_bot(token: str) -> Bot:
@@ -212,7 +223,6 @@ async def _daily_tasks(bot: Bot):
             report = (f"{format_stats(stats, ADMIN_LANG)}\n\n"
                       f"{format_health(health, platform_ranking(stats), lang=ADMIN_LANG)}")
             await _send_report(bot, report)
-            await _send_secrets(bot)
         except Exception:
             logger.exception("Не удалось отправить дневной отчёт")
         if old != new:
@@ -220,79 +230,41 @@ async def _daily_tasks(bot: Bot):
 
 
 async def _send_report(bot: Bot, report: str):
-    """Отправляет суточный отчёт вместе с копией базы.
+    """Отправляет суточный отчёт, а под ним – копию базы и архив секретов.
 
-    Одним сообщением: отчёт идёт ПОДПИСЬЮ к файлу — так в чате одна карточка вместо
-    двух, и не нужна отдельная строка «резервная копия», дата и так в имени файла.
+    Отчёт – обычным сообщением: у подписи к файлу предел 1024 символа, а отчёт с
+    сорока пунктами проверки почти всегда длиннее, так что на деле он и раньше
+    приходил отдельно. Под ним – оба файла ОДНИМ альбомом: копия базы
+    (unitysystem-ГГГГ-ММ-ДД.db) и архив секретов (unitysystem-secrets.zip: .env, куки,
+    сессия посредника, ключи WireGuard) – с одной базой бота заново не поднять. Архив
+    открытый, как и копия базы, – так решил владелец; кто получит доступ к этому чату,
+    получит и всё, что в архиве.
 
-    Но подпись к файлу у Telegram ограничена 1024 символами против 4096 у обычного
-    сообщения, а список из сорока пунктов проверки бывает длиннее. Считать символы
-    самим ненадёжно (в лимит идёт видимый текст, а правила разбора у Telegram свои),
-    поэтому просто пробуем — и на отказ откатываемся на два сообщения. Файл при этом
-    всё равно уходит без подписи.
-
-    Отчёт важнее копии. Что бы ни случилось с файлом — не снялся, не ушёл, отвергнут
-    Telegram — отчёт всё равно отправляется отдельным сообщением. Раньше он уходил
-    первым и это выходило само собой; теперь, когда он стал подписью к файлу, за этим
-    приходится следить отдельно.
+    Отчёт важнее копий: он уходит первым, и что бы ни случилось с файлами – не снялись,
+    не ушли, отвергнуты Telegram, – отчёт уже доставлен.
     """
-    path = await dump_database()
-    if not path:
-        await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
-        return
-
+    files = []
     try:
-        # Лучший случай: одна карточка — файл, а под ним весь отчёт.
-        try:
-            await bot.send_document(ADMIN_ID, FSInputFile(path),
-                                    caption=report, parse_mode="HTML")
-            return
-        except TelegramBadRequest as e:
-            if "caption is too long" in str(e).lower():
-                logger.info("Отчёт не влез в подпись к файлу — шлю двумя сообщениями")
-            else:
-                logger.warning("Файл с отчётом не ушёл (%s) — шлю отчёт отдельно",
-                               str(e)[:120])
-        except Exception:
-            logger.exception("Файл с отчётом не ушёл — шлю отчёт отдельно")
-
-        # Отчёт важнее копии: он уходит в любом случае, что бы ни случилось с файлом.
         await bot.send_message(ADMIN_ID, report, parse_mode="HTML")
-        try:
-            await bot.send_document(ADMIN_ID, FSInputFile(path))
-        except Exception:
-            logger.exception("Копия базы не отправилась")
+        db = await dump_database()
+        if db:
+            files.append(db)
+        secrets, _ = await asyncio.to_thread(dump_secrets)
+        if secrets:
+            files.append(secrets)
+        if len(files) == 1:
+            await bot.send_document(ADMIN_ID, FSInputFile(files[0]))
+        elif files:
+            await bot.send_media_group(
+                ADMIN_ID, [InputMediaDocument(media=FSInputFile(p)) for p in files])
     except Exception:
-        logger.exception("Не удалось отправить дневной отчёт")
+        logger.exception("Не удалось отправить дневной отчёт или копии")
     finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-
-async def _send_secrets(bot: Bot):
-    """Копия секретов админу – отдельным файлом сразу после копии базы.
-
-    С одной базой бота заново не поднять: нужны ещё .env (токены и ключи), куки
-    площадок, сессия посредника и ключи WireGuard, а лежали они только на сервере и на
-    домашнем компьютере. Архив открытый, как и копия базы, – так решил владелец; кто
-    получит доступ к этому чату, получит и всё, что в архиве.
-    """
-    path, names = await asyncio.to_thread(dump_secrets)
-    if not path:
-        return
-    try:
-        await bot.send_document(
-            ADMIN_ID, FSInputFile(path),
-            caption=t("secrets_caption", ADMIN_LANG, files=", ".join(names))[:1024])
-    except Exception:
-        logger.exception("Копия секретов не отправилась")
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+        for path in files:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 async def _periodic_healthcheck(bot: Bot):
@@ -431,7 +403,7 @@ def _seconds_until_month_day(day: int, hour: int) -> float:
         target = now.replace(year=year, month=month, day=min(day, last), hour=hour,
                              minute=0, second=0, microsecond=0)
         if target > now:
-            return (target - now).total_seconds()
+            return _until(target, now)
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
 
 

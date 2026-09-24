@@ -91,3 +91,54 @@ def test_no_secrets_no_archive(tmp_path, monkeypatch):
                  "RELAY_STT_SESSION", "WIREGUARD_DIR"):
         monkeypatch.setattr(config, attr, str(tmp_path / "нет"))
     assert backup.dump_secrets() == (None, [])
+
+
+def test_waiting_survives_the_clock_change():
+    """В Молдове часы переводят дважды в год. Python при вычитании времён одного пояса
+    пояс игнорирует, и через перевод ожидание выходило на час короче: 25.10.2026 часы
+    отводят назад, и сверка 1 ноября сработала бы в 23:00 31 октября."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import bot.main as m
+
+    z = ZoneInfo("Europe/Chisinau")
+    autumn = m._until(datetime(2026, 11, 1, 0, 0, tzinfo=z), datetime(2026, 10, 20, 12, 0, tzinfo=z))
+    spring = m._until(datetime(2027, 4, 1, 0, 0, tzinfo=z), datetime(2027, 3, 20, 12, 0, tzinfo=z))
+    assert autumn == 277 * 3600       # 11.5 суток + лишний час
+    assert spring == 275 * 3600       # 11.5 суток − час
+
+
+def test_report_first_then_database_and_secrets_as_one_album(tmp_path, monkeypatch):
+    """Отчёт – отдельным сообщением, под ним копия базы и архив секретов одним альбомом.
+    Файлы за собой убираем."""
+    import asyncio
+    import bot.main as m
+
+    db, sec = tmp_path / "unitysystem-2026-09-24.db", tmp_path / "unitysystem-secrets.zip"
+
+    async def fake_db():
+        db.write_bytes(b"db")
+        return str(db)
+
+    def fake_secrets():
+        sec.write_bytes(b"zip")
+        return str(sec), [".env"]
+
+    monkeypatch.setattr(m, "dump_database", fake_db)
+    monkeypatch.setattr(m, "dump_secrets", fake_secrets)
+    monkeypatch.setattr(m, "ADMIN_ID", 1)
+
+    class Bot:
+        calls = []
+
+        async def send_message(self, chat_id, text, **kw):
+            self.calls.append(("text", text))
+
+        async def send_media_group(self, chat_id, media):
+            self.calls.append(("album", [x.media.path for x in media],
+                               [x.caption for x in media]))
+
+    bot = Bot()
+    asyncio.run(m._send_report(bot, "отчёт"))
+    assert bot.calls == [("text", "отчёт"), ("album", [str(db), str(sec)], [None, None])]
+    assert not db.exists() and not sec.exists()
