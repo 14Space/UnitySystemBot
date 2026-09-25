@@ -52,8 +52,8 @@ def _dur_ok(cand_dur, target) -> bool:
     return abs(cand_dur - target) <= max(8, target * 0.06)
 
 
-def _search_youtube(artist: str, title: str, duration: int) -> str | None:
-    """Умный поиск на YouTube: приоритет официальному аудио исполнителя."""
+def _search_youtube(artist: str, title: str, duration: int) -> list[str]:
+    """Умный поиск на YouTube: подходящие ролики, первым – официальное аудио исполнителя."""
     # Через общий механизм прокси: с дата-центрового IP YouTube отвечает на поиск
     # бот-чеком, и без этого Spotify-треки не находились вовсе (см. _needs_proxy).
     from bot.features.download.downloaders.ytdlp_wrapper import via_proxy
@@ -69,7 +69,7 @@ def _search_youtube(artist: str, title: str, duration: int) -> str | None:
         res = via_proxy(term, _op)
     except Exception:
         logger.warning("YouTube поиск не удался", exc_info=True)
-        return None
+        return []
 
     art = (artist or "").lower()
     good = []
@@ -85,8 +85,6 @@ def _search_youtube(artist: str, title: str, duration: int) -> str | None:
         if not _dur_ok(e.get("duration"), duration):
             continue
         good.append(e)
-    if not good:
-        return None
 
     def score(e):
         up = (e.get("uploader") or "").lower()
@@ -99,35 +97,40 @@ def _search_youtube(artist: str, title: str, duration: int) -> str | None:
             abs((e.get("duration") or 0) - (duration or 0)),  # ближе по длительности
         )
 
-    best = sorted(good, key=score)[0]
-    return best.get("webpage_url") or f"https://www.youtube.com/watch?v={best.get('id')}"
+    return [e.get("webpage_url") or f"https://www.youtube.com/watch?v={e.get('id')}"
+            for e in sorted(good, key=score)]
 
 
-def _search_soundcloud(artist: str, title: str, duration: int) -> str | None:
+def _search_soundcloud(artist: str, title: str, duration: int) -> list[str]:
     opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(f"scsearch8:{artist} {title}", download=False)
     except Exception:
         logger.warning("SoundCloud поиск не удался", exc_info=True)
-        return None
+        return []
     entries = [e for e in (res.get("entries") or []) if e]
     good = [e for e in entries
             if not _is_bad(e.get("title", ""), title)
             and _title_matches(e.get("title", ""), title)
             and _dur_ok(e.get("duration"), duration)]
-    if not good:
-        return None
     art = (artist or "").lower()
     # приоритет: трек от самого автора (uploader = исполнитель), затем ближе по длительности
     good.sort(key=lambda e: (
         0 if art and art in (e.get("uploader") or "").lower() else 1,
         abs((e.get("duration") or 0) - (duration or 0)),
     ))
-    best = good[0]
-    return best.get("url") or best.get("webpage_url")
+    return [e.get("url") or e.get("webpage_url") for e in good]
+
+
+def find_track_sources(artist: str, title: str, duration: int) -> list[str]:
+    """Все подходящие ссылки на трек, лучшая первой (YouTube-официальное → SoundCloud).
+    Нужен весь список: лучший вариант бывает с DRM (SoundCloud) или снят с YouTube,
+    а перезалив того же трека рядом качается нормально."""
+    return _search_youtube(artist, title, duration) or _search_soundcloud(artist, title, duration)
 
 
 def find_track_source(artist: str, title: str, duration: int) -> str | None:
-    """Возвращает ссылку для скачивания трека (YouTube-официальное → SoundCloud) или None."""
-    return _search_youtube(artist, title, duration) or _search_soundcloud(artist, title, duration)
+    """Лучшая ссылка для скачивания трека или None."""
+    found = find_track_sources(artist, title, duration)
+    return found[0] if found else None

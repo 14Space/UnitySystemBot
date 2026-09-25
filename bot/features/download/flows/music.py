@@ -23,7 +23,7 @@ from bot.features.download.downloaders.ytdlp_wrapper import (
     get_soundcloud_set,
 )
 from bot.features.download.downloaders.spotify import get_track_info, get_collection_info
-from bot.features.download.downloaders.music_search import find_track_source
+from bot.features.download.downloaders.music_search import find_track_sources
 from bot.features.download.downloaders.audio_meta import (
     set_metadata, get_soundcloud_cover, make_thumbnail,
 )
@@ -187,13 +187,14 @@ async def _resolve_audio(cache_url: str, source: str, meta: dict | None,
     if source.startswith("ytsearch"):
         query = source.split(":", 1)[1]
         # Spotify (есть meta): ищем оригинал по цепочке YT Music → SoundCloud.
-        found = None
+        # Берём всех подходящих: лучший бывает с DRM, а перезалив рядом качается.
+        found = []
         if meta:
             found = await asyncio.to_thread(
-                find_track_source, meta["performer"], meta["title"], meta["duration"]
+                find_track_sources, meta["performer"], meta["title"], meta["duration"]
             )
         if found:
-            candidates = [found]
+            candidates = found
         else:
             # запасной путь — обычный поиск на YouTube (несколько кандидатов)
             candidates = await asyncio.to_thread(search_audio_candidates, query, target_duration)
