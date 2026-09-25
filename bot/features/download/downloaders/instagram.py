@@ -55,6 +55,16 @@ def _attempts(cookies: str | None) -> list[tuple[str, str | None]]:
     return [("", None)]
 
 
+def _reel_attempts(cookies: str | None) -> list[tuple[str, str | None]]:
+    """Для Reels – сначала гостем, аккаунт только если гостем не вышло.
+
+    26.09.2026 Instagram показал на аккаунте «подозреваем автоматизацию»: каждый
+    запрос бота шёл от его имени. Открытый Reel гостю отдаётся (и напрямую быстрее,
+    см. _attempts), так что сессию тратим лишь на закрытые. Фото и карусели гостю не
+    отдаются вовсе (фото – никак, карусель – миниатюрами), им порядок не меняем."""
+    return [("", None)] + [a for a in _attempts(cookies) if a[1]]
+
+
 # --- Запасной путь для одиночного ФОТО через браузер (Playwright) -------------
 # yt-dlp Instagram-экстрактор на посте без видео падает («There is no video in this
 # post»), а HTML Instagram теперь пустой JS-каркас (ни og:image, ни display_url).
@@ -370,7 +380,8 @@ def download_reel(url: str, max_height: int | None = None) -> str:
         base_opts["cookiefile"] = cookies
 
     last_err: Exception | None = None
-    for proxy, use_cookies in _attempts(cookies):
+    attempts = _reel_attempts(cookies)
+    for n, (proxy, use_cookies) in enumerate(attempts, 1):
         ydl_opts = dict(base_opts)
         if proxy:
             ydl_opts["proxy"] = proxy
@@ -403,10 +414,10 @@ def download_reel(url: str, max_height: int | None = None) -> str:
                     media_names.remember(paths[0], None, code)
                     logger.info("Instagram: Reel %s взят со страницы (с куками)", code)
                     return paths[0]
-            # Прямой доступ заблокирован анти-ботом, а прокси ещё не пробовали — повторим.
-            if proxy:
-                logger.info("Instagram: через дом не вышло (%s) — пробую напрямую без кук",
-                            str(e)[:60])
+            # Есть ещё способ (гостем не отдали – пробуем аккаунтом через дом).
+            if n < len(attempts):
+                logger.info("Instagram: Reel %s не вышло (%s) — пробую следующий способ",
+                            "гостем" if not use_cookies else "с куками", str(e)[:60])
                 continue
             # «Доступ не для всех» — почти всегда вопрос кук. Подсказываем в лог, что делать.
             if "audiences" in str(e).lower() or "available to everyone" in str(e).lower():

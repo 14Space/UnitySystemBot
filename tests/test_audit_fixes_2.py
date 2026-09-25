@@ -248,3 +248,14 @@ def test_premium_is_checked_for_the_clicker():
                        for p in [root / "link.py", *sorted((root / "flows").glob("*.py"))])
     assert 'not entry.get("premium")' not in source, \
         "премиум снова проверяется по владельцу меню, а не по нажавшему"
+
+
+def test_reel_goes_as_guest_first(monkeypatch):
+    """Reel сначала гостем, аккаунт – только запасным и только через дом."""
+    from bot.features.download.downloaders import instagram
+    from bot.utils import net
+
+    monkeypatch.setattr(net, "PROXY_URL", "")
+    monkeypatch.setattr(net, "INSTAGRAM_PROXY", "socks5://дом:1080")
+    assert instagram._reel_attempts("куки.txt") == [("", None), ("socks5://дом:1080", "куки.txt")]
+    assert instagram._reel_attempts(None) == [("", None)]
