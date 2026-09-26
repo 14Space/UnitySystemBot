@@ -140,7 +140,7 @@ def test_bot_api_port_is_not_public():
     интернета (проверено запросом с чужой машины), а публикация порта в docker
     обходит ufw, так что firewall от этого не спасал."""
     root = pathlib.Path(__file__).resolve().parent.parent
-    for name in ("docker-compose.yml", "docker-compose.oracle.yml"):
+    for name in ("docker-compose.yml",):
         text = (root / name).read_text(encoding="utf-8")
         assert '"8081:8081"' not in text, f"{name}: порт снова открыт наружу"
         assert '"127.0.0.1:8081:8081"' in text, f"{name}: порт не привязан к localhost"

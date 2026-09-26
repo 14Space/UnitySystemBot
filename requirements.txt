@@ -35,7 +35,7 @@ spotipy==2.26.0            # метаданные Spotify
 faster-whisper==1.1.1
 # CUDA-библиотеки для работы Whisper на видеокарте NVIDIA. Нужны только на обычных
 # x86-процессорах с GPU (Windows/Linux). Маркер platform_machine=="x86_64" делает их
-# необязательными: на ARM-серверах (например, Oracle Ampere A1) pip их просто
+# необязательными: на ARM-серверах pip их просто
 # пропустит — там Whisper работает на CPU, и эти пакеты не нужны (и не собираются).
 nvidia-cublas-cu12; platform_machine == "x86_64"
 nvidia-cudnn-cu12; platform_machine == "x86_64"

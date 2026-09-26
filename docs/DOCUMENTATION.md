@@ -853,7 +853,7 @@ Whisper на тишине не молчит, а выдумывает зауче�
 ```
 git clone <репозиторий> && cd UnitySystemBot
 mkdir -p data/downloads data/tg-temp && chmod 777 data/downloads data/tg-temp
-cp .env.oracle.example .env      # и заполнить своими значениями
+nano .env                        # заполнить по таблице выше и разделу настроек
 # положить куки в data/ (instagram_cookies.txt, youtube_cookies.txt, x.com_cookies.txt)
 ./deploy.sh                      # сборка, тесты, запуск (см. «Раскатка обновлений»)
 ```
@@ -906,8 +906,6 @@ cp .env.oracle.example .env      # и заполнить своими значе
 **На сервере БЕЗ видеокарты команда другая.** Обычный `docker-compose.yml` требует NVIDIA, и без неё Docker отказывается создавать контейнер вовсе («could not select device driver "nvidia"»). Нужен аварийный оверлей — он снимает запрос видеокарты и переводит Whisper на процессор:
 
     docker compose -f docker-compose.yml -f docker-compose.nogpu.yml up -d --build bot
-
-Файл `docker-compose.oracle.yml` для этого не подходит: он под ARM (Oracle Ampere), а обычный VPS — x86.
 
 **Обновление кода на сервере** идёт через `git pull`, а репозиторий приватный. Чтобы pull работал без пароля, на сервере лежит ключ деплоя и `~/.ssh/config`, который велит git брать именно его:
 
