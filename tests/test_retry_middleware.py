@@ -119,3 +119,43 @@ def test_flood_limit_during_upload_is_retried_once(tmp_path, _no_real_sleep):
     result = asyncio.run(
         RetryAfterMiddleware()(make_request, None, _send_video_with_file(tmp_path)))
     assert result == "ушло" and len(calls) == 2
+
+
+def test_file_url_send_is_not_retried_on_network_error(_no_real_sleep):
+    """«file://» – сервер Bot API сам заливает фильм; после обрыва первая отправка
+    могла дойти, и повтор прислал бы фильм дважды."""
+    from aiogram.exceptions import TelegramNetworkError
+    from aiogram.methods import SendVideo
+
+    method = SendVideo(chat_id=1, video="file:///data/film.mp4")
+    assert retry.sends_file(method) and not retry.sends_file(_send_video_by_file_id())
+    calls = []
+
+    async def make_request(bot, method):
+        calls.append(1)
+        raise TelegramNetworkError(method=_FakeMethod(), message="Request timeout error")
+
+    with pytest.raises(TelegramNetworkError):
+        asyncio.run(RetryAfterMiddleware()(make_request, None, method))
+    assert len(calls) == 1
+
+
+def test_file_send_waits_longer():
+    """Отправке файла – долгий срок ожидания, остальным запросам – обычный."""
+    from aiogram.methods import SendVideo, SendMessage
+    from bot import main
+
+    seen = []
+
+    async def fake_make_request(self, bot, method, timeout=None):
+        seen.append(timeout)
+
+    session = main._Session()
+    orig = main.AiohttpSession.make_request
+    main.AiohttpSession.make_request = fake_make_request
+    try:
+        asyncio.run(session.make_request(None, SendVideo(chat_id=1, video="file:///f.mp4")))
+        asyncio.run(session.make_request(None, SendMessage(chat_id=1, text="привет")))
+    finally:
+        main.AiohttpSession.make_request = orig
+    assert seen == [main._FILE_SEND_TIMEOUT, None]

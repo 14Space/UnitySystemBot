@@ -12,6 +12,7 @@ from bot.config import (
 )
 from bot.utils import media_names, net, ffmpeg
 from bot.utils import cookie_files
+from bot.utils import home_tunnel  # ВРЕМЕННО home_tunnel
 from bot.utils.limits import MAX_FILE_BYTES
 from bot.utils.platform_detector import PINTEREST_DOMAINS
 
@@ -174,7 +175,8 @@ def youtube_search_query(url: str) -> str:
     try:
         r = net.session().get("https://www.youtube.com/oembed",
                               params={"url": url, "format": "json"},
-                              proxies=net.as_requests(net.proxy_for()), timeout=20)
+                              proxies=net.as_requests(home_tunnel.usable(net.proxy_for())),  # ВРЕМЕННО home_tunnel
+                              timeout=20)
         data = r.json()
     except Exception:
         logger.info("Не удалось прочитать данные ролика для поиска: %s", url)

@@ -45,7 +45,8 @@ def _is_upload(method) -> bool:
     середине) от повторов не исчезает.
 
     В локальном режиме файл отдаётся строкой «file://путь», сервер Bot API читает его
-    с диска — там заливки нет, и такой запрос повторять не жалко.
+    с диска — там заливки нет, и лимит Telegram такому запросу повторять не жалко
+    (обрыв связи – другое дело, см. sends_file).
     """
     for name in getattr(type(method), "model_fields", {}):
         value = getattr(method, name, None)
@@ -60,11 +61,32 @@ def _is_upload(method) -> bool:
     return False
 
 
+def sends_file(method) -> bool:
+    """Запрос отправляет НОВЫЙ файл – заливкой или ссылкой «file://» (не file_id)?
+
+    С «file://» по сети от нас файл не идёт, но сервер Bot API отвечает лишь после того,
+    как сам зальёт его в Telegram – у фильма это минуты. Поэтому такому запросу нужен
+    долгий срок ожидания (см. _make_bot), а обрыв на нём не повторяем: первая отправка
+    могла дойти, и повтор прислал бы человеку фильм дважды.
+    """
+    if _is_upload(method):
+        return True
+    for name in getattr(type(method), "model_fields", {}):
+        value = getattr(method, name, None)
+        items = value if isinstance(value, (list, tuple)) else [value]
+        for v in items:
+            v = getattr(v, "media", v)
+            if isinstance(v, str) and v.startswith("file://"):
+                return True
+    return False
+
+
 class RetryAfterMiddleware(BaseMiddleware):
     """Middleware сессии: повторяет запрос, если Telegram попросил подождать."""
 
     async def __call__(self, make_request, bot, method):
         upload = _is_upload(method)
+        new_file = sends_file(method)
         tries = _MAX_TRIES_UPLOAD if upload else _MAX_TRIES
         for attempt in range(1, tries + 1):
             try:
@@ -82,7 +104,7 @@ class RetryAfterMiddleware(BaseMiddleware):
                 # Сбой связи посреди заливки файла НЕ повторяем: файл почти наверняка
                 # уехал наполовину, и повтор — это ещё одна полная заливка по тому же
                 # каналу, который только что оборвался.
-                if attempt == tries or upload:
+                if attempt == tries or new_file:
                     raise
                 logger.info("Сбой связи с Telegram (%s: %s) — повтор через %dс",
                             type(e).__name__, e, _NETWORK_PAUSE)

@@ -37,6 +37,9 @@ def note_failure(exc: Exception) -> None:
     loop — тихо ничего не делаем (сбой пользователю всё равно покажется как раньше)."""
     if not _bot or not _admin_id:
         return
+    from bot.utils import home_tunnel   # ВРЕМЕННО home_tunnel
+    if home_tunnel.is_down():           # ВРЕМЕННО home_tunnel: дом выключен – без тревог
+        return
     ctx = current_request.get() or "—"
     # Маскируем: в тексте исключения попадается адрес запроса с токеном или ключом.
     text = mask(f"⚠️ Сбой у пользователя\n{ctx}\n{type(exc).__name__}: {exc}")[:600]

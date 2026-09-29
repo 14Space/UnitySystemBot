@@ -17,6 +17,7 @@ link.py – восемь раз, и каждый раз чуть по-своем
 Обработчику остаётся сказать, ЧТО качать и КАК отправлять.
 """
 import asyncio
+import contextvars  # ВРЕМЕННО home_tunnel
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -26,12 +27,16 @@ from bot.database.repository import (
     get_cached_file_id, save_cached_file_id, clear_cache_entry,
 )
 from bot.utils import files, inflight, limits
+from bot.utils import home_tunnel  # ВРЕМЕННО home_tunnel
 from bot.utils.cache_guard import send_cached_or_drop
 from bot.utils.i18n import t
 from bot.utils.progress_bar import make_progress_bar, ProgressThrottle
 from bot.utils.tg_messages import safe_edit, safe_delete
 
 logger = logging.getLogger(__name__)
+
+# ВРЕМЕННО home_tunnel: полоска загрузки текущей задачи – убрать её, если молчим.
+_bar: contextvars.ContextVar = contextvars.ContextVar("bar", default=None)
 
 # Пользователи с активной тяжёлой загрузкой – у каждого не больше одной. Читает и
 # main.py: перед перезапуском ждёт, пока загрузки закончатся.
@@ -138,12 +143,18 @@ async def produce(*, cache: Cache | None, work, on_error, lane: str = limits.LIG
     """
     async with slot(lane, tell, lang):
         paths = Files()
+        _bar.set(None)  # ВРЕМЕННО home_tunnel
         try:
             value = await work(paths)
             if value and cache is not None:
                 await cache.save(value)
         except Exception as e:
             logger.exception("Загрузка не удалась: %s", label or (cache.url if cache else "?"))
+            if await home_tunnel.check_now():   # ВРЕМЕННО home_tunnel: дом выключен – молчим
+                logger.info("Домашнего туннеля нет – человеку и админу ничего не пишу")
+                if _bar.get() is not None:
+                    await safe_delete(_bar.get().msg)
+                return
             try:
                 await on_error(e)
             except Exception:
@@ -191,6 +202,7 @@ class Progress:
     async def start(self) -> None:
         self.msg = await self.bot.send_message(self.chat_id, make_progress_bar(0, self.lang),
                                                reply_to_message_id=self.reply_to)
+        _bar.set(self)  # ВРЕМЕННО home_tunnel
 
     def _later(self, text: str) -> None:
         asyncio.run_coroutine_threadsafe(safe_edit(self.msg, text), self._loop)

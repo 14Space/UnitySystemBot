@@ -133,6 +133,8 @@ def with_proxy(op, proxy: str, *, first: bool | None = None):
     Порядок «сперва напрямую» – потому что дома и на чистом адресе прокси не нужен и
     только замедлил бы.
     """
+    from bot.utils import home_tunnel               # ВРЕМЕННО home_tunnel
+    proxy = home_tunnel.usable(proxy)               # ВРЕМЕННО home_tunnel: дом выключен – напрямую
     if not proxy:
         return op("")
     if PROXY_FIRST if first is None else first:

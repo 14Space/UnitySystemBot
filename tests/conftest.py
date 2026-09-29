@@ -26,3 +26,11 @@ def _fresh_chat_settings_cache():
     forget_chat_settings()
     yield
     forget_chat_settings()
+
+
+@pytest.fixture(autouse=True)
+def _home_tunnel_alive(monkeypatch):  # ВРЕМЕННО home_tunnel
+    """Тесты в сеть не ходят: домашний туннель для них всегда «жив»."""
+    from bot.utils import home_tunnel
+    monkeypatch.setattr(home_tunnel, "_down", None)
+    monkeypatch.setattr(home_tunnel, "_probe_sync", lambda proxy: True)

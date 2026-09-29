@@ -12,6 +12,7 @@ from bot.features.download.downloaders.ytdlp_wrapper import (
     BASE_OPTS, _quality_opts, _unique_outtmpl,
 )
 from bot.utils import cookie_files, media_names, net, pw_thread
+from bot.utils import home_tunnel  # ВРЕМЕННО home_tunnel
 from bot.utils import files as file_utils
 from bot.utils.platform_detector import normalize_cache_url
 
@@ -100,7 +101,7 @@ def _embed_image_src(browser, shortcode: str) -> str | None:
     """
     cookies = _pw_cookies()
     home = _home()
-    with_session = bool(cookies and home)
+    with_session = bool(cookies and home) and not home_tunnel.is_down()  # ВРЕМЕННО home_tunnel
     options = {"user_agent": _UA}
     if with_session:
         options["proxy"] = {"server": home}
@@ -376,6 +377,8 @@ def download_reel(url: str, max_height: int | None = None) -> str:
     }
     # Куки залогиненного аккаунта — чтобы качать Reels с пометкой «доступ не для всех»
     cookies = _cookies_path()
+    if home_tunnel.is_down():   # ВРЕМЕННО home_tunnel: куки только через дом, а его нет
+        cookies = None
     if cookies:
         base_opts["cookiefile"] = cookies
 
@@ -472,6 +475,8 @@ def download_post(url: str) -> list[str]:
         "ignoreerrors": True,
     }
     cookies = _cookies_path()
+    if home_tunnel.is_down():   # ВРЕМЕННО home_tunnel: куки только через дом, а его нет
+        cookies = None
     if cookies:
         base_opts["cookiefile"] = cookies
 
@@ -518,7 +523,7 @@ def download_post(url: str) -> list[str]:
         # Частый случай — одиночное ФОТО: yt-dlp падает («There is no video in this post»).
         # Сначала пробуем просто прочитать страницу поста с куками, и лишь потом —
         # браузер: он тяжелее и ломается от каждой смены вёрстки.
-        ig_proxies = net.as_requests(_home())
+        ig_proxies = net.as_requests(home_tunnel.usable(_home()))  # ВРЕМЕННО home_tunnel
         for attempt, grab in (("страницей", lambda: _photo_via_page(shortcode, cookies, ig_proxies)),
                               ("браузером", lambda: _photo_via_browser(shortcode, ig_proxies))):
             try:

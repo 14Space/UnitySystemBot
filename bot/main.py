@@ -20,12 +20,13 @@ from bot.config import (
 from bot.database import init_db, SessionLocal
 from bot.database.repository import get_stats, add_traffic
 from bot.utils import traffic, limits, heartbeat, secrets_filter
+from bot.utils import home_tunnel  # ВРЕМЕННО home_tunnel
 from bot.features.common import alerts
 from bot.utils.i18n import t
 from bot.middlewares.register_user import RegisterUserMiddleware
 from bot.middlewares.throttle import ThrottleMiddleware, CallbackThrottleMiddleware
 from bot.middlewares.routing import RoutingMiddleware
-from bot.middlewares.retry import RetryAfterMiddleware
+from bot.middlewares.retry import RetryAfterMiddleware, sends_file
 from bot.features.common import start, admin, payment, inline
 from bot.features.download import link
 from bot.features.transcribe import transcribe
@@ -102,6 +103,21 @@ def _seconds_until_slot(every_hours: int, skip_hour: int | None = None) -> float
     return _until(slot, now)
 
 
+# Сколько ждать ответа на отправку файла. Обычный срок aiogram – 60 секунд, а фильм
+# на пару гигабайт сервер Bot API заливает в Telegram минутами: 26.09.2026 «Лучшее
+# предложение» (HDRezka, 720p) падало с «Request timeout error» ровно на отправке.
+_FILE_SEND_TIMEOUT = 30 * 60
+
+
+class _Session(AiohttpSession):
+    """Сессия, у которой отправка файла ждёт ответа дольше остальных запросов."""
+
+    async def make_request(self, bot, method, timeout=None):
+        if timeout is None and sends_file(method):
+            timeout = _FILE_SEND_TIMEOUT
+        return await super().make_request(bot, method, timeout)
+
+
 def _make_bot(token: str) -> Bot:
     """Создаёт Bot; если задан локальный API-сервер — с ним (файлы до 2 ГБ).
 
@@ -109,9 +125,9 @@ def _make_bot(token: str) -> Bot:
     столько-то секунд», и без повтора часть файлов просто не доходит (см. retry.py).
     """
     if TELEGRAM_LOCAL_API_URL:
-        session = AiohttpSession(api=TelegramAPIServer.from_base(TELEGRAM_LOCAL_API_URL))
+        session = _Session(api=TelegramAPIServer.from_base(TELEGRAM_LOCAL_API_URL))
     else:
-        session = AiohttpSession()
+        session = _Session()
     session.middleware(RetryAfterMiddleware())
     return Bot(token=token, session=session)
 
@@ -216,12 +232,13 @@ async def _daily_tasks(bot: Bot):
         try:
             async with SessionLocal() as session:
                 stats = await get_stats(session)
-            health = await run_and_cache()
             # Проверку выводим в том же порядке, что и «По платформам» (по использованию).
             # Версия yt-dlp отдельной строкой не нужна: свежесть проверяется внутри
             # самой проверки функционала («yt-dlp последний»).
-            report = (f"{format_stats(stats, ADMIN_LANG)}\n\n"
-                      f"{format_health(health, platform_ranking(stats), lang=ADMIN_LANG)}")
+            report = format_stats(stats, ADMIN_LANG)
+            if not await home_tunnel.check_now():   # ВРЕМЕННО home_tunnel: без дома – отчёт без проверки
+                health = await run_and_cache()
+                report += f"\n\n{format_health(health, platform_ranking(stats), lang=ADMIN_LANG)}"
             await _send_report(bot, report)
         except Exception:
             logger.exception("Не удалось отправить дневной отчёт")
@@ -297,6 +314,9 @@ async def _periodic_healthcheck(bot: Bot):
             await asyncio.sleep(_seconds_until_slot(HEALTHCHECK_EVERY_HOURS, skip_hour=REPORT_HOUR))
         first = startup      # снимаем флаг ДО прогона: упади он с ошибкой, следующий
         startup = False      # виток всё равно должен уйти спать до слота, а не крутиться
+        if HEALTHCHECK_EVERY_HOURS > 0 and await home_tunnel.check_now():  # ВРЕМЕННО home_tunnel: без дома – ни проверки, ни тревог
+            logger.info("Домашнего туннеля нет – проверку площадок пропускаю")
+            continue
         try:
             results = await run_and_cache()
             if ADMIN_ID:
@@ -564,6 +584,7 @@ async def main():
 
     _background(_daily_tasks(bot))
     _background(_periodic_healthcheck(bot))
+    _background(home_tunnel.watch())  # ВРЕМЕННО home_tunnel
     _background(_flush_traffic())
     _background(_warm_hdrezka())
     _background(_monthly_deps_check(bot))
