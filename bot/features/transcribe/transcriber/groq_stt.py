@@ -11,6 +11,7 @@
 """
 import logging
 import os
+import re
 
 
 from bot.config import (
@@ -29,6 +30,43 @@ _LANG_CODE = {
     "russian": "ru", "ukrainian": "uk", "belarusian": "be", "bulgarian": "bg",
     "english": "en", "kazakh": "kk",
 }
+
+
+# Кусок записи длиннее стольких секунд, в котором текста меньше _MIN_CHARS_PER_SEC
+# символов на секунду, – речь там не разобрана, а заменена выдумкой. Живая речь –
+# 10–15 символов в секунду; 27.09.2026 на 17 секундах пришло «Ссылка в описании.»
+# (1 символ в секунду), и конец голосового пропал.
+_LONG_SEGMENT = 5.0
+_MIN_CHARS_PER_SEC = 5.0
+# Уверенность, которую сообщаем каскаду, если разбор подозрительный: заведомо ниже
+# любого порога – пусть ответит следующий способ.
+_SUSPICIOUS = -99.0
+
+
+def _lost_speech(data: dict) -> str:
+    """Почему разбор похож на выдумку вместо речи («» – не похож).
+
+    Ловим не конкретные фразы (их Whisper придумывает всё новые), а сам признак:
+    длинный кусок записи почти без текста, заученная подпись к видео или кусок
+    подсказки в ответе. Фильтр _clean такие фразы вырезает, но речь, которую они
+    заменили, этим не вернуть – её надо разобрать заново другим способом.
+    """
+    from bot.features.transcribe.transcriber.whisper_transcriber import _HALLUCINATION_RE
+
+    for s in data.get("segments") or []:
+        text = (s.get("text") or "").strip()
+        length = float(s.get("end") or 0) - float(s.get("start") or 0)
+        if length >= _LONG_SEGMENT and len(text) / length < _MIN_CHARS_PER_SEC:
+            return f"{length:.0f}с записи → {text[:40]!r}"
+        if _HALLUCINATION_RE.search(text):
+            return f"подпись к видео {text[:40]!r}"
+    if GROQ_STT_PROMPT:
+        words = re.findall(r"\w+", GROQ_STT_PROMPT.lower())
+        said = " ".join(re.findall(r"\w+", (data.get("text") or "").lower()))
+        for i in range(len(words) - 3):
+            if " ".join(words[i:i + 4]) in said:
+                return "в ответе кусок подсказки"
+    return ""
 
 
 def available() -> bool:
@@ -130,4 +168,9 @@ def transcribe_detailed(file_path: str) -> tuple[str, float | None]:
         logger.info("Groq: язык '%s' не из ожидаемых — молчу", lang)
         return "", None
 
-    return (data.get("text") or "").strip(), _confidence(data)
+    text = (data.get("text") or "").strip()
+    why = _lost_speech(data)
+    if why:
+        logger.info("Groq: часть речи не разобрана (%s) — зову следующий способ", why)
+        return text, _SUSPICIOUS
+    return text, _confidence(data)

@@ -528,4 +528,24 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
     play = (data.get("play") or data.get("hdplay")) if compress else \
            (data.get("hdplay") or data.get("play"))
     path = _fetch_file(play, os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4"))
-    return _remember([path])
+    return _remember([_plain_aac(path)])
+
+
+def _plain_aac(path: str) -> str:
+    """Звук – в обычный AAC 128 кбит/с, видео не трогаем.
+
+    TikTok отдаёт звук в HE-AACv2 на 32–64 кбит/с: стерео там не хранится, а
+    восстанавливается из моно-сигнала, и на iPhone ролик звучал «как из бочки»
+    (29.09.2026, проверено владельцем на нескольких устройствах). Перекодировать
+    только звук дёшево – 1.7с на 24-секундный ролик, файл больше на ~6%.
+    Не вышло – отдаём как есть: глухой звук лучше, чем никакого ролика.
+    """
+    out = os.path.splitext(path)[0] + "_aac.mp4"
+    res = ffmpeg.run(["ffmpeg", "-y", "-i", path, "-map", "0", "-c:v", "copy",
+                      "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out])
+    if res.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+        logger.warning("TikTok: звук не перекодировался, отдаю как есть")
+        _safe_remove(out)
+        return path
+    _safe_remove(path)
+    return out

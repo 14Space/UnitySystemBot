@@ -372,6 +372,10 @@ def download_reel(url: str, max_height: int | None = None) -> str:
     base_opts = {
         **BASE_OPTS,
         **_quality_opts(max_height),
+        # Готовый файл «видео+звук» (H.264), а не лучшую отдельную дорожку: её
+        # Instagram отдаёт в VP9, и на iPhone Reel стоял на первом кадре со звуком
+        # (29.09.2026). H.264 у Instagram есть только в 720p – как было до 26.09.
+        "format": "b/bv*+ba/b",
         "outtmpl": output_path,
         "merge_output_format": "mp4",
     }
@@ -443,6 +447,10 @@ def _best_media(entry: dict) -> tuple[str, bool] | None:
     """Из элемента поста достаёт (ссылка_на_медиа, это_видео).
     Видео — лучший из formats; фото — самый крупный thumbnail. None, если пусто."""
     formats = entry.get("formats") or []
+    # Готовые файлы «видео+звук» (H.264) – вперёд отдельных дорожек: видео-дорожка у
+    # Instagram в VP9 и без звука, iPhone её не играет (см. download_reel).
+    formats = [f for f in formats
+               if f.get("acodec") != "none" and f.get("vcodec") != "none"] or formats
     if formats:
         # Берём формат с наибольшим разрешением (у Instagram они уже с прямыми ссылками)
         best = max(formats, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
