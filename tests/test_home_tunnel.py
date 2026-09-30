@@ -75,3 +75,34 @@ def test_failed_download_is_silent_while_down(tunnel, monkeypatch):
 
     asyncio.run(job.produce(cache=None, work=work, on_error=on_error))
     assert told == []
+
+
+def test_tiktok_fetch_failure_is_silent_while_down(tunnel, monkeypatch):
+    """30.09.2026: TikTok падал ещё ДО скачивания (данные ролика), и человеку уходила
+    ошибка, хотя дом был выключен."""
+    from bot.features.download.flows import tiktok as flow
+    from bot.features.download import job
+
+    async def no_cache(*a, **k):
+        return False
+
+    async def no_cap(chat):
+        return None
+
+    def boom(*a, **k):
+        raise ValueError("JSONDecodeError: Expecting value")
+
+    monkeypatch.setattr(job, "try_cached", no_cache)
+    monkeypatch.setattr(flow, "_shorts_cap", no_cap)
+    monkeypatch.setattr(flow.tiktok, "fetch_tiktok", boom)
+    tunnel(False)
+    replies = []
+
+    class Msg:
+        chat = None
+
+        async def reply(self, text, **k):
+            replies.append(text)
+
+    asyncio.run(flow._handle_tiktok(Msg(), "https://vt.tiktok.com/x/", "ru"))
+    assert replies == []

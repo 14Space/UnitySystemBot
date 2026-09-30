@@ -10,6 +10,7 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from bot.config import DOWNLOADS_DIR, FREE_QUALITY_LIMIT
 from bot.utils import limits, tg_files
+from bot.utils import home_tunnel  # ВРЕМЕННО home_tunnel
 from bot.utils.tg_messages import safe_edit, safe_delete
 from bot.features.common import alerts
 from bot.utils.i18n import t, lang_of
@@ -80,6 +81,9 @@ async def _handle_hdrezka(message: Message, url: str, lang: str):
         info = await asyncio.to_thread(hdrezka.get_info, api, url)
     except Exception as e:
         logger.exception("HDRezka info failed")
+        if await home_tunnel.check_now():   # ВРЕМЕННО home_tunnel: дом выключен – молчим
+            await safe_delete(status)
+            return
         alerts.note_failure(e)            # fetch-ошибки тоже должны доходить до админа
         await safe_edit(status, t("hdrezka_open_failed", lang))
         return

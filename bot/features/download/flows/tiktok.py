@@ -9,6 +9,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from bot.utils.platform_detector import Platform
 from bot.utils import limits, tg_files
+from bot.utils import home_tunnel  # ВРЕМЕННО home_tunnel
 from bot.utils.tg_messages import safe_edit, safe_delete
 from bot.features.common import alerts
 from bot.utils.i18n import t, lang_of
@@ -100,6 +101,8 @@ async def _handle_tiktok(message: Message, url: str, lang: str):
         info = await asyncio.to_thread(tiktok.fetch_tiktok, url, want_hd)
     except Exception as e:
         logger.exception("TikTok fetch failed")
+        if await home_tunnel.check_now():   # ВРЕМЕННО home_tunnel: дом выключен – молчим
+            return
         await message.reply(limits.friendly_error(e, lang))
         return
 

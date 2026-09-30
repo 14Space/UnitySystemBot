@@ -10,6 +10,7 @@ from aiogram.types import Message, CallbackQuery
 from bot.features.download.keyboards.quality import build_quality_keyboard
 from bot.config import DOWNLOADS_DIR, FREE_QUALITY_LIMIT
 from bot.utils import limits, tg_files, chat_action
+from bot.utils import home_tunnel  # ВРЕМЕННО home_tunnel
 from bot.utils.tg_messages import safe_edit, safe_delete
 from bot.features.common import alerts
 from bot.utils.i18n import t, lang_of
@@ -100,6 +101,9 @@ async def _handle_quality_video(message: Message, url: str, lang: str):
 
     except Exception as e:
         logger.exception("Failed to get video info")
+        if await home_tunnel.check_now():   # ВРЕМЕННО home_tunnel: дом выключен – молчим
+            await safe_delete(status)
+            return
         alerts.note_failure(e)            # раньше этот путь молчал в алертах — теперь нет
         await safe_edit(status, t("video_info_failed", lang))
 

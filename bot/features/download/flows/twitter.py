@@ -9,6 +9,7 @@ import json
 import logging
 from aiogram.types import Message, InputMediaPhoto, InputMediaVideo
 from bot.utils import limits, tg_files
+from bot.utils import home_tunnel  # ВРЕМЕННО home_tunnel
 from bot.utils.i18n import t
 from bot.features.download import job
 from bot.features.download.job import Cache
@@ -39,6 +40,8 @@ async def _handle_twitter(message: Message, url: str, lang: str):
         tweet = await asyncio.to_thread(twitter.get_tweet, url)
     except Exception as e:
         logger.exception("Twitter fetch failed")
+        if await home_tunnel.check_now():   # ВРЕМЕННО home_tunnel: дом выключен – молчим
+            return
         await message.reply(limits.friendly_error(e, lang))
         return
 
