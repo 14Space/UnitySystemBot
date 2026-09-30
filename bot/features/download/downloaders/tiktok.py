@@ -403,7 +403,56 @@ def _fetch_tiktok_api(url: str, hd: bool = True) -> dict:
     backup = _fetch_backup(url)
     if backup:
         return backup
+    # И последний – yt-dlp, сам TikTok без посредников (тоже только видео).
+    own = _fetch_ytdlp(url)
+    if own:
+        return own
     raise ValueError(payload.get("msg") or "TikTok API error")
+
+
+# Готовые файлы TikTok без водяного знака и в H.264 (его играет любой iPhone).
+# «download» у yt-dlp – вариант С водяным знаком, его не берём.
+_YTDLP_FORMAT = "b[format_id!=download][vcodec^=h264]/b[format_id!=download]"
+
+
+def _fetch_ytdlp(url: str) -> dict | None:
+    """Видео через yt-dlp, если оба сервиса-посредника не ответили.
+
+    30.09.2026 tikwm начал отвечать 403 всем подряд – с сервера, из дома, с чужих
+    адресов; lovetik на той же ссылке ответил «Could not get Video ID». yt-dlp в это
+    время читал ролик за 2с даже напрямую с сервера. Посредники остаются первыми:
+    только они умеют слайдшоу, а yt-dlp фото-посты TikTok не отдаёт.
+    """
+    import yt_dlp
+    from bot.features.download.downloaders.ytdlp_wrapper import BASE_OPTS
+
+    def op(proxy: str) -> dict:
+        opts = {**BASE_OPTS, "format": _YTDLP_FORMAT, **({"proxy": proxy} if proxy else {})}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    try:
+        info = net.with_proxy(op, net.proxy_for())
+    except Exception:
+        logger.info("TikTok: yt-dlp тоже не смог", exc_info=True)
+        return None
+    item_id = _safe_id(info.get("id"))
+    logger.info("TikTok: %s взят через yt-dlp (посредники не ответили)", item_id)
+    return {"id": item_id, "kind": "video", "data": {"id": item_id, "ytdlp": url}}
+
+
+def _download_ytdlp(url: str) -> str:
+    """Качает видео, найденное _fetch_ytdlp, тем же путём (напрямую или через дом)."""
+    import yt_dlp
+    from bot.features.download.downloaders.ytdlp_wrapper import BASE_OPTS, _unique_outtmpl
+
+    outtmpl = _unique_outtmpl()
+
+    def op(proxy: str) -> str:
+        opts = {**BASE_OPTS, "format": _YTDLP_FORMAT, "outtmpl": outtmpl,
+                **({"proxy": proxy} if proxy else {})}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.prepare_filename(ydl.extract_info(url, download=True))
+    return net.with_proxy(op, net.proxy_for())
 
 
 def _download_images(images: list[str], item_id: str) -> list[str]:
@@ -525,6 +574,10 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
     # Обычное видео. При «сжатии шортс» берём облегчённую версию (play) вместо HD:
     # она примерно вдвое легче при том же ролике и качается не медленнее — замерено.
     # Оба варианта лежат на CDN самого TikTok, водяного знака нет ни там, ни там.
+    # Найдено через yt-dlp (посредники не ответили) – им же и качаем. Выбирать там
+    # нечего: H.264 у TikTok и так облегчённый (540p), сжатие не нужно.
+    if data.get("ytdlp"):
+        return _remember([_plain_aac(_download_ytdlp(data["ytdlp"]))])
     play = (data.get("play") or data.get("hdplay")) if compress else \
            (data.get("hdplay") or data.get("play"))
     path = _fetch_file(play, os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4"))
