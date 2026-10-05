@@ -579,6 +579,17 @@ async def main():
                                               thread_name_prefix="work"))
     logger.info("Пул рабочих потоков: %d", THREAD_POOL_SIZE)
 
+    # yt-dlp грузит свои плагины при первом YoutubeDL(). Если первые экземпляры
+    # создаются разом из разных потоков (старт проверки площадок), загрузка плагинов
+    # гоняется сама с собой и в процессе пропадают извлекатели: «No suitable extractor».
+    # Поэтому первый экземпляр делаем здесь, один раз и до любой фоновой работы.
+    try:
+        from bot.features.download.downloaders.ytdlp_wrapper import BASE_OPTS
+        import yt_dlp
+        yt_dlp.YoutubeDL({**BASE_OPTS, "quiet": True}).close()
+    except Exception:
+        logger.warning("Не удалось прогреть yt-dlp", exc_info=True)
+
     _background(heartbeat.beat())
     heartbeat.start_watchdog()
 
