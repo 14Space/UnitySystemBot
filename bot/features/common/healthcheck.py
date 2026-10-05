@@ -1161,6 +1161,10 @@ async def _run(name: str, platform: str | None, coro_fn, url: str, idx: int,
             "sec": round(time.monotonic() - start, 1)}
 
 
+# ВРЕМЕННО ig_off: пункты Instagram, которые пока не проверяем (и не шлём по ним ошибки).
+_IG_OFF_CHECKS = {"Instagram фото-пост", "Instagram карусель", "Куки Instagram"}  # ВРЕМЕННО ig_off
+
+
 async def run_health_checks() -> list[dict]:
     """Гоняет все проверки (ограничивая одновременность) и возвращает результаты по порядку."""
     sem = asyncio.Semaphore(_CONCURRENCY)
@@ -1169,7 +1173,8 @@ async def run_health_checks() -> list[dict]:
     ig_lock = asyncio.Lock()
     return list(await asyncio.gather(
         *(_run(name, platform, fn, url, idx, sem, pw_lock, tiktok_lock, ig_lock)
-          for idx, (name, platform, fn, url) in enumerate(_CHECKS))))
+          for idx, (name, platform, fn, url) in enumerate(_CHECKS)
+          if name not in _IG_OFF_CHECKS)))  # ВРЕМЕННО ig_off
 
 
 # Кэш последней проверки: заполняется периодической проверкой (каждые N часов) и дневным

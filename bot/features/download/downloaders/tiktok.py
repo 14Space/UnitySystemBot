@@ -342,7 +342,7 @@ def _fetch_backup(url: str) -> dict | None:
     m = re.search(r"/video/(\d+)", url)
     item_id = m.group(1) if m else "tiktok"
     play = nowm[-1]["a"]
-    return {"id": item_id, "kind": "video", "data": {"id": item_id, "play": play, "hdplay": play}}
+    return {"id": item_id, "kind": "video", "data": {"id": item_id, "play": play, "hdplay": play, "_src": url}}
 
 
 def fetch_tiktok(url: str, hd: bool = True) -> dict:
@@ -387,6 +387,7 @@ def _fetch_tiktok_api(url: str, hd: bool = True) -> dict:
         payload = _api_call(url, hd)  # внутри до 3 попыток (см. _api_call_retry)
     if payload.get("code") == 0:
         data = payload["data"]
+        data["_src"] = url          # запасной путь скачивания, см. download_from
         # Фото-посты (photo mode) содержат images. У «живых фото» вдобавок бывает
         # live_images с короткими видео, причём часть элементов может быть null.
         # Поэтому наличие images важнее: это полноценное слайдшоу (фото + музыка),
@@ -580,7 +581,17 @@ def download_from(info: dict, mode: str = "auto", compress: bool = False) -> lis
         return _remember([_plain_aac(_download_ytdlp(data["ytdlp"]))])
     play = (data.get("play") or data.get("hdplay")) if compress else \
            (data.get("hdplay") or data.get("play"))
-    path = _fetch_file(play, os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4"))
+    try:
+        path = _fetch_file(play, os.path.join(DOWNLOADS_DIR, f"{item_id}_dl.mp4"))
+    except Exception:
+        # Ссылка посредника на CDN не открылась (2.10.2026: tiktokcdn-us не отвечал ни
+        # напрямую, ни через дом). Сам TikTok через yt-dlp в это время отдаёт ролик.
+        src = data.get("_src")
+        if not src:
+            raise
+        logger.info("TikTok: файл по ссылке посредника не скачался, пробую yt-dlp",
+                    exc_info=True)
+        path = _download_ytdlp(src)
     return _remember([_plain_aac(path)])
 
 

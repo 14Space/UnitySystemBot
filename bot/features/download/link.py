@@ -147,6 +147,7 @@ async def _dispatch_platform(message: Message, url: str, platform, lang: str):
 
     # Instagram пост — фото, видео или карусель (отдаём альбомом)
     if platform == Platform.INSTAGRAM_POST:
+        return  # ВРЕМЕННО ig_off: посты и карусели Instagram пока недоступны – молчим
         await _handle_files(message, url, download_post, "ig_post_failed", lang)
         return
 
